@@ -7,6 +7,8 @@ import androidx.room.Query
 import androidx.room.Transaction
 import kotlinx.coroutines.flow.Flow
 
+data class ArtistTrackCredits(val id: String, val artist: String, val singers: String, val writer: String, val primaryArtists: String)
+
 @Dao
 interface MusicDao {
 
@@ -86,6 +88,9 @@ interface MusicDao {
 
     @Query("SELECT * FROM tracks WHERE id IN (:trackIds)")
     suspend fun getTracksByIds(trackIds: List<String>): List<TrackEntity>
+
+    @Query("SELECT id, artist, singers, writer, primaryArtists FROM tracks WHERE id IN (:trackIds)")
+    suspend fun getArtistCreditsByIds(trackIds: List<String>): List<ArtistTrackCredits>
 
     @Query("SELECT * FROM tracks WHERE id IN (:trackIds)")
     fun observeTracksByIds(trackIds: List<String>): Flow<List<TrackEntity>>

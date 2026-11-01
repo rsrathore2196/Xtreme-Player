@@ -9,6 +9,8 @@ import com.example.playback.PlaybackSource
 import com.example.playback.PlaybackSourceKind
 import com.example.playback.PlaybackSourcePolicy
 import kotlinx.coroutines.async
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
@@ -42,6 +44,18 @@ class PlaybackStartupResolutionTest {
         assertEquals("youtube", result)
         assertEquals(listOf(PlaybackSource.youtube.id), calls)
         assertEquals(100L, testScheduler.currentTime)
+    }
+    @Test fun cancelingASelectionCannotStartItsWaitingFallback() = runTest {
+        var fallbackCalls = 0
+        val started = CompletableDeferred<Unit>()
+        val selection = launch {
+            resolveProviderCandidates(native) { source ->
+                if (source.kind == PlaybackSourceKind.YOUTUBE) { started.complete(Unit); awaitCancellation() }
+                else { fallbackCalls++; "stale" }
+            }
+        }
+        runCurrent(); started.await(); selection.cancelAndJoin()
+        assertEquals(0, fallbackCalls)
     }
 
     @Test fun slowPrimaryAndFallbackOverlapButSourceOrderStillWins() = runTest {

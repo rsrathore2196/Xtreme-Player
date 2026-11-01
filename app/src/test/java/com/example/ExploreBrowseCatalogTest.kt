@@ -98,6 +98,7 @@ class ExploreBrowseCatalogTest {
                 button("Hindustani Classical", "FEmusic_hindustani", "hindustani"),
                 button("Indie & Alternative", "FEmusic_indie", "indie"),
                 button("Reggae & Caribbean", "FEmusic_reggae", "reggae"),
+                button("R&B & Soul", "FEmusic_rnb_soul", "rnb-soul"),
                 button("Dance & Electronic", "FEmusic_dance", "dance"),
                 button("Rock", "FEmusic_rock", "rock")
             )
@@ -106,6 +107,13 @@ class ExploreBrowseCatalogTest {
         assertEquals(listOf("Dance", "Rock"), result.map { it.title })
         assertEquals("FEmusic_dance", result.first().browseId)
         assertEquals("dance", result.first().params)
+    }
+    @Test fun anOlderCachedIndexCannotRestoreTheRemovedRnbSoulGenre() {
+        val cached = listOf(ExploreCategory("R&B & soul", "removed", null, ExploreCategoryKind.GENRE),
+            ExploreCategory("Pop", "pop", null, ExploreCategoryKind.GENRE))
+        assertEquals(listOf("Pop"), YouTubeExploreParser.decodeCategories(YouTubeExploreParser.encodeCategories(cached)).map { it.title })
+        assertTrue(YouTubeExploreParser.isExcludedGenre("R&amp;B &amp; Soul"))
+        assertFalse(YouTubeExploreParser.isExcludedGenre("Jazz"))
     }
 
     @Test fun categoryCollectionsKeepTheirProviderAndParametersWithoutResolvingAudio() {

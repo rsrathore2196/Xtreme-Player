@@ -23,6 +23,7 @@ internal object DiscoveryRequestCoordinator {
     private val changed = MutableStateFlow(0L)
     private val scrolling = MutableStateFlow(false)
     private val resolving = MutableStateFlow(0)
+    val playbackResolving: Boolean get() = resolving.value > 0
     private var running = 0
     private var optionalRunning = 0
     private val spaces = Regex("\\s+")
@@ -47,7 +48,8 @@ internal object DiscoveryRequestCoordinator {
 
     suspend fun <T> playback(block: suspend () -> T): T {
         resolving.update { it + 1 }
-        try { return block() } finally { resolving.update { (it - 1).coerceAtLeast(0) } }
+        try { return BackgroundWorkCoordinator.finishBoundedBatch(block) }
+        finally { resolving.update { (it - 1).coerceAtLeast(0) } }
     }
 
     suspend fun shared(key: String, essential: Boolean, network: Boolean = true,

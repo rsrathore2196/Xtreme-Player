@@ -691,7 +691,11 @@ internal suspend fun <T : Any> resolveProviderCandidates(sources: List<PlaybackS
         suspend fun lookup(): T? {
             // A fast primary needs no speculative network work. Failure releases
             // fallbacks immediately; a slow primary gets only a short head start.
-            if (runCatching { withTimeoutOrNull(250L) { primary.await() != null } }.getOrNull() == true) return null
+            val primaryReady = try { withTimeoutOrNull(250L) { primary.await() != null } }
+                catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { false }
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (primaryReady == true) return null
             return limited(source)
         }
         // Queueing behind other custom servers cannot multiply the group's

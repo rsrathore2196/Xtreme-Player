@@ -5,6 +5,7 @@ import android.util.AtomicFile
 import com.example.data.model.MusicTrack
 import com.example.data.model.ServerHomeShelf
 import com.example.performance.AppDispatchers
+import com.example.performance.BackgroundWorkCoordinator
 import com.example.ui.viewmodel.MostListenedArtist
 import com.example.ui.viewmodel.SectionState
 import java.io.File
@@ -14,6 +15,24 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
+
+/** Retry each captured key once; a failed file must not starve unrelated checkpoints. */
+internal suspend fun <T : Any> persistHomeCheckpoints(pending: MutableMap<String, T>,
+    persist: (T) -> Unit, failed: (String, Exception) -> Unit = { _, _ -> }) {
+    val keys = synchronized(pending) { pending.keys.toList() }
+    for (key in keys) {
+        for (attempt in 0..1) {
+            val checkpoint = synchronized(pending) { pending[key] } ?: break
+            try {
+                persist(checkpoint)
+                synchronized(pending) { if (pending[key] === checkpoint) pending.remove(key) }
+                break
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { if (attempt == 1) failed(key, error) }
+            yield()
+        }
+    }
+}
 
 /** Server and profile freshness/identity are independent of each other and of local listening data. */
 data class SavedHomeCards(
@@ -33,35 +52,34 @@ data class SavedHomeCards(
     val artistDataVersion: Int = 2
 )
 
-class HomeCardCache(context: Context, @Suppress("UNUSED_PARAMETER") workerDispatcher: CoroutineDispatcher = AppDispatchers.Io) {
+class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDispatcher = AppDispatchers.Io) {
     private val app = context.applicationContext
     private val namespace = "${app.packageName}:${System.identityHashCode(app)}"
     private val directory by lazy { app.filesDir }
     companion object {
         private const val VERSION = 3
         private const val MAX_BYTES = 4 * 1024 * 1024
-        private data class Pending(val target: File, val text: String)
-        private val memory = android.util.LruCache<String, JSONObject>(12)
+        private data class Pending(val target: File, val bytes: ByteArray)
+        private data class CachedJson(val json: JSONObject, val checkpoint: Any? = null)
+        private val memory = android.util.LruCache<String, CachedJson>(12)
         private val pending = linkedMapOf<String, Pending>()
         private val fileMutex = Mutex()
+        private val submissions = Array(8) { Mutex() }
         private val signal = Channel<Unit>(Channel.CONFLATED)
         private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
         init { scope.launch {
             for (ignored in signal) fileMutex.withLock {
-                while (true) {
-                    val write = synchronized(pending) { pending.values.firstOrNull() } ?: break
+                persistHomeCheckpoints(pending, persist = { write ->
                     val file = AtomicFile(write.target)
                     var output: java.io.FileOutputStream? = null
                     try {
-                        output = file.startWrite(); output.write(write.text.toByteArray()); file.finishWrite(output)
-                        synchronized(pending) { if (pending[write.target.path] === write) pending.remove(write.target.path) }
+                        output = file.startWrite(); output.write(write.bytes); file.finishWrite(output)
                     } catch (cancelled: CancellationException) { file.failWrite(output); throw cancelled }
                     catch (error: Exception) {
                         file.failWrite(output)
-                        android.util.Log.w("HomeCardCache", "Home cache write remains pending", error)
-                        break
+                        throw error
                     }
-                }
+                }, failed = { _, error -> android.util.Log.w("HomeCardCache", "Home cache write remains pending", error) })
             }
         } }
         fun preloadAsync(context: Context, profileKey: String, @Suppress("UNUSED_PARAMETER") previewOnly: Boolean = false): Deferred<SavedHomeCards?> =
@@ -69,11 +87,14 @@ class HomeCardCache(context: Context, @Suppress("UNUSED_PARAMETER") workerDispat
     }
     private fun file(name: String) = File(directory, "home_${name}_v3.json")
     private fun memoryKey(name: String) = "$namespace:$name"
-    private fun peekJson(name: String) = synchronized(memory) { memory.get(memoryKey(name)) }
-    private suspend fun readJson(name: String): JSONObject? = withContext(AppDispatchers.Io) {
-        peekJson(name) ?: try {
+    private fun peekJson(name: String) = synchronized(memory) { memory.get(memoryKey(name))?.json }
+    private fun submission(name: String) = submissions[(memoryKey(name).hashCode() and Int.MAX_VALUE) % submissions.size]
+    private suspend fun readJson(name: String): JSONObject? = withContext(workerDispatcher) {
+        if (synchronized(pending) { pending.isNotEmpty() }) signal.trySend(Unit)
+        submission(name).withLock { peekJson(name) ?: try {
             val text = fileMutex.withLock {
                 val file = AtomicFile(file(name))
+                synchronized(pending) { pending[file.baseFile.path]?.bytes }?.let { return@withLock it.toString(Charsets.UTF_8) }
                 if (!file.baseFile.exists() && !File(file.baseFile.path + ".bak").exists()) return@withLock null
                 file.openRead().bufferedReader().use { reader ->
                     val chars = CharArray(MAX_BYTES + 1); var count = 0
@@ -81,21 +102,33 @@ class HomeCardCache(context: Context, @Suppress("UNUSED_PARAMETER") workerDispat
                     if (count > MAX_BYTES) null else String(chars, 0, count)
                 }
             } ?: return@withContext null
-            withContext(AppDispatchers.CpuBounded) { JSONObject(text).takeIf { it.optInt("version") == VERSION } }
-                ?.also { synchronized(memory) { memory.put(memoryKey(name), it) } }
+            BackgroundWorkCoordinator.finishBoundedBatch { withContext(AppDispatchers.CpuBounded) {
+                JSONObject(text).takeIf { it.optInt("version") == VERSION }
+            } }?.also { synchronized(memory) { memory.put(memoryKey(name), CachedJson(it)) } }
         } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
+        }
     }
-    private suspend fun write(name: String, value: JSONObject) = withContext(AppDispatchers.Io) {
-        val encoded = withContext(AppDispatchers.CpuBounded) { value.put("version", VERSION).toString() }
-        if (encoded.toByteArray().size > MAX_BYTES) return@withContext
-        synchronized(memory) { memory.put(memoryKey(name), value) }
-        val target = file(name)
-        synchronized(pending) { pending[target.path] = Pending(target, encoded); while (pending.size > 12) pending.remove(pending.keys.first()) }
-        signal.trySend(Unit)
+    private suspend fun write(name: String, checkpoint: Any, encode: () -> JSONObject) = submission(name).withLock {
+        val value = BackgroundWorkCoordinator.finishBoundedBatch { withContext(AppDispatchers.CpuBounded) {
+            if (synchronized(memory) { memory.get(memoryKey(name))?.checkpoint } == checkpoint) null
+            else encode().put("version", VERSION).let { it to it.toString().toByteArray() }
+        } }
+        withContext(workerDispatcher) {
+            if (value != null) {
+                val (json, encoded) = value
+                if (encoded.size > MAX_BYTES) return@withContext
+                synchronized(memory) { memory.put(memoryKey(name), CachedJson(json, checkpoint)) }
+                val target = file(name)
+                synchronized(pending) { pending[target.path] = Pending(target, encoded); while (pending.size > 12) pending.remove(pending.keys.first()) }
+            }
+            signal.trySend(Unit)
+        }
     }
     private fun tracks(rows: List<MusicTrack>) = JSONArray(RecommendationTrackCodec.encode(rows))
     private fun tracks(rows: JSONArray?) = rows?.let { RecommendationTrackCodec.decode(it.toString(), 250) }.orEmpty()
     private fun nullable(row: JSONObject, key: String) = row.optString(key).takeIf { it.isNotBlank() && it != "null" }
+    private fun validHome(row: JSONObject, key: String) = row.optString("key") == key &&
+        (key.substringAfter('|') == "anonymous" || row.optString("accountIdentity") == key.substringAfter('|'))
     private fun shelf(row: ServerHomeShelf) = JSONObject().put("id", row.id).put("title", row.title).put("subtitle", row.subtitle)
         .put("tracks", tracks(row.tracks)).put("continuationToken", row.continuationToken)
     private fun shelf(row: JSONObject): ServerHomeShelf = ServerHomeShelf(row.getString("id"), row.getString("title"), row.optString("subtitle"),
@@ -116,7 +149,7 @@ class HomeCardCache(context: Context, @Suppress("UNUSED_PARAMETER") workerDispat
             artistDataVersion = local?.optInt("artistDataVersion", 0) ?: 0)
     }
     fun peek(profile: String): SavedHomeCards? {
-        val home = peekJson("server_${HomeCacheIdentity.fileKey(profile)}")
+        val home = peekJson("server_${HomeCacheIdentity.fileKey(profile)}")?.takeIf { validHome(it, profile) }
         val history = peekJson("local")
         return if (home == null && history == null) null else local(profile, home, history)
     }
@@ -124,7 +157,7 @@ class HomeCardCache(context: Context, @Suppress("UNUSED_PARAMETER") workerDispat
     suspend fun readInitial(profile: String) = read(profile)
     suspend fun readDisk(profile: String) = read(profile)
     suspend fun read(profile: String): SavedHomeCards? = withContext(AppDispatchers.Io) {
-        val home = readJson("server_${HomeCacheIdentity.fileKey(profile)}")?.takeIf { it.optString("key") == profile }
+        val home = readJson("server_${HomeCacheIdentity.fileKey(profile)}")?.takeIf { validHome(it, profile) }
         val history = readJson("local")
         if (home == null && history == null) return@withContext legacy(profile)
         withContext(AppDispatchers.CpuBounded) { local(profile, home, history) }
@@ -134,20 +167,32 @@ class HomeCardCache(context: Context, @Suppress("UNUSED_PARAMETER") workerDispat
         return withContext(AppDispatchers.CpuBounded) { SavedHomeCards("", profileShelfKey = key,
             profileShelf = row.optJSONObject("shelf")?.let(::shelf), profileFetchedAt = row.optLong("fetchedAt"), profileFetchSucceeded = row.optBoolean("success")) }
     }
-    suspend fun saveHome(cards: SavedHomeCards) = withContext(AppDispatchers.CpuBounded) {
-        write("server_${HomeCacheIdentity.fileKey(cards.profileKey)}", JSONObject().put("key", cards.profileKey).put("refreshedAt", cards.refreshedAt)
+    private data class HomeCheckpoint(val key: String, val fetchedAt: Long, val success: Boolean,
+        val shelves: List<ServerHomeShelf>, val continuation: String?, val consumed: Set<String>)
+    private data class ProfileCheckpoint(val key: String, val fetchedAt: Long, val success: Boolean, val shelf: ServerHomeShelf?)
+    private data class LocalCheckpoint(val revision: String?, val artistVersion: Int, val recent: List<MusicTrack>, val artists: List<MostListenedArtist>)
+    suspend fun saveHome(cards: SavedHomeCards) {
+        write("server_${HomeCacheIdentity.fileKey(cards.profileKey)}",
+            HomeCheckpoint(cards.profileKey, cards.refreshedAt, cards.serverFetchSucceeded, cards.serverShelves, cards.continuationToken, cards.consumedContinuations)) {
+            JSONObject().put("key", cards.profileKey).put("accountIdentity", cards.profileKey.substringAfter('|')).put("refreshedAt", cards.refreshedAt)
             .put("success", cards.serverFetchSucceeded).put("serverShelves", JSONArray(cards.serverShelves.map(::shelf)))
-            .put("continuationToken", cards.continuationToken).put("consumedContinuations", JSONArray(cards.consumedContinuations.toList())))
+            .put("continuationToken", cards.continuationToken).put("consumedContinuations", JSONArray(cards.consumedContinuations.toList()))
+        }
     }
-    suspend fun saveProfile(cards: SavedHomeCards) = withContext(AppDispatchers.CpuBounded) {
-        write("profile_${HomeCacheIdentity.fileKey(cards.profileShelfKey)}", JSONObject().put("key", cards.profileShelfKey)
-            .put("fetchedAt", cards.profileFetchedAt).put("success", cards.profileFetchSucceeded).put("shelf", cards.profileShelf?.let(::shelf)))
+    suspend fun saveProfile(cards: SavedHomeCards) {
+        write("profile_${HomeCacheIdentity.fileKey(cards.profileShelfKey)}",
+            ProfileCheckpoint(cards.profileShelfKey, cards.profileFetchedAt, cards.profileFetchSucceeded, cards.profileShelf)) {
+            JSONObject().put("key", cards.profileShelfKey).put("fetchedAt", cards.profileFetchedAt)
+                .put("success", cards.profileFetchSucceeded).put("shelf", cards.profileShelf?.let(::shelf))
+        }
     }
-    suspend fun saveLocal(cards: SavedHomeCards) = withContext(AppDispatchers.CpuBounded) {
-        write("local", JSONObject().put("inputRevision", cards.inputRevision).put("artistDataVersion", cards.artistDataVersion)
+    suspend fun saveLocal(cards: SavedHomeCards) {
+        write("local", LocalCheckpoint(cards.inputRevision, cards.artistDataVersion, cards.history.tracks.take(30), cards.artists.take(15))) {
+            JSONObject().put("inputRevision", cards.inputRevision).put("artistDataVersion", cards.artistDataVersion)
             .put("recent", tracks(cards.history.tracks.take(30))).put("artists", JSONArray(cards.artists.take(15).map {
                 JSONObject().put("name", it.name).put("playCount", it.playCount).put("tracks", tracks(it.tracks.take(3)))
-            })))
+            }))
+        }
     }
     suspend fun save(cards: SavedHomeCards) { saveHome(cards); if (cards.profileShelfKey.isNotBlank()) saveProfile(cards); saveLocal(cards) }
     suspend fun savePresentation(cards: SavedHomeCards) = save(cards)

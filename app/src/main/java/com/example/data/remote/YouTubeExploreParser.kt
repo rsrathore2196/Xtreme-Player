@@ -46,7 +46,9 @@ internal object YouTubeExploreParser {
 
     fun isExcludedGenre(title: String): Boolean {
         val lower = title.trim().lowercase()
+        val label = lower.replace("&amp;", "&")
         return lower.contains("carnatic") ||
+            (label.contains("r&b") && label.contains("soul")) ||
             (lower.contains("country") && lower.contains("americana")) ||
             lower.contains("hindustani") ||
             (lower.contains("indie") && (lower.contains("alternat") || lower.contains("alternate") || lower.contains("alternative"))) ||

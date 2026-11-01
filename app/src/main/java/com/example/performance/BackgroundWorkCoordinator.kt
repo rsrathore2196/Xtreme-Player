@@ -154,7 +154,6 @@ object BackgroundWorkCoordinator {
     private val homeReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val cachedHomeReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val playbackReady = kotlinx.coroutines.CompletableDeferred<Unit>()
-    private val recommendationsReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val maintenanceReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     fun expectForegroundDraw() {
         if (!foregroundDrawPending.getAndSet(true))
@@ -176,11 +175,9 @@ object BackgroundWorkCoordinator {
         cachedHomeReady.complete(Unit)
     }
     fun playbackSessionRestored() { playbackReady.complete(Unit) }
-    fun optionalRecommendationsReady() { recommendationsReady.complete(Unit) }
     suspend fun awaitFirstFrame() { firstFrame.await() }
     suspend fun awaitHomeContent() { homeReady.await() }
     suspend fun awaitPlaybackSession() { playbackReady.await() }
-    suspend fun awaitOptionalRecommendations() { recommendationsReady.await() }
     suspend fun awaitMaintenanceReady() { maintenanceReady.await() }
     /** Readiness fences, followed by actual quiet; no fixed startup wake-up timer. */
     suspend fun awaitStartupIdle() {
@@ -233,6 +230,7 @@ object BackgroundWorkCoordinator {
 
     private fun optionalCanRun(requireForeground: Boolean, urgent: () -> Boolean): Boolean {
         if (urgent()) return true
+        if (com.example.recommendation.DiscoveryRequestCoordinator.playbackResolving) return false
         if (foreground.get() && initialPresentationPending.get()) return false
         if (requireForeground && !foreground.get()) return false
         if (!foreground.get()) return true
@@ -259,7 +257,7 @@ object BackgroundWorkCoordinator {
     private suspend fun uiContinuationContext(urgent: () -> Boolean): NonEssentialWork {
         fun canRun() = urgent() || !foreground.get() ||
             (!startupReadiness.value.complete && initialPreparationRemainingMillis > 0L) ||
-            isInteractionIdle()
+            (isInteractionIdle() && !com.example.recommendation.DiscoveryRequestCoordinator.playbackResolving)
         return NonEssentialWork(currentCoroutineContext()[Job], ::canRun) {
             while (!canRun()) {
                 currentCoroutineContext().ensureActive()
@@ -267,6 +265,10 @@ object BackgroundWorkCoordinator {
             }
         }
     }
+
+    /** Local snapshots use the existing short interaction fence without taking a startup/network lease. */
+    internal suspend fun <T> localDataPreparation(block: suspend () -> T): T =
+        withContext(uiContinuationContext { false }) { block() }
 
     /** WorkManager also participates in dock preemption, without requiring a headless Home. */
     internal suspend fun <T> maintenance(block: suspend () -> T): T =

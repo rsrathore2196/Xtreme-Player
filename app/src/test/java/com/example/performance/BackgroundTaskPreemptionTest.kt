@@ -51,6 +51,29 @@ class BackgroundTaskPreemptionTest {
         }
     }
 
+    @Test fun playbackResolutionParksOptionalCpuWithoutParkingItself() = runBlocking {
+        val resolving = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val resolution = async(AppDispatchers.Io) {
+            coordinator.optionalProcessing {
+                DiscoveryRequestCoordinator.playback {
+                    withContext(AppDispatchers.CpuBounded) { resolving.complete(Unit) }
+                    release.await()
+                    withContext(AppDispatchers.CpuBounded) { "playable" }
+                }
+            }
+        }
+        withTimeout(3_000) { resolving.await() }
+        val optional = async(AppDispatchers.Io) { coordinator.optionalProcessing {
+            withContext(AppDispatchers.CpuBounded) { "prepared" }
+        } }
+        try {
+            delay(100); assertFalse(optional.isCompleted)
+            release.complete(Unit)
+            assertEquals("playable", withTimeout(3_000) { resolution.await() })
+            assertEquals("prepared", withTimeout(3_000) { optional.await() })
+        } finally { release.complete(Unit); resolution.cancelAndJoin(); optional.cancelAndJoin() }
+    }
+
     @Test fun aDockTouchParksOptionalCpuButPreservesProgressAndCriticalWork() = runBlocking {
         val entered = CompletableDeferred<Unit>()
         val release = CompletableDeferred<Unit>()

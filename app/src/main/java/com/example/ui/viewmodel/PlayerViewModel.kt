@@ -786,10 +786,6 @@ class PlayerViewModel(
         viewModelScope.launch(AppDispatchers.Io) {
             val initial = repository.getInitialCatalog(_userProfile.value, priority)
             _catalogTracks.value = initial
-            playbackManager.setCandidatePool(initial)
-
-            // Home owns optional discovery refreshes. Playback can use this real local
-            // pool immediately, without launching a competing discovery pass at startup.
         }
     }
 
@@ -818,7 +814,7 @@ class PlayerViewModel(
     }
 
     fun toggleAutoplay() {
-        playbackManager.toggleAutoplay(_catalogTracks.value)
+        playbackManager.toggleAutoplay()
     }
 
     fun addToQueue(track: MusicTrack) {
@@ -917,7 +913,7 @@ class PlayerViewModel(
                 val cached = com.example.data.cache.HomeCardCache(application).read(requestKey)
                 val cachedSeed = cached?.serverShelves?.firstNotNullOfOrNull { shelf -> shelf.tracks.firstOrNull() }
                 val pivot = seedTrack ?: state.currentTrack ?: recentlyPlayed.value.firstOrNull() ?: cachedSeed
-                    ?: com.example.data.remote.YouTubeMusicApiService.getHomeRecommendations(com.example.data.cache.HomeCacheIdentity.region(_userProfile.value))
+                    ?: com.example.data.remote.YouTubeMusicApiService.getHomeRecommendations(com.example.data.cache.HomeCacheIdentity.region(_userProfile.value), essential = true)
                         .shelves.firstNotNullOfOrNull { shelf -> shelf.tracks.firstOrNull() }
                 if (pivot == null) {
                     withContext(Dispatchers.Main.immediate) { playbackManager.reportPlaybackLookupFailure("No music is available for radio. Please try again.") }

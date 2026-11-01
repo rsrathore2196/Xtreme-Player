@@ -109,10 +109,6 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
             BackgroundWorkCoordinator.startupTask(com.example.performance.StartupTask.SETTINGS,
                 com.example.performance.StartupStatus.READY)
             _startupReady.value = true
-            startupSettings?.profile?.let { profile ->
-                com.example.data.cache.HomeCardCache.preloadAsync(this@XtremeMusicApp,
-                    com.example.data.cache.HomeCacheIdentity.home(profile), previewOnly = true)
-            }
         }
 
         startupScope.launch { com.example.playback.SleepTimerManager.preload(this@XtremeMusicApp) }

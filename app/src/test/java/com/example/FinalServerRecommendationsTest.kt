@@ -22,27 +22,27 @@ class FinalServerRecommendationsTest {
         var calls = 0
         val wanted = YouTubeHomeParser.ParsedHomeFeed(emptyList(), "cursor")
         val response = YouTubeMusicApiService.homeWithFallback({ calls++; throw java.io.IOException("native unavailable") },
-            { calls++; wanted }, firstPage = true)
+            { calls++; wanted })
         assertEquals(wanted, response); assertEquals(2, calls)
     }
     @Test fun cancellationNeverStartsAnHttpFallback() = runBlocking {
         var fallback = false
         try {
             YouTubeMusicApiService.homeWithFallback({ throw CancellationException("user switched context") },
-                { fallback = true; error("must not run") }, firstPage = true)
+                { fallback = true; error("must not run") })
             fail("Cancellation must propagate")
         } catch (_: CancellationException) { }
         assertFalse(fallback)
     }
     @Test fun successfulEmptyContinuationIsDifferentFromAFailedRequest() = runBlocking {
         val empty = YouTubeHomeParser.ParsedHomeFeed(emptyList(), null)
-        assertEquals(empty, YouTubeMusicApiService.homeWithFallback({ empty }, { error("No extra request") }, firstPage = false))
-        val failed = YouTubeMusicApiService.homeWithFallback({ throw java.io.IOException() }, { throw java.io.IOException() }, firstPage = false)
+        assertEquals(empty, YouTubeMusicApiService.homeWithFallback({ empty }, { error("No extra request") }))
+        val failed = YouTubeMusicApiService.homeWithFallback({ throw java.io.IOException() }, { throw java.io.IOException() })
         assertTrue(failed.isError); assertFalse(empty.isError)
     }
     @Test fun validNativeDataDoesNotTriggerTheFallback() = runBlocking {
         val wanted = YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.shelf("Native", 1))))
-        assertEquals(wanted, YouTubeMusicApiService.homeWithFallback({ wanted }, { error("Unnecessary request") }, true))
+        assertEquals(wanted, YouTubeMusicApiService.homeWithFallback({ wanted }, { error("Unnecessary request") }))
     }
     @Test fun nonYoutubeSeedsRejectTitleOnlyWrongArtistAndAlternateRecordings() {
         val seed = song("online_selected")

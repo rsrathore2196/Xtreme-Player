@@ -42,6 +42,11 @@ class NativeDiscoverySessionTest {
             locale = YouTubeLocale(gl = "US", hl = "en")
         }
         val before = playback.sessionSnapshot()
+        val identity = YouTubeAudioStreamService.accountIdentity(before)
+        assertNotEquals("anonymous", identity)
+        assertFalse(identity.contains("fixture"))
+        assertEquals("anonymous", YouTubeAudioStreamService.accountIdentity(null))
+        assertNotEquals(identity, YouTubeAudioStreamService.accountIdentity(before.copy(dataSyncId = "another-account")))
         val account = playback.createIsolatedSession(true).apply { locale = YouTubeLocale(gl = "IN", hl = "en") }
         val anonymous = playback.createIsolatedSession(false).apply {
             locale = YouTubeLocale(gl = "GB", hl = "en"); regionOverrideActive = true

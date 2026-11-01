@@ -16,7 +16,8 @@ object YouTubeHomeParser {
         val shelves: List<ServerHomeShelf>,
         val continuationToken: String?,
         val isError: Boolean = false,
-        val errorMessage: String? = null
+        val errorMessage: String? = null,
+        val accountIdentity: String? = null
     )
 
     private fun string(value: JSONObject, key: String): String =
@@ -174,6 +175,7 @@ object YouTubeHomeParser {
             val actions = rootJson.optJSONArray(key) ?: continue
             for (index in 0 until actions.length()) actions.optJSONObject(index)?.optJSONObject("appendContinuationItemsAction")?.let(containers::add)
         }
+        if (containers.isEmpty()) throw IOException("Unsupported Home response")
         val rawSections = JSONArray()
         for (container in containers) {
             extractContinuation(container)?.let { sectionContinuation = it }

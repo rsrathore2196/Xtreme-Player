@@ -275,9 +275,9 @@ class MusicRepository private constructor(
             limit = (limit + excludedIds.size + 4).coerceAtLeast(20),
             countryCode = region
         )
-        recommendations.filter { it.id !in excludedIds && it.id != seed.id }
+        withContext(AppDispatchers.CpuBounded) { recommendations.filter { it.id !in excludedIds && it.id != seed.id }
             .distinctBy { it.id }
-            .take(limit)
+            .take(limit) }
     }
 
     suspend fun syncOnlineCatalog(profile: UserProfile? = null): List<MusicTrack> = getInitialCatalog(profile)

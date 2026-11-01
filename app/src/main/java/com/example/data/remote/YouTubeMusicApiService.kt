@@ -380,49 +380,52 @@ object YouTubeMusicApiService {
     fun hasAuthenticatedAccount(): Boolean = YouTubeAudioStreamService.discoveryAccountSession() != null
 
     /** Opaque cache partition from an actual SDK account; no credentials are persisted. */
-    fun discoveryAccountIdentity(): String {
-        val account = YouTubeAudioStreamService.discoveryAccountSession() ?: return "anonymous"
-        val identity = "${account.authUser}|${account.dataSyncId.orEmpty()}|${account.sapisid.orEmpty()}"
-        return java.security.MessageDigest.getInstance("SHA-256").digest(identity.toByteArray())
-            .joinToString("") { "%02x".format(it) }
-    }
+    fun discoveryAccountIdentity(): String = YouTubeAudioStreamService.accountIdentity(YouTubeAudioStreamService.discoveryAccountSession())
 
     internal suspend fun homeWithFallback(primary: suspend () -> YouTubeHomeParser.ParsedHomeFeed,
-        fallback: suspend () -> YouTubeHomeParser.ParsedHomeFeed, firstPage: Boolean): YouTubeHomeParser.ParsedHomeFeed {
+        fallback: suspend () -> YouTubeHomeParser.ParsedHomeFeed): YouTubeHomeParser.ParsedHomeFeed {
         val native = try { primary() } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { null }
-        if (native != null && !native.isError && (native.shelves.isNotEmpty() || !firstPage)) return native
+        if (native != null && !native.isError) return native
         return try { fallback() } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true,
                 errorMessage = "Music is temporarily unavailable. Please retry.") }
     }
 
-    /** A bounded native request and, only on failure/empty initial feed, one HTTP fallback. */
+    /** Successful empty feeds are authoritative; ordinary failures get one anonymous HTTP fallback. */
     suspend fun getHomeRecommendations(countryCode: String, continuation: String? = null,
-        languageCode: String = "en", includeAccount: Boolean = hasAuthenticatedAccount()
-    ): YouTubeHomeParser.ParsedHomeFeed = withContext(Dispatchers.IO) {
+        languageCode: String = "en", includeAccount: Boolean = hasAuthenticatedAccount(), essential: Boolean = false
+    ): YouTubeHomeParser.ParsedHomeFeed = withContext(AppDispatchers.Io) {
         val region = countryCode.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase(java.util.Locale.ROOT) ?: "US"
         homeWithFallback(primary = {
-            val body = kotlinx.coroutines.withTimeoutOrNull(4_000L) {
-                YouTubeAudioStreamService.discoveryResponse("browse", "FEmusic_home", region,
-                    continuation = continuation, languageCode = languageCode, includeAccount = includeAccount)
-            } ?: throw java.io.IOException("Home request timed out")
-            withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body), continuation) }
+            com.example.recommendation.DiscoveryRequestCoordinator.network(essential = essential) {
+                val body = kotlinx.coroutines.withTimeoutOrNull(4_000L) {
+                    YouTubeAudioStreamService.discoveryResponseWithIdentity("browse", "FEmusic_home", region,
+                        continuation = continuation, languageCode = languageCode, includeAccount = includeAccount)
+                } ?: throw java.io.IOException("Home request timed out")
+                withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body.body), continuation)
+                    .copy(accountIdentity = body.accountIdentity) }
+            }
         }, fallback = {
-            val client = YouTubeClient.WEB_REMIX
-            val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
-                .put("clientName", client.clientName).put("clientVersion", client.clientVersion)
-                .put("hl", languageCode).put("gl", region)))
-            if (continuation == null) payload.put("browseId", "FEmusic_home") else payload.put("continuation", continuation)
-            val request = Request.Builder().url("https://music.youtube.com/youtubei/v1/browse")
-                .post(payload.toString().toRequestBody(jsonMediaType))
-                .header("User-Agent", client.userAgent).header("Referer", "https://music.youtube.com/")
-                .header("Origin", "https://music.youtube.com").header("X-YouTube-Client-Name", client.clientId)
-                .header("X-YouTube-Client-Version", client.clientVersion).build()
-            val body = kotlinx.coroutines.withTimeoutOrNull(4_000L) { httpClient.catalogRequest(request) }
-                ?: throw java.io.IOException("Home fallback timed out")
-            withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body), continuation) }
-        }, firstPage = continuation == null)
+            // An account-scoped cursor cannot be appended to an anonymous feed.
+            if (continuation != null && includeAccount) throw java.io.IOException("Home continuation requires its original session")
+            com.example.recommendation.DiscoveryRequestCoordinator.network(essential = essential) {
+                val client = YouTubeClient.WEB_REMIX
+                val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
+                    .put("clientName", client.clientName).put("clientVersion", client.clientVersion)
+                    .put("hl", languageCode).put("gl", region)))
+                if (continuation == null) payload.put("browseId", "FEmusic_home") else payload.put("continuation", continuation)
+                val request = Request.Builder().url("https://music.youtube.com/youtubei/v1/browse")
+                    .post(payload.toString().toRequestBody(jsonMediaType))
+                    .header("User-Agent", client.userAgent).header("Referer", "https://music.youtube.com/")
+                    .header("Origin", "https://music.youtube.com").header("X-YouTube-Client-Name", client.clientId)
+                    .header("X-YouTube-Client-Version", client.clientVersion).build()
+                val body = kotlinx.coroutines.withTimeoutOrNull(4_000L) { httpClient.catalogRequest(request) }
+                    ?: throw java.io.IOException("Home fallback timed out")
+                withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body), continuation)
+                    .copy(accountIdentity = "anonymous") }
+            }
+        })
     }
 
     /**
@@ -433,9 +436,22 @@ object YouTubeMusicApiService {
     suspend fun getProfileShelf(countryCode: String, languages: List<String>, rotationOffset: Int = 0): com.example.data.model.ServerHomeShelf? =
         getProfileShelfResult(countryCode, languages, rotationOffset).shelf
 
-    suspend fun getProfileShelfResult(countryCode: String, languages: List<String>, rotationOffset: Int = 0): ProfileShelfResult = withContext(Dispatchers.IO) {
+    suspend fun getProfileShelfResult(countryCode: String, languages: List<String>, rotationOffset: Int = 0,
+        forceRefresh: Boolean = false): ProfileShelfResult = withContext(AppDispatchers.Io) {
+        profileShelfResult(countryCode, languages, rotationOffset) { query, language, region ->
+            // One transport per language. The general search helper's native+HTTP
+            // fallback can otherwise multiply three optional queries into many requests.
+            com.example.recommendation.DiscoveryRequestCoordinator.network {
+                searchSongsPage(query, useInnerTubeX = false, countryCode = region, languageCode = language,
+                    forceRefresh = forceRefresh)
+            }
+        }
+    }
+
+    internal suspend fun profileShelfResult(countryCode: String, languages: List<String>, rotationOffset: Int = 0,
+        query: suspend (String, String, String) -> SongSearchPage): ProfileShelfResult {
         val region = countryCode.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase(java.util.Locale.ROOT) ?: "US"
-        val cleaned = languages.map { it.trim() }.filter { it.isNotBlank() }
+        val cleaned = languages.map { it.trim() }.filter { it.isNotBlank() }.distinctBy { it.lowercase(java.util.Locale.ROOT) }
         
         // Rotating window for >3 selected languages across refreshes
         val selectedLanguages = if (cleaned.isEmpty()) emptyList() else if (cleaned.size <= 3) cleaned else {
@@ -450,40 +466,41 @@ object YouTubeMusicApiService {
         var hadResponse = false
         for ((q, langCode) in queries) {
             val page = try {
-                searchSongsPage(q, useInnerTubeX = true, countryCode = region, languageCode = langCode)
+                com.example.performance.BackgroundWorkCoordinator.awaitOptionalBatch()
+                kotlinx.coroutines.withTimeoutOrNull(4_000L) { query(q, langCode, region) }
             } catch (e: CancellationException) {
                 throw e
-            } catch (_: Exception) {
-                try { searchSongsPage(q, useInnerTubeX = false, countryCode = region, languageCode = langCode) } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
-            }
+            } catch (_: Exception) { null }
             if (page != null) hadResponse = true
             if (page != null && page.tracks.isNotEmpty()) {
                 results.add(page.tracks)
             }
         }
-        if (results.isEmpty()) return@withContext ProfileShelfResult(null, isError = !hadResponse)
-        val interleaved = mutableListOf<MusicTrack>()
-        val seen = mutableSetOf<String>()
-        val maxLen = results.maxOf { it.size }
-        for (i in 0 until maxLen) {
-            for (list in results) {
-                if (i < list.size) {
-                    val t = list[i]
-                    if (seen.add(t.id)) {
-                        interleaved.add(t)
-                        if (interleaved.size >= 15) break
+        if (results.isEmpty()) return ProfileShelfResult(null, isError = !hadResponse)
+        return withContext(AppDispatchers.CpuBounded) {
+            val interleaved = mutableListOf<MusicTrack>()
+            val seen = mutableSetOf<String>()
+            val maxLen = results.maxOf { it.size }
+            for (i in 0 until maxLen) {
+                for (list in results) {
+                    if (i < list.size) {
+                        val t = list[i]
+                        if (seen.add(t.id)) {
+                            interleaved.add(t)
+                            if (interleaved.size >= 15) break
+                        }
                     }
                 }
+                if (interleaved.size >= 15) break
             }
-            if (interleaved.size >= 15) break
+            if (interleaved.isEmpty()) return@withContext ProfileShelfResult(null)
+            ProfileShelfResult(com.example.data.model.ServerHomeShelf(
+                id = "profile_shelf_music_for_you",
+                title = "Music for You",
+                subtitle = "Based on your music preferences",
+                tracks = interleaved
+            ))
         }
-        if (interleaved.isEmpty()) return@withContext ProfileShelfResult(null)
-        ProfileShelfResult(com.example.data.model.ServerHomeShelf(
-            id = "profile_shelf_music_for_you",
-            title = "Music for You",
-            subtitle = "Based on your music preferences",
-            tracks = interleaved
-        ))
     }
 
     /**

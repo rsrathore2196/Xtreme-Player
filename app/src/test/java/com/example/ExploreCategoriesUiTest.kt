@@ -133,10 +133,11 @@ class ExploreCategoriesUiTest {
         val hindustani = ExploreCategory("Hindustani Classical", "cat_hindustani", null, ExploreCategoryKind.GENRE)
         val indie = ExploreCategory("Indie & Alternative", "cat_indie", null, ExploreCategoryKind.GENRE)
         val reggae = ExploreCategory("Reggae & Caribbean", "cat_reggae", null, ExploreCategoryKind.GENRE)
+        val rnbSoul = ExploreCategory("R&B & Soul", "cat_rnb_soul", null, ExploreCategoryKind.GENRE)
         val danceElectronic = ExploreCategory("Dance & Electronic", "cat_dance", null, ExploreCategoryKind.GENRE)
         val pop = ExploreCategory("Pop Hits", "cat_pop", null, ExploreCategoryKind.GENRE)
 
-        val categories = listOf(carnatic, country, hindustani, indie, reggae, danceElectronic, pop)
+        val categories = listOf(carnatic, country, hindustani, indie, reggae, rnbSoul, danceElectronic, pop)
 
         content {
             SearchScreen(SearchUiState(exploreCategories = categories), onQueryChange = {}, onSelectGenre = {},
@@ -150,12 +151,13 @@ class ExploreCategoriesUiTest {
         compose.onNodeWithTag("filter_pill_albums").assertExists()
         compose.onNodeWithTag("filter_pill_playlists").assertDoesNotExist()
 
-        // Excluded 5 genres must not exist in Explore Genres
+        // Excluded genres must not exist in Explore Genres.
         compose.onNodeWithText("Carnatic Classical").assertDoesNotExist()
         compose.onNodeWithText("Country & Americana").assertDoesNotExist()
         compose.onNodeWithText("Hindustani Classical").assertDoesNotExist()
         compose.onNodeWithText("Indie & Alternative").assertDoesNotExist()
         compose.onNodeWithText("Reggae & Caribbean").assertDoesNotExist()
+        compose.onNodeWithText("R&B & Soul").assertDoesNotExist()
 
         // Dance & Electronic must be renamed to Dance
         compose.onNodeWithText("Dance & Electronic").assertDoesNotExist()

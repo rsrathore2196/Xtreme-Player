@@ -37,16 +37,20 @@ data class ActualPlayStamp(val id: Long, val trackId: String, val timestamp: Lon
     val completed: Boolean, val skipped: Boolean, val liked: Boolean, val metadata: String)
 
 /** Count and complete recent events come from one SQLite read, including an empty database. */
-data class ActualPlaySnapshotRow(val total: Int, @Embedded val event: ListeningEventEntity?, val inputRevision: String? = null)
+data class ActualPlaySnapshotRow(val total: Int, @Embedded val event: ListeningEventEntity?, val inputRevision: String? = null,
+    val artistInputRevision: String? = null)
 
 data class ActualTrackPlayCount(val trackId: String, val artistName: String, val playCount: Int, val lastPlayed: Long)
 
 @Dao
 interface ListeningEventDao {
     /** One service-owned occurrence counts once; playback milestones and feedback rows do not add plays. */
-    @Query("""SELECT trackId, artistName, COUNT(DISTINCT CASE WHEN sessionId != '' THEN 'session:' || sessionId ELSE 'event:' || id END) AS playCount,
-        MAX(timestamp) AS lastPlayed FROM listening_events
-        WHERE eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0 GROUP BY trackId""")
+    @Query("""SELECT totals.trackId, COALESCE((SELECT latest.artistName FROM listening_events latest
+        WHERE latest.trackId = totals.trackId AND latest.eventType = 'ACTUAL_PLAY' AND latest.playedDurationMs > 0
+        ORDER BY latest.timestamp DESC, latest.id DESC LIMIT 1), '') AS artistName, totals.playCount, totals.lastPlayed
+        FROM (SELECT trackId, COUNT(DISTINCT CASE WHEN sessionId != '' THEN 'session:' || sessionId ELSE 'event:' || id END) AS playCount,
+        MAX(timestamp) AS lastPlayed FROM listening_events WHERE eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0 GROUP BY trackId) totals
+        ORDER BY totals.lastPlayed DESC, totals.trackId""")
     suspend fun getActualTrackPlayCounts(): List<ActualTrackPlayCount>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
@@ -71,7 +75,8 @@ interface ListeningEventDao {
     fun observeActualPlayStamps(): Flow<List<ActualPlayStamp>>
 
     @Query("""
-        SELECT totals.total, recent.*, (SELECT epoch || ':' || generation FROM home_input_revision WHERE id = 1) AS inputRevision FROM
+        SELECT totals.total, recent.*, (SELECT epoch || ':' || generation FROM home_input_revision WHERE id = 1) AS inputRevision,
+        (SELECT 'artists:' || epoch || ':' || generation FROM home_input_revision WHERE id = 2) AS artistInputRevision FROM
         (SELECT COUNT(*) AS total FROM listening_events WHERE eventType = 'ACTUAL_PLAY') AS totals
         LEFT JOIN (SELECT * FROM listening_events WHERE eventType = 'ACTUAL_PLAY'
             ORDER BY timestamp DESC, id DESC LIMIT 300) AS recent ON 1 = 1
@@ -81,6 +86,9 @@ interface ListeningEventDao {
 
     @Query("SELECT epoch || ':' || generation FROM home_input_revision WHERE id = 1")
     suspend fun getHomeInputRevision(): String?
+
+    @Query("SELECT 'artists:' || epoch || ':' || generation FROM home_input_revision WHERE id = 2")
+    suspend fun getArtistInputRevision(): String?
 
     // A scalar invalidation signal preserves older history when rows are deleted or restored.
     @Query("SELECT COUNT(*) FROM listening_events WHERE eventType = 'ACTUAL_PLAY'")

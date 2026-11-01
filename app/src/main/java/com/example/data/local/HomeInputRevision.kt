@@ -55,5 +55,42 @@ internal object HomeInputRevisionTriggers {
         trigger("home_track_delete", "AFTER DELETE", "tracks",
             "(OLD.isLiked = 1 OR EXISTS (SELECT 1 FROM listening_events WHERE trackId = OLD.id AND eventType = 'ACTUAL_PLAY')) " +
                 "AND NOT EXISTS (SELECT 1 FROM home_input_revision WHERE replacingTrack = OLD.id)")
+
+        // Row 2 shares this internal table/schema, but excludes duration-only
+        // checkpoints and feedback. Row 1 remains the complete history revision.
+        val artistSeed = "INSERT INTO home_input_revision (id, epoch, generation) SELECT 2, hex(randomblob(16)), 0 WHERE NOT EXISTS (SELECT 1 FROM home_input_revision WHERE id = 2);"
+        db.execSQL(artistSeed)
+        val artistAdvance = "$artistSeed UPDATE home_input_revision SET generation = generation + 1 WHERE id = 2;"
+        val artistEventFields = listOf("trackId", "artistId", "artistName", "timestamp", "sessionId", "eventType")
+        val sameArtistEvent = artistEventFields.joinToString(" AND ") { "e.$it IS NEW.$it" } +
+            " AND (e.playedDurationMs > 0) IS (NEW.playedDurationMs > 0)"
+        val actualNew = "NEW.eventType = 'ACTUAL_PLAY' AND NEW.playedDurationMs > 0"
+        val actualOld = "OLD.eventType = 'ACTUAL_PLAY' AND OLD.playedDurationMs > 0"
+        val relevantArtistEvent = "($actualNew) OR EXISTS (SELECT 1 FROM listening_events WHERE id = NEW.id AND eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0)"
+        trigger("home_artist_history_insert", "BEFORE INSERT", "listening_events", relevantArtistEvent,
+            "$artistSeed UPDATE home_input_revision SET generation = generation + 1 WHERE id = 2 AND NOT EXISTS " +
+                "(SELECT 1 FROM listening_events e WHERE e.id = NEW.id AND $sameArtistEvent); " +
+                "UPDATE home_input_revision SET replacingEvent = NEW.id WHERE id = 2;")
+        trigger("home_artist_history_insert_end", "AFTER INSERT", "listening_events",
+            "($actualNew) OR EXISTS (SELECT 1 FROM home_input_revision WHERE id = 2 AND replacingEvent = NEW.id)",
+            "UPDATE home_input_revision SET replacingEvent = NULL WHERE id = 2;")
+        trigger("home_artist_history_update", "AFTER UPDATE", "listening_events",
+            "(($actualOld) OR ($actualNew)) AND (${artistEventFields.joinToString(" OR ") { "OLD.$it IS NOT NEW.$it" }} " +
+                "OR (OLD.playedDurationMs > 0) IS NOT (NEW.playedDurationMs > 0))", artistAdvance)
+        trigger("home_artist_history_delete", "AFTER DELETE", "listening_events",
+            "($actualOld) AND NOT EXISTS (SELECT 1 FROM home_input_revision WHERE id = 2 AND replacingEvent = OLD.id)", artistAdvance)
+        val artistTrackRelevant = "EXISTS (SELECT 1 FROM listening_events WHERE trackId = NEW.id AND eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0)"
+        trigger("home_artist_track_insert", "BEFORE INSERT", "tracks", artistTrackRelevant,
+            "$artistSeed UPDATE home_input_revision SET generation = generation + 1 WHERE id = 2 AND NOT EXISTS " +
+                "(SELECT 1 FROM tracks t WHERE t.id = NEW.id AND $same); " +
+                "UPDATE home_input_revision SET replacingTrack = NEW.id WHERE id = 2;")
+        trigger("home_artist_track_insert_end", "AFTER INSERT", "tracks",
+            "EXISTS (SELECT 1 FROM home_input_revision WHERE id = 2 AND replacingTrack = NEW.id)",
+            "UPDATE home_input_revision SET replacingTrack = NULL WHERE id = 2;")
+        trigger("home_artist_track_update", "AFTER UPDATE", "tracks",
+            "$artistTrackRelevant AND (${fields.joinToString(" OR ") { "OLD.$it IS NOT NEW.$it" }})", artistAdvance)
+        trigger("home_artist_track_delete", "AFTER DELETE", "tracks",
+            "EXISTS (SELECT 1 FROM listening_events WHERE trackId = OLD.id AND eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0) " +
+                "AND NOT EXISTS (SELECT 1 FROM home_input_revision WHERE id = 2 AND replacingTrack = OLD.id)", artistAdvance)
     }
 }

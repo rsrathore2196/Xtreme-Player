@@ -207,24 +207,15 @@ class PlaybackManager(
     }
 
     inner class SessionMemoryTracker {
-        private val sessionTracks = java.util.concurrent.CopyOnWriteArrayList<MusicTrack>()
         private val sessionPlayedIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-        fun getSessionTracks(): List<MusicTrack> = sessionTracks.toList()
-        fun recordTrackPlayed(track: MusicTrack) {
-            if (sessionPlayedIds.add(track.id)) {
-                sessionTracks.add(track)
-            }
-        }
+        val size: Int get() = sessionPlayedIds.size
+        fun getSessionTrackIds(): Set<String> = sessionPlayedIds.toSet()
+        fun recordTrackPlayed(track: MusicTrack) { sessionPlayedIds.add(track.id) }
         fun clear() {
-            sessionTracks.clear()
             sessionPlayedIds.clear()
         }
     }
     val recommendationEngine = SessionMemoryTracker()
-    @Volatile private var candidateCatalogPool: List<MusicTrack> = emptyList()
-    private val candidateDispatcher = AppDispatchers.CpuBounded
-    private val candidateUpdates = kotlinx.coroutines.sync.Mutex()
-    private val candidateGeneration = java.util.concurrent.atomic.AtomicLong()
     private var recommendationFetchJob: Job? = null
     private var queueGeneration = 0L
     private var advanceWhenQueueReady = false
@@ -1125,7 +1116,7 @@ class PlaybackManager(
                         recommendationEngine.recordTrackPlayed(matchedTrack)
 
                         _uiState.update {
-                            it.copy(sessionMemoryCount = recommendationEngine.getSessionTracks().size)
+                            it.copy(sessionMemoryCount = recommendationEngine.size)
                         }
 
                         // One append-only refill owns both the player queue and its UI snapshot.
@@ -1763,7 +1754,6 @@ class PlaybackManager(
         activeSearchPlayJob?.cancel()
         playResolutionJob?.cancel()
         cancelQueueRefill()
-        rememberQueueCandidates(queue)
         val generation = beginSelection(track)
         val startupTrace = selectionStartupTrace
         pendingPolicyRestart = { playTrack(track, queue, isExplicitPlaylist, isInfiniteRadio, collectionLoader, preserveQueue) }
@@ -1890,7 +1880,7 @@ class PlaybackManager(
                         qualityBadge = mediaItems[0].mediaMetadata.extras?.getString("qualityBadge") ?: track.qualityBadge,
                         isFavorite = track.isLiked,
                         errorMessage = null,
-                        sessionMemoryCount = recommendationEngine.getSessionTracks().size
+                        sessionMemoryCount = recommendationEngine.size
                     )
                 }
 
@@ -1919,7 +1909,7 @@ class PlaybackManager(
                         isFavorite = track.isLiked,
                         errorMessage = null,
                         nextRecommendedTrack = nextInQueue,
-                        sessionMemoryCount = recommendationEngine.getSessionTracks().size
+                        sessionMemoryCount = recommendationEngine.size
                     )
                 }
             }
@@ -1931,19 +1921,6 @@ class PlaybackManager(
         } catch (e: Exception) {
             Log.e(TAG, "Error playing track: ${e.message}", e)
             showPlaybackFailure("Failed to play track: ${e.message}")
-        }
-    }
-
-    private fun rememberQueueCandidates(tracks: List<MusicTrack>) {
-        val generation = candidateGeneration.get()
-        scope.launch(candidateDispatcher) {
-            candidateUpdates.lock()
-            try {
-                if (generation != candidateGeneration.get()) return@launch
-                val merged = (candidateCatalogPool + tracks).distinctBy { it.id }.takeLast(600)
-                ensureActive()
-                if (generation == candidateGeneration.get()) candidateCatalogPool = merged
-            } finally { candidateUpdates.unlock() }
         }
     }
 
@@ -2005,13 +1982,17 @@ class PlaybackManager(
                 val seed = _uiState.value.currentTrack ?: track
                 val nativeSnapshot = queueSnapshot()
                 val radioSnapshot = pendingCollectionRadio
+                val sessionId = currentSessionId
                 val sessionHistory = try {
-                    listeningEventDao.getSessionPlayedTrackIds(currentSessionId).toSet()
-                } catch (_: Exception) {
-                    emptySet()
+                    withContext(AppDispatchers.Database) { listeningEventDao.getSessionPlayedTrackIds(sessionId) }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) {
+                    emptyList()
                 }
-                val queuedIds = (nativeSnapshot + radioSnapshot).mapTo(mutableSetOf()) { it.id } +
-                    recommendationEngine.getSessionTracks().map { it.id } + sessionHistory + setOf(seed.id)
+                val queuedIds = withContext(AppDispatchers.CpuBounded) {
+                    (nativeSnapshot + radioSnapshot).mapTo(mutableSetOf()) { it.id }
+                        .apply { addAll(recommendationEngine.getSessionTrackIds()); addAll(sessionHistory); add(seed.id) }
+                }
 
                 val needed = (upcomingQueueTarget - remaining).coerceAtLeast(1)
                 val radioTracks = repository?.fetchYouTubeRadio(
@@ -2117,19 +2098,6 @@ class PlaybackManager(
             _uiState.value.isInfiniteRadio, collectionContinuation, preserveQueue = true)
     }
 
-    fun setCandidatePool(pool: List<MusicTrack>) {
-        val generation = candidateGeneration.incrementAndGet()
-        scope.launch(candidateDispatcher) {
-            candidateUpdates.lock()
-            try {
-                if (generation != candidateGeneration.get() || candidateCatalogPool == pool) return@launch
-                val snapshot = pool.toList()
-                ensureActive()
-                if (generation == candidateGeneration.get()) candidateCatalogPool = snapshot
-            } finally { candidateUpdates.unlock() }
-        }
-    }
-
     fun setAutoplayEnabled(enabled: Boolean) {
         _uiState.update { it.copy(isAutoplayEnabled = enabled, isInfiniteRadio = enabled && it.isInfiniteRadio) }
         if (enabled) {
@@ -2142,8 +2110,7 @@ class PlaybackManager(
         Log.i(TAG, "setAutoplayEnabled: $enabled")
     }
 
-    fun toggleAutoplay(pool: List<MusicTrack> = emptyList()) {
-        if (pool.isNotEmpty()) rememberQueueCandidates(pool)
+    fun toggleAutoplay() {
         setAutoplayEnabled(!_uiState.value.isAutoplayEnabled)
     }
 
@@ -2479,7 +2446,6 @@ class PlaybackManager(
                     queueRevision++
                     throw e
                 }
-                rememberQueueCandidates(listOf(resolved))
                 publishQueueState()
             } catch (e: CancellationException) {
                 throw e
@@ -2542,8 +2508,6 @@ class PlaybackManager(
             controller?.release()
             controllerFuture?.let { MediaController.releaseFuture(it) }
             controller = null
-            candidateGeneration.incrementAndGet()
-            candidateCatalogPool = emptyList()
             Log.i(TAG, "PlaybackManager released successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Error releasing resources: ${e.message}", e)
