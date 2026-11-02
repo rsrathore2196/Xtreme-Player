@@ -141,7 +141,7 @@
 
 ### Prerequisites
 - Android Studio Ladybug (2024.2.1 or newer)
-- Android SDK 26+ (Android 8.0 Oreo or higher)
+- Android SDK Platform 37.0 with the SDK licenses accepted
 - JDK 17+
 
 ---
@@ -172,5 +172,20 @@ git clone https://github.com/rsrathore2196/Xtreme-Player.git
 cd Xtreme-Player
 
 # Build the debug APK
-./gradlew assembleDebug
+./gradlew :app:assembleDebug
 ```
+
+Run the build from the repository root, where `settings.gradle.kts`,
+`build.gradle.kts`, `gradlew`, `gradle/` and `app/` are together. The included
+wrapper selects Gradle 9.3.1; on Windows use `gradlew.bat`.
+
+If AI Studio reports `Directory '/app/applet' does not contain a Gradle build`,
+its workspace is missing these root files or contains the project in a nested
+folder. Import the **complete repository contents** into the workspace root,
+not just `app/src/`, or run the wrapper from the actual repository directory.
+Do not run `gradle init` to repair an existing Android project.
+
+Debug builds use Android's automatically generated debug keystore. An existing
+root `debug.keystore` is still used when present so local debug signatures are
+preserved. Release signing still requires your own upload keystore and signing
+credentials; no private signing keys are included in the repository.
