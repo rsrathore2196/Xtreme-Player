@@ -100,6 +100,26 @@ class InitialHomePreparationTest {
         HomeCardCache(app).save(SavedHomeCards(HomeCacheIdentity.home(preferences), refreshedAt = System.currentTimeMillis(),
             serverShelves = listOf(shelf("cached")), serverFetchSucceeded = true))
     }
+    @Test fun requestStatusAndCompletionReuseTheUnchangedNativeProjection() = runBlocking<Unit> {
+        fun projections() = org.robolectric.shadows.ShadowLog.getLogsForTag("NativeHome").count { it.msg.startsWith("project shelves=") }
+        val before = projections()
+        val calls = AtomicInteger()
+        val vm = viewModel({ _, token ->
+            assertNull(token); calls.incrementAndGet()
+            YouTubeHomeParser.ParsedHomeFeed((1..4).map { shelf("native-$it") }, null)
+        })
+        vm.setHomeVisible(true)
+        withTimeout(5_000) {
+            vm.serverShelves.first { it.size == 4 }
+            vm.refreshHome(false).join()
+            @Suppress("UNCHECKED_CAST")
+            val jobs = vm.javaClass.getDeclaredField("sourceJobs").apply { isAccessible = true }.get(vm) as Map<String, Job>
+            while (jobs.values.any { it.isActive }) delay(10)
+        }
+        assertEquals(1, calls.get())
+        assertEquals("Loading/finally publications must reuse the prepared feed", 1, projections() - before)
+        assertEquals(3, vm.revealedShelfCount.value)
+    }
     @Test fun returningUserAndLanguageOnlyColdStartupReuseFreshHome() = runBlocking {
         cached(); val calls = AtomicInteger()
         val vm = viewModel({ _, _ -> calls.incrementAndGet(); page("new") })

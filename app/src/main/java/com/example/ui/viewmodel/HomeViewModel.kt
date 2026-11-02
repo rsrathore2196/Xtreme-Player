@@ -134,6 +134,11 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private val profileRequests = MutableStateFlow(0L)
     private var profileForcePending = false
     private val sources = linkedMapOf<String, HomeBrowseSnapshot>()
+    // Request-status changes reuse the projection of these immutable source lists.
+    private var projectedKey: String? = null
+    private var projectedGeneration = -1L
+    private var projectedInputs: List<List<ServerHomeShelf>>? = null
+    private var projectedShelves: List<ServerHomeShelf> = emptyList()
     private val sourceJobs = mutableMapOf<String, Job>()
     private val sourceUrgency = mutableMapOf<String, MutableStateFlow<Boolean>>()
     // Two primary turns per cycle keep native Home preferred without starving supplements.
@@ -280,6 +285,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     emitAll(database.listeningEventDao().observeActualPlaySnapshot().distinctUntilChanged(::sameLocalHomeSnapshot))
                 }.catch { error ->
                     if (error is CancellationException) throw error
+                    android.util.Log.w("HomeFeed", "Listening snapshot unavailable: ${error.javaClass.simpleName}")
                     historyUnavailable = true
                     _userMode.value = HomeUserMode.UNAVAILABLE
                     _artistStatus.value = ShelfLoadStatus.ERROR
@@ -290,7 +296,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                         val representativeRevision = rowsSnapshot.firstOrNull()?.artistMetadataRevision
                         val representativesChanged = representativeRevision == null || representativeRevision != artistMetadataRevision
                         val previousIds = recentTrackIds
-                        val (ids, playedIds, missingIds) = BackgroundWorkCoordinator.localDataPreparation { withContext(AppDispatchers.CpuBounded) {
+                        val (ids, playedIds, missingIds) = BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { withContext(AppDispatchers.CpuBounded) {
                             val events = rowsSnapshot.mapNotNull { it.event }
                             val ids = events.map { it.trackId }.distinct()
                             val missing = if (metadataChanged) ids else if (ids == previousIds) emptyList()
@@ -304,7 +310,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                             val records = if (missingIds.isEmpty()) emptyList() else withContext(AppDispatchers.Database) {
                                 missingIds.chunked(900).flatMap { database.musicDao().getTracksByIds(it) }
                             }
-                            BackgroundWorkCoordinator.localDataPreparation { withContext(AppDispatchers.CpuBounded) {
+                            BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { withContext(AppDispatchers.CpuBounded) {
                                 val existing = if (metadataChanged) emptyList() else ids.toHashSet().let { wanted -> recentMetadata.filter { it.id in wanted } }
                                 existing + records.map { it.toMusicTrack() }
                             } }
@@ -312,7 +318,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                         // The order/actual-audio predicate can change without track metadata
                         // changing (for example a zero-time occurrence starts playing).
                         val recent = if (reuseMetadata && playedIds == recentPlayedIds) _listeningHistoryCard.value.tracks
-                        else BackgroundWorkCoordinator.localDataPreparation { withContext(AppDispatchers.CpuBounded) {
+                        else BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { withContext(AppDispatchers.CpuBounded) {
                             val byId = tracks.associateBy { it.id }; val seen = HomeRecommendationPolicy.Recordings()
                             playedIds.asSequence().mapNotNull { byId[it] }
                                 .filter(seen::add).take(30).toList()
@@ -365,11 +371,11 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                         cachedArtistBaseline = null
                     }
                     val before = withContext(AppDispatchers.Database) { database.listeningEventDao().getArtistInputRevision() }
-                    var artists = BackgroundWorkCoordinator.localDataPreparation { artistHistory.read(before) }
+                    var artists = BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { artistHistory.read(before) }
                     val identityBeforeRestore = ArtistPhotoRepository.identities.value
                     ArtistPhotoRepository.restoreSaved(getApplication(), artists.take(4).map { ArtistPhotoRepository.cachedArtist(it.name) })
                     if (identityBeforeRestore != ArtistPhotoRepository.identities.value)
-                        artists = BackgroundWorkCoordinator.localDataPreparation { artistHistory.read(before) }
+                        artists = BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { artistHistory.read(before) }
                     android.util.Log.d("ArtistPortrait", "shelf-ready count=${artists.size} at=${elapsedTime()}")
                     if (before != withContext(AppDispatchers.Database) { database.listeningEventDao().getArtistInputRevision() }) { artistRequests.update { it + 1 }; return@collectLatest }
                     _hasListenedArtists.value = artists.isNotEmpty()
@@ -381,6 +387,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) {
                     artistFailed = true // Preserve the last valid cached ranking.
+                    android.util.Log.w("HomeFeed", "Artist preparation failed; cached artists=${_mostListenedArtists.value.size}")
                     _artistStatus.value = ShelfLoadStatus.ERROR
                     initialArtistSettledAt.compareAndSet(null, elapsedTime())
                 }
@@ -483,7 +490,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         val urgent = MutableStateFlow(force || _serverShelves.value.isEmpty()).also { serverUrgent = it }
         val job = owner.async {
             try {
-                val response = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(urgent) {
+                val response = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(urgent, awaitFrameQuiet = false) {
                     withContext(AppDispatchers.Io) { homeLoader(region, null, key.substringAfter('|') != "anonymous") }
                 }
                 if (generation != serverGeneration || key != homeKey || key != currentHomeKey(_userProfile.value)) return@async false
@@ -544,7 +551,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         val key = profileKey; val generation = profileGeneration; val profile = _userProfile.value; val rotation = profileRotation++
         val job = owner.async {
             try {
-                val result = BackgroundWorkCoordinator.optionalProcessing {
+                val result = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(MutableStateFlow(false), awaitFrameQuiet = false) {
                     BackgroundWorkCoordinator.awaitOptionalBatch()
                     withContext(AppDispatchers.Io) { profileLoader(profile, rotation, force) }
                 }
@@ -565,10 +572,22 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         val key = homeKey; val generation = serverGeneration
         val snapshot = sources.toMap()
         val previous = _serverShelves.value
-        val rows = (listOf("FEmusic_home") + supplementalBrowseIds).flatMap { snapshot[it]?.shelves.orEmpty() }
-        val shelves = withContext(AppDispatchers.CpuBounded) { HomeShelfIdentity.refresh(previous, rows) }
+        val inputs = (listOf("FEmusic_home") + supplementalBrowseIds).map { snapshot[it]?.shelves.orEmpty() }
+        val lastInputs = projectedInputs
+        val reuse = projectedKey == key && projectedGeneration == generation && lastInputs != null && lastInputs.size == inputs.size &&
+            inputs.indices.all { inputs[it] === lastInputs[it] }
+        val shelves = if (reuse) projectedShelves else BackgroundWorkCoordinator.localDataPreparation(
+            urgent = { _isRefreshing.value || serverUrgent.value }, awaitFrameQuiet = false) {
+            withContext(AppDispatchers.CpuBounded) { BackgroundWorkCoordinator.traceWork("Home shelf projection") {
+                HomeShelfIdentity.refresh(previous, inputs.flatten())
+            } }
+        }
         if (key != homeKey || generation != serverGeneration) return
         if (snapshot != sources.toMap()) { publishSources(); return }
+        if (!reuse) {
+            projectedKey = key; projectedGeneration = generation; projectedInputs = inputs; projectedShelves = shelves
+            android.util.Log.d("NativeHome", "project shelves=${shelves.size}")
+        }
         if (_serverShelves.value.isEmpty() && shelves.isNotEmpty()) nativeRevealAt.value = elapsedTime()
         var count = maxOf(3, _revealedShelfCount.value).coerceAtMost(shelves.size)
         if (!_additionalShelvesUnlocked.value) count = minOf(3, shelves.size)
@@ -584,7 +603,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         _serverCards.value = presentNativeShelves(_serverCards.value, shelves,
             if (pending) ShelfLoadStatus.LOADING else ShelfLoadStatus.SUCCESS)
         _serverShelves.value = shelves
-        android.util.Log.d("NativeHome", "publish shelves=${shelves.size} revealed=${_revealedShelfCount.value} suppressed=${rows.size - shelves.size} pending=$pending auth=${serverCacheKey.substringAfter('|') != "anonymous"}")
+        android.util.Log.d("NativeHome", "publish shelves=${shelves.size} revealed=${_revealedShelfCount.value} suppressed=${inputs.sumOf { it.size } - shelves.size} pending=$pending auth=${serverCacheKey.substringAfter('|') != "anonymous"}")
     }
     private fun sourceFailed(browse: String, token: String, category: String = "response_or_transport") {
         val old = sourceFailures[browse]?.takeIf { it.token == token }
@@ -621,7 +640,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     sources[browse]?.let { if (!urgent.value && sourceFailures[browse]?.token != "initial" && fresh(it.succeeded, it.fetchedAt, it.shelves.isEmpty())) return@launch }
                     // Existing optional admission is interaction-aware and bounds
                     // native supplements separately from required Home/playback.
-                    val result = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(urgent) {
+                    val result = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(urgent, awaitFrameQuiet = false) {
                         BackgroundWorkCoordinator.awaitOptionalBatch()
                         withContext(AppDispatchers.HomeBookkeeping) { loadingSources.add(browse); publishSources() }
                         withContext(AppDispatchers.Io) { supplementalLoader(HomeCacheIdentity.region(_userProfile.value), browse,
@@ -724,7 +743,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                 _continuationStatus.value = ShelfLoadStatus.LOADING
                 loadingSources.add(browse)
                 publishServer(_serverShelves.value, ShelfLoadStatus.LOADING)
-                val result = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(sourceUrgency[browse] ?: MutableStateFlow(false)) {
+                val result = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(sourceUrgency[browse] ?: MutableStateFlow(false), awaitFrameQuiet = false) {
                     withContext(AppDispatchers.Io) {
                         val region = HomeCacheIdentity.region(_userProfile.value)
                         if (browse == "FEmusic_home") homeLoader(region, token, state.accountIdentity != "anonymous")
@@ -777,6 +796,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             val restoring = CompletableDeferred<Unit>().also { homeCacheRestore = it }
             try {
             serverGeneration++; serverJob?.cancel(); sourceJobs.values.toList().forEach { it.cancel() }; sourceJobs.clear(); sourceUrgency.clear(); sourceFailures.clear(); sources.clear(); paginationTurn = 0; lastConnectivityRetryAt = null; pendingNativeReveal = false; primarySettled.value = false; homeKey = nextHome
+            projectedInputs = null; projectedShelves = emptyList(); projectedKey = null
             serverCacheKey = nextHome
             publishServer(emptyList(), ShelfLoadStatus.LOADING); homeContinuationToken = null; loadingSources.clear()
             serverFetchedAt = 0; serverSuccess = false; serverAttemptAt = null

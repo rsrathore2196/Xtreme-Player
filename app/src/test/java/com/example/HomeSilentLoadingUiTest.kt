@@ -49,6 +49,29 @@ class HomeSilentLoadingUiTest {
         CompositionLocalProvider(LocalAppColors provides DarkAppColors, LocalDynamicGlassEnabled provides false,
             LocalVisualEffectsActive provides false, LocalArtworkRequestsActive provides false, content = block)
     } }
+    @Test fun optionalShelvesSitDirectlyAfterRecentlyPlayedBeforeNativeShelves() = localShelfOrder(landscape = false)
+    @Test @Config(qualifiers = "w891dp-h411dp-land")
+    fun landscapeOptionalShelvesFollowTheOverviewContainingRecentlyPlayed() = localShelfOrder(landscape = true)
+    private fun localShelfOrder(landscape: Boolean) {
+        lateinit var list: LazyListState
+        lateinit var scope: CoroutineScope
+        content {
+            list = listFixture(); scope = rememberCoroutineScope()
+            HomeScreenContent(serverShelves = (1..3).map { ServerHomeShelf("s$it", "Native $it", tracks = listOf(song)) },
+                pillsCardTracks = listOf(song), mostListenedArtists = listOf(MostListenedArtist("Singer", 1, listOf(song))),
+                profileShelf = ServerHomeShelf("profile", "Music for You", tracks = listOf(song)),
+                listState = list, onTrackClick = { _, _ -> }, onToggleFavorite = {})
+        }
+        val recent = if (landscape) 1 else 2
+        val expected = listOf(
+            recent to if (landscape) "hero_infinite_radio_card" else "card_1_recently_played_grid",
+            recent + 1 to "most_listened_artists", recent + 2 to "profile_shelf", recent + 3 to "server_shelf_s1")
+        for ((index, key) in expected) {
+            compose.runOnIdle { scope.launch { list.scrollToItem(index) } }
+            compose.waitForIdle()
+            compose.runOnIdle { assertEquals(key, list.layoutInfo.visibleItemsInfo.first { it.index == index }.key) }
+        }
+    }
     @Test fun delayedOptionalShelvesPreserveTheNativeViewportKeyAndOffset() {
         var profile by mutableStateOf<ServerHomeShelf?>(null)
         var artists by mutableStateOf(emptyList<MostListenedArtist>())

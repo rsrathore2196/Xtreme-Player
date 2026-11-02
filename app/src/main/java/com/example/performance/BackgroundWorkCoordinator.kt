@@ -118,19 +118,19 @@ object BackgroundWorkCoordinator {
     private var cardActive = false
     private var lastCardCompleted = 0L
 
-    private fun optionalCanRun(requireForeground: Boolean, urgent: () -> Boolean): Boolean {
+    private fun optionalCanRun(requireForeground: Boolean, urgent: () -> Boolean, awaitFrameQuiet: Boolean = true): Boolean {
         if (urgent()) return true
         if (com.example.recommendation.DiscoveryRequestCoordinator.playbackResolving) return false
         if (requireForeground && !foreground.get()) return false
         if (!foreground.get()) return true
-        return isInteractionIdle() && optionalInteractionIdle(SystemClock.elapsedRealtime())
+        return isInteractionIdle(awaitFrameQuiet = awaitFrameQuiet) && optionalInteractionIdle(SystemClock.elapsedRealtime(), awaitFrameQuiet)
     }
 
-    internal fun optionalPlaybackWorkMayProceed(): Boolean = optionalCanRun(false) { false }
+    internal fun optionalPlaybackWorkMayProceed(): Boolean = optionalCanRun(false, urgent = { false })
 
-    private suspend fun optionalContext(requireForeground: Boolean, urgent: () -> Boolean = { false }) =
-        NonEssentialWork(currentCoroutineContext()[Job], { optionalCanRun(requireForeground, urgent) }) {
-            while (!optionalCanRun(requireForeground, urgent)) {
+    private suspend fun optionalContext(requireForeground: Boolean, urgent: () -> Boolean = { false }, awaitFrameQuiet: Boolean = true) =
+        NonEssentialWork(currentCoroutineContext()[Job], { optionalCanRun(requireForeground, urgent, awaitFrameQuiet) }) {
+            while (!optionalCanRun(requireForeground, urgent, awaitFrameQuiet)) {
                 currentCoroutineContext().ensureActive()
                 delay(50L)
             }
@@ -143,9 +143,9 @@ object BackgroundWorkCoordinator {
      * fence: waiting for the optional lane here could block local tab data
      * behind the very restoration that owns the essential lane.
      */
-    private suspend fun uiContinuationContext(urgent: () -> Boolean): NonEssentialWork {
+    private suspend fun uiContinuationContext(urgent: () -> Boolean, awaitFrameQuiet: Boolean = true): NonEssentialWork {
         fun canRun() = urgent() || !foreground.get() ||
-            (isInteractionIdle() && !com.example.recommendation.DiscoveryRequestCoordinator.playbackResolving)
+            (isInteractionIdle(awaitFrameQuiet = awaitFrameQuiet) && !com.example.recommendation.DiscoveryRequestCoordinator.playbackResolving)
         return NonEssentialWork(currentCoroutineContext()[Job], ::canRun) {
             while (!canRun()) {
                 currentCoroutineContext().ensureActive()
@@ -154,17 +154,20 @@ object BackgroundWorkCoordinator {
         }
     }
 
-    /** Local snapshots use the existing short interaction fence without taking a startup/network lease. */
-    internal suspend fun <T> localDataPreparation(urgent: () -> Boolean = { false }, block: suspend () -> T): T =
-        withContext(uiContinuationContext(urgent)) { block() }
+    /** Local snapshots use the short interaction fence without a startup/network lease.
+     * Visible loading content can ignore slow-frame signals to avoid waiting on its own shimmer;
+     * input, navigation and playback admission still apply. Other callers keep frame gating. */
+    internal suspend fun <T> localDataPreparation(urgent: () -> Boolean = { false }, awaitFrameQuiet: Boolean = true,
+        block: suspend () -> T): T = withContext(uiContinuationContext(urgent, awaitFrameQuiet)) { block() }
 
     /** WorkManager also participates in dock preemption, without requiring a headless Home. */
     internal suspend fun <T> maintenance(block: suspend () -> T): T =
         optionalProcessing(block = block)
 
     /** Shared flights use their own live urgency, not a single consumer's cancellation. */
-    internal suspend fun <T> optionalProcessing(urgent: () -> Boolean = { false }, block: suspend () -> T): T =
-        withContext(optionalContext(requireForeground = false, urgent = urgent)) { block() }
+    internal suspend fun <T> optionalProcessing(urgent: () -> Boolean = { false }, awaitFrameQuiet: Boolean = true,
+        block: suspend () -> T): T =
+        withContext(optionalContext(requireForeground = false, urgent = urgent, awaitFrameQuiet = awaitFrameQuiet)) { block() }
 
     /** Use only between batches, after releasing cache/database/network resources. */
     internal suspend fun awaitOptionalBatch() {
@@ -298,8 +301,8 @@ object BackgroundWorkCoordinator {
             !scrolling.get() && navigationJobs.get() == 0 && now >= navigationUntil.get() &&
             now - lastInteraction.get() >= 250L && (!awaitFrameQuiet || now - lastSlowFrame.get() >= 250L)
     }
-    private fun optionalInteractionIdle(now: Long): Boolean =
-        isInteractionIdle() && now - lastInteraction.get() >= 250L
+    private fun optionalInteractionIdle(now: Long, awaitFrameQuiet: Boolean = true): Boolean =
+        isInteractionIdle(awaitFrameQuiet = awaitFrameQuiet) && now - lastInteraction.get() >= 250L
 
     private val startedAt = SystemClock.elapsedRealtime()
     private val foreground = AtomicBoolean(false)

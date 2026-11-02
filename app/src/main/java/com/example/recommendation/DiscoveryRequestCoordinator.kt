@@ -15,7 +15,7 @@ internal object DiscoveryRequestCoordinator {
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private class Flight(val urgent: MutableStateFlow<Boolean>,
         val result: Deferred<List<MusicTrack>>, var readers: Int = 0, var essentialReaders: Int = 0)
-    private class SharedPriority(val urgent: MutableStateFlow<Boolean>) : AbstractCoroutineContextElement(Key) {
+    private class SharedPriority(val urgent: MutableStateFlow<Boolean>, val awaitFrameQuiet: Boolean = true) : AbstractCoroutineContextElement(Key) {
         companion object Key : CoroutineContext.Key<SharedPriority>
     }
     private val flights = mutableMapOf<String, Flight>()
@@ -37,15 +37,16 @@ internal object DiscoveryRequestCoordinator {
     suspend fun requestUrgency(): StateFlow<Boolean>? = currentCoroutineContext()[SharedPriority]?.urgent
 
     /** A retained Home request can be promoted without starting another transport. */
-    suspend fun <T> withPriority(urgent: MutableStateFlow<Boolean>, block: suspend () -> T): T =
-        withContext(SharedPriority(urgent)) {
-            BackgroundWorkCoordinator.optionalProcessing(urgent = { urgent.value }, block = block)
+    suspend fun <T> withPriority(urgent: MutableStateFlow<Boolean>, awaitFrameQuiet: Boolean = true, block: suspend () -> T): T =
+        withContext(SharedPriority(urgent, awaitFrameQuiet)) {
+            BackgroundWorkCoordinator.optionalProcessing(urgent = { urgent.value }, awaitFrameQuiet = awaitFrameQuiet, block = block)
         }
 
     suspend fun <T> network(essential: Boolean = false, block: suspend () -> T): T {
-        val urgent = currentCoroutineContext()[SharedPriority]?.urgent ?: MutableStateFlow(essential)
+        val priority = currentCoroutineContext()[SharedPriority]
+        val urgent = priority?.urgent ?: MutableStateFlow(essential)
         if (essential) urgent.value = true
-        return permit(urgent) {
+        return permit(urgent, awaitFrameQuiet = priority?.awaitFrameQuiet != false) {
             // Finish this bounded transport/parse batch and release its permit.
             // Catalog processing after the response remains interaction-preemptible.
             BackgroundWorkCoordinator.finishBoundedBatch {
@@ -99,7 +100,7 @@ internal object DiscoveryRequestCoordinator {
         }
     }
 
-    private suspend fun <T> permit(urgent: StateFlow<Boolean>, block: suspend () -> T): T {
+    private suspend fun <T> permit(urgent: StateFlow<Boolean>, awaitFrameQuiet: Boolean = true, block: suspend () -> T): T {
         var acquired = false
         var optional = false
         fun release() {
@@ -115,7 +116,7 @@ internal object DiscoveryRequestCoordinator {
             // No request is cancelled or restarted, and playback's urgent lane stays open.
             while (true) {
                 if (!urgent.value) com.example.performance.BackgroundWorkCoordinator.yieldToInteraction(
-                    bypass = { urgent.value })
+                    awaitFrameQuiet = awaitFrameQuiet, bypass = { urgent.value })
                 combine(changed, urgent, scrolling, resolving) { _, _, _, _ -> Unit }.first {
                     synchronized(lock) {
                         // Optional metadata shares two slots; a third remains reserved
@@ -134,7 +135,7 @@ internal object DiscoveryRequestCoordinator {
                 // A navigation gesture may begin while queued for a slot. Release
                 // it before waiting again; paused Home work must not reserve IO
                 // capacity needed by other consumers. No request has started yet.
-                if (urgent.value || com.example.performance.BackgroundWorkCoordinator.isInteractionIdle()) break
+                if (urgent.value || com.example.performance.BackgroundWorkCoordinator.isInteractionIdle(awaitFrameQuiet = awaitFrameQuiet)) break
                 release()
             }
             return block()
