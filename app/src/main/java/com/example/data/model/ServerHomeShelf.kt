@@ -33,3 +33,15 @@ sealed interface ServerHomeItem {
         override val key = "playlist:${playlist.id}:${playlist.browseParams.orEmpty()}"
     }
 }
+
+/** A cursor belongs to one native browse response and its actual account. */
+data class HomeBrowseSnapshot(
+    val browseId: String,
+    val accountIdentity: String,
+    val shelves: List<ServerHomeShelf> = emptyList(),
+    val continuation: String? = null,
+    val consumed: Set<String> = emptySet(),
+    val fetchedAt: Long = 0L,
+    val succeeded: Boolean = false,
+    val emptyPages: Int = 0
+)

@@ -400,13 +400,16 @@ object YouTubeMusicApiService {
     ): YouTubeHomeParser.ParsedHomeFeed = withContext(AppDispatchers.Io) {
         require(browseId in setOf("FEmusic_home", "FEmusic_new_releases", "FEmusic_explore"))
         val region = countryCode.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase(java.util.Locale.ROOT) ?: "US"
+        android.util.Log.d("NativeHome", "request browse=$browseId authRequested=$includeAccount region=$region language=$languageCode continuation=${continuation != null}")
         homeWithFallback(primary = {
             com.example.recommendation.DiscoveryRequestCoordinator.network(essential = essential) {
                 val body = kotlinx.coroutines.withTimeoutOrNull(4_000L) {
                     YouTubeAudioStreamService.discoveryResponseWithIdentity("browse", browseId, region,
                         continuation = continuation, languageCode = languageCode, includeAccount = includeAccount)
                 } ?: throw java.io.IOException("Home request timed out")
-                withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body.body), continuation, region, languageCode)
+                withContext(AppDispatchers.CpuBounded) { val root = JSONObject(body.body)
+                    android.util.Log.d("NativeHome", "shape=" + listOf("contents", "continuationContents", "onResponseReceivedActions", "onResponseReceivedCommands", "onResponseReceivedEndpoints", "error").filter(root::has).joinToString(","))
+                    YouTubeHomeParser.parseHomeFeed(root, continuation, region, languageCode)
                     .copy(accountIdentity = body.accountIdentity) }
             }
         }, fallback = {
@@ -428,7 +431,9 @@ object YouTubeMusicApiService {
                 withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body), continuation, region, languageCode)
                     .copy(accountIdentity = "anonymous") }
             }
-        })
+        }).also { result ->
+            android.util.Log.d("NativeHome", "response browse=$browseId auth=${result.accountIdentity != null && result.accountIdentity != "anonymous"} shelves=${result.shelves.size} cursor=${result.continuationToken != null} result=${if (result.isError) "failed" else if (result.shelves.isEmpty()) "empty" else "success"}")
+        }
     }
 
     /**

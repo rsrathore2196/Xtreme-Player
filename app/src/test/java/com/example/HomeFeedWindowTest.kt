@@ -30,4 +30,18 @@ class HomeFeedWindowTest {
         repeat(10) { assertFalse(gate.consumeNearTail(gate.forwardInput(), nearTail = true)) }
         gate.settled(); assertTrue(gate.consumeNearTail(gate.forwardInput(), nearTail = true))
     }
+    @Test fun aCompletedPageRechecksTheSameNearEndGestureWithABoundedChain() {
+        val gate = HomeRevealGesture()
+        assertFalse(gate.afterPage(0, true, 1))
+        val intent = gate.forwardInput()
+        assertTrue(gate.consumeNearTail(intent, true))
+        assertTrue(gate.afterPage(intent, true, 2))
+        assertFalse(gate.afterPage(intent, true, 2))
+        assertTrue(gate.afterPage(intent, true, 3))
+        assertTrue(gate.afterPage(intent, true, 4))
+        assertFalse(gate.afterPage(intent, true, 5))
+        gate.settled()
+        assertTrue(gate.consumeNearTail(gate.forwardInput(), true))
+    }
+
 }

@@ -274,7 +274,8 @@ fun HomeScreenContent(
     val retainedWindow = rememberSaveable(stateSaver = Saver<HomeFeedWindow, Int>(
         save = { it.visibleCount }, restore = { HomeFeedWindow(it) }
     )) { mutableStateOf(HomeFeedWindow()) }
-    val revealModifier = rememberHomeRevealModifier(listState) {
+    val pageRevision = homeViewModel?.paginationRevision?.collectAsStateWithLifecycle()?.value ?: 0L
+    val revealModifier = rememberHomeRevealModifier(listState, pageRevision) {
         if (homeViewModel != null) homeViewModel.revealNextHomeSection()
         else retainedWindow.value = retainedWindow.value.appendNext(serverShelves.size)
     }
@@ -617,8 +618,9 @@ fun HomeScreenContent(
 
 /** Observe user intent without consuming scroll or changing any gesture/animation. */
 @Composable
-private fun rememberHomeRevealModifier(state: LazyListState, reveal: () -> Unit): Modifier {
+private fun rememberHomeRevealModifier(state: LazyListState, pageRevision: Long, reveal: () -> Unit): Modifier {
     val currentReveal by rememberUpdatedState(reveal)
+    val currentPageRevision by rememberUpdatedState(pageRevision)
     val gesture = remember(state) { HomeRevealGesture() }
     val intent = remember(state) { mutableLongStateOf(0L) }
     val threshold = with(LocalDensity.current) { 192.dp.toPx() }
@@ -637,10 +639,10 @@ private fun rememberHomeRevealModifier(state: LazyListState, reveal: () -> Unit)
         androidx.compose.runtime.snapshotFlow {
             val layout = state.layoutInfo
             val last = layout.visibleItemsInfo.lastOrNull()
-            intent.longValue to (last != null && last.index == layout.totalItemsCount - 1 &&
-                last.offset + last.size <= layout.viewportEndOffset + threshold)
-        }.collect { (token, nearTail) ->
-            if (gesture.consumeNearTail(token, nearTail)) currentReveal()
+            Triple(intent.longValue, last != null && last.index == layout.totalItemsCount - 1 &&
+                last.offset + last.size <= layout.viewportEndOffset + threshold, currentPageRevision)
+        }.collect { (token, nearTail, completed) ->
+            if (gesture.consumeNearTail(token, nearTail) || gesture.afterPage(token, nearTail, completed)) currentReveal()
         }
     }
     androidx.compose.runtime.LaunchedEffect(state) {

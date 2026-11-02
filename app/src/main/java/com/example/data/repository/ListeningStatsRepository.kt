@@ -25,7 +25,7 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
     pendingFile: java.io.File? = null, private val dateProvider: () -> LocalDate = { LocalDate.now() }) {
     private val app = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
-    private val database by lazy { suppliedDatabase ?: MusicDatabase.getDatabase(app) }
+    private val database = suppliedDatabase ?: MusicDatabase.getDatabase(app)
     private data class Pending(val snapshot: ListeningSnapshot, val revision: Long)
     private data class Flush(val target: Long, val completion: CompletableDeferred<Unit>)
     private val journalWakeup = Channel<Unit>(Channel.CONFLATED)
@@ -37,11 +37,11 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
     private val journalBarriers = mutableListOf<CompletableDeferred<Unit>>()
     private val barriers = mutableListOf<Flush>()
     private val journalLock = Mutex()
+    private val aggregationLock = Mutex()
     private val durable = linkedMapOf<String, Pending>()
     private var journalLoaded = false
-    private val journal by lazy {
-        ListeningCheckpointJournal(pendingFile ?: java.io.File(app.noBackupFilesDir, "listening_pending_v1.json"))
-    }
+    private val journalFile = pendingFile ?: java.io.File(app.noBackupFilesDir, "listening_pending_v1.json")
+    private val journal by lazy { ListeningCheckpointJournal(journalFile) }
     private val revisions = MutableStateFlow(0L)
     private val calendarDates = callbackFlow {
         val receiver = object : BroadcastReceiver() {
@@ -66,6 +66,7 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
         }
     }
     init {
+        synchronized(Companion) { repositories[database] = java.lang.ref.WeakReference(this) }
         // Journaling must never wait for metadata queries or a Room transaction.
         // Both consumers reuse the existing IO pool; neither owns a timer or thread.
         scope.launch {
@@ -108,6 +109,7 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
         }
         scope.launch {
             for (signal in aggregateWakeup) {
+              aggregationLock.withLock {
                 val committed = mutableListOf<Pending>()
                 var failure: Exception? = null
                 try {
@@ -148,6 +150,7 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
                 } catch (error: Exception) { failure = error }
                 completeBarriers(failure)
                 if (failure != null) android.util.Log.w("ListeningStats", "Durable listening checkpoint awaiting aggregation", failure)
+              }
             }
         }
         journalWakeup.trySend(Unit) // Replay only when this repository is first used.
@@ -211,6 +214,8 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
     internal fun close() {
         val cancelled = CancellationException("Listening repository closed")
         scope.cancel()
+        synchronized(Companion) { if (repositories[database]?.get() === this) repositories.remove(database)
+            if (instance === this) instance = null }
         synchronized(inputLock) { journalBarriers.forEach { it.completeExceptionally(cancelled) }; journalBarriers.clear() }
         completeBarriers(cancelled)
     }
@@ -326,9 +331,69 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
     fun invalidate() = synchronized(summaries) { summaries.evictAll(); revisions.update { it + 1 } }
     private fun key(period: ListeningPeriod, date: LocalDate) = period.bounds(date).let { "${period.name}|${it.first}|${it.second}" }
     companion object {
+        private val repositories = java.util.WeakHashMap<MusicDatabase, java.lang.ref.WeakReference<ListeningStatsRepository>>()
+        private val backupUsers = java.util.IdentityHashMap<ListeningStatsRepository, Int>()
+        private val temporaryRepositories = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<ListeningStatsRepository, Boolean>())
         @Volatile private var instance: ListeningStatsRepository? = null
+        /** Flush recovered durable intent and all checkpoints admitted at this
+         * barrier. The caller captures/merges rows in one Room transaction.
+         * Never opens a different database or runs a second writer beside playback. */
+        internal suspend fun <T> withPreparedDatabase(context: Context, database: MusicDatabase, block: suspend (String) -> T): T {
+            val repository = synchronized(this) {
+                (repositories[database]?.get() ?: run {
+                        val shared = java.io.File(context.applicationContext.noBackupFilesDir, "listening_pending_v1.json")
+                        val ownedElsewhere = repositories.entries.any { (db, ref) -> db !== database && ref.get()?.journalFile == shared }
+                        val file = if (ownedElsewhere) java.io.File(shared.parentFile,
+                            "listening_pending_${database.openHelper.databaseName?.hashCode() ?: System.identityHashCode(database)}.json") else shared
+                        ListeningStatsRepository(context, database, file).also { temporaryRepositories.add(it) }
+                    }).also { backupUsers[it] = (backupUsers[it] ?: 0) + 1 }
+            }
+            try {
+                repository.flush()
+                return repository.aggregationLock.withLock {
+                    // Journal writes remain independent of Room. Capture a new
+                    // durable cutoff after acquiring writer ownership, including
+                    // checkpoints admitted while the first barrier was completing.
+                    repository.flushJournal()
+                    val cut = repository.journalLock.withLock { repository.durable.values.toList() }
+                    withContext(AppDispatchers.Database) {
+                        for (entry in cut) {
+                            val changed = repository.persist(entry.snapshot)
+                            if (changed.totals) repository.invalidateAffected(entry.snapshot, changed.identity)
+                        }
+                        // The journal is deliberately left intact until the normal
+                        // writer acknowledges these committed watermarks.
+                        try { block(repository.origin) }
+                        finally { repository.aggregateWakeup.trySend(Unit) }
+                    }
+                }
+            } finally {
+              // A temporary writer drains its acknowledgement before retirement;
+              // a service connecting meanwhile promotes it under the same registry lock.
+              if (synchronized(this) { repository in temporaryRepositories }) withContext(NonCancellable) {
+                  try { repository.flush() }
+                  catch (error: Exception) { android.util.Log.w("ListeningStats", "Backup journal retained for recovery", error) }
+              }
+              synchronized(this) {
+                val remaining = (backupUsers[repository] ?: 1) - 1
+                if (remaining > 0) backupUsers[repository] = remaining
+                else {
+                    backupUsers.remove(repository)
+                    if (temporaryRepositories.remove(repository)) repository.close()
+                }
+            } }
+        }
+        internal fun invalidateDatabase(database: MusicDatabase) {
+            synchronized(this) { repositories[database]?.get() }?.invalidate()
+        }
         fun get(context: Context): ListeningStatsRepository = instance ?: synchronized(this) {
-            instance ?: ListeningStatsRepository(context).also { instance = it }
+            instance ?: run {
+                val database = MusicDatabase.getDatabase(context)
+                (repositories[database]?.get() ?: ListeningStatsRepository(context, database)).also {
+                    temporaryRepositories.remove(it) // Playback/UI now owns its lifetime.
+                    instance = it
+                }
+            }
         }
         suspend fun flushExisting() { instance?.flush() }
         suspend fun flushJournalExisting() { instance?.flushJournal() }

@@ -3,6 +3,7 @@ package com.example.data.cache
 import android.content.Context
 import android.util.AtomicFile
 import com.example.data.model.MusicTrack
+import com.example.data.model.HomeBrowseSnapshot
 import com.example.data.model.ServerHomeShelf
 import com.example.data.model.ServerHomeItem
 import com.example.data.model.HomeShelfIdentity
@@ -71,10 +72,11 @@ data class SavedHomeCards(
     val artistDataVersion: Int = 2,
     val serverContentVersion: Int = SERVER_HOME_CONTENT_VERSION,
     val sourceBrowseId: String = "FEmusic_home",
-    val completedBrowseIds: Set<String> = emptySet()
+    val completedBrowseIds: Set<String> = emptySet(),
+    val browseSources: List<HomeBrowseSnapshot> = emptyList()
 )
 
-internal const val SERVER_HOME_CONTENT_VERSION = 2
+internal const val SERVER_HOME_CONTENT_VERSION = 3
 
 class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDispatcher = AppDispatchers.Io) {
     private val app = context.applicationContext
@@ -228,6 +230,14 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
             sourceBrowseId = home?.optString("sourceBrowseId", "FEmusic_home") ?: "FEmusic_home",
             completedBrowseIds = home?.optJSONArray("completedBrowseIds")?.let { a ->
                 (0 until a.length()).map(a::getString).toSet()
+            }.orEmpty(), browseSources = home?.optJSONArray("browseSources")?.let { a ->
+                (0 until minOf(3, a.length())).mapNotNull { index -> runCatching {
+                    val r = a.getJSONObject(index)
+                    HomeBrowseSnapshot(r.getString("browseId"), r.getString("account"),
+                        shelves(JSONObject().put("serverShelves", r.optJSONArray("shelves"))), nullable(r, "continuation"),
+                        r.optJSONArray("consumed")?.let { tokens -> (0 until minOf(256, tokens.length())).map(tokens::getString).toSet() }.orEmpty(),
+                        r.optLong("fetchedAt"), r.optBoolean("success"), r.optInt("emptyPages"))
+                }.getOrNull() }
             }.orEmpty())
     }
     fun peek(profile: String): SavedHomeCards? {
@@ -261,17 +271,23 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
     }
     private data class HomeCheckpoint(val key: String, val fetchedAt: Long, val success: Boolean,
         val shelves: List<ServerHomeShelf>, val continuation: String?, val consumed: Set<String>,
-        val sourceBrowseId: String, val completedBrowseIds: Set<String>)
+        val sourceBrowseId: String, val completedBrowseIds: Set<String>, val sources: List<HomeBrowseSnapshot>)
     private data class ProfileCheckpoint(val key: String, val fetchedAt: Long, val success: Boolean, val shelf: ServerHomeShelf?)
     private data class LocalCheckpoint(val revision: String?, val artistVersion: Int, val recent: List<MusicTrack>, val artists: List<MostListenedArtist>)
     suspend fun saveHome(cards: SavedHomeCards) {
         write("server_${HomeCacheIdentity.fileKey(cards.profileKey)}",
-            HomeCheckpoint(cards.profileKey, cards.refreshedAt, cards.serverFetchSucceeded, cards.serverShelves, cards.continuationToken, cards.consumedContinuations, cards.sourceBrowseId, cards.completedBrowseIds)) {
+            HomeCheckpoint(cards.profileKey, cards.refreshedAt, cards.serverFetchSucceeded, cards.serverShelves, cards.continuationToken, cards.consumedContinuations, cards.sourceBrowseId, cards.completedBrowseIds, cards.browseSources)) {
             JSONObject().put("key", cards.profileKey).put("accountIdentity", cards.profileKey.substringAfter('|')).put("refreshedAt", cards.refreshedAt)
             .put("success", cards.serverFetchSucceeded).put("contentVersion", SERVER_HOME_CONTENT_VERSION)
             .put("serverShelves", JSONArray(HomeShelfIdentity.deduplicate(cards.serverShelves).map(::shelf)))
             .put("continuationToken", cards.continuationToken).put("consumedContinuations", JSONArray(cards.consumedContinuations.toList()))
             .put("sourceBrowseId", cards.sourceBrowseId).put("completedBrowseIds", JSONArray(cards.completedBrowseIds.toList()))
+            .put("browseSources", JSONArray(cards.browseSources.map { source ->
+                JSONObject().put("browseId", source.browseId).put("account", source.accountIdentity)
+                    .put("shelves", JSONArray(HomeShelfIdentity.deduplicate(source.shelves).map(::shelf)))
+                    .put("continuation", source.continuation).put("consumed", JSONArray(source.consumed.toList()))
+                    .put("fetchedAt", source.fetchedAt).put("success", source.succeeded).put("emptyPages", source.emptyPages)
+            }))
         }
     }
     suspend fun saveProfile(cards: SavedHomeCards) {

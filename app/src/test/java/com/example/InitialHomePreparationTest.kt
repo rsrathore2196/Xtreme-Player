@@ -60,7 +60,8 @@ class InitialHomePreparationTest {
         account: kotlinx.coroutines.flow.StateFlow<String>? = null,
         authenticatedRequests: MutableList<Boolean>? = null,
         idle: suspend (Long) -> Unit = {},
-        extra: suspend (String) -> YouTubeHomeParser.ParsedHomeFeed = { YouTubeHomeParser.ParsedHomeFeed(emptyList(), null) }): HomeViewModel {
+        extra: suspend (String) -> YouTubeHomeParser.ParsedHomeFeed = { YouTubeHomeParser.ParsedHomeFeed(emptyList(), null) },
+        extraPage: suspend (String, String) -> YouTubeHomeParser.ParsedHomeFeed = { _, _ -> error("Unexpected supplemental cursor") }): HomeViewModel {
         val store = ViewModelStore().also(stores::add)
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T =
@@ -70,7 +71,8 @@ class InitialHomePreparationTest {
                     accountIdentity = { account?.value ?: YouTubeMusicApiService.discoveryAccountIdentity() },
                     accountUpdates = account ?: YouTubeAudioStreamService.discoveryAccountChanges,
                     idleAdmission = idle, elapsedTime = { elapsed },
-                    supplementalLoader = { _, browse, _ -> extra(browse) }) as T
+                    supplementalLoader = { _, browse, _ -> extra(browse) },
+                    supplementContinuationLoader = { _, browse, token, _ -> extraPage(browse, token) }) as T
         }
         return ViewModelProvider(store, factory)[HomeViewModel::class.java].also { it.onHomeFrameDrawn() }
     }
@@ -116,7 +118,7 @@ class InitialHomePreparationTest {
         release.complete(Unit)
         withTimeout(5_000) { manual.join(); automatic.join() }
         assertEquals(1, calls.get()); assertEquals(1, profileCalls.get()); assertFalse(vm.isRefreshing.value)
-        assertEquals(listOf("refreshed", "cached"), vm.serverShelves.value.map { it.id })
+        assertEquals(listOf("refreshed"), vm.serverShelves.value.map { it.id })
     }
     @Test fun manualRefreshReusesBothActualRequestsWhenPromotingAnAutomaticRefresh() = runBlocking {
         val serverStarted = CompletableDeferred<Unit>(); val profileStarted = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
@@ -447,7 +449,7 @@ class InitialHomePreparationTest {
         })
         withTimeout(5_000) { vm.refreshHome(true).join(); entered.await() }
         assertFalse(vm.isRefreshing.value)
-        assertEquals(listOf("first", "retained"), vm.serverShelves.value.map { it.id })
+        assertEquals(listOf("first"), vm.serverShelves.value.map { it.id })
         assertEquals(listOf(track), vm.serverShelves.value.first().tracks)
         release.complete(Unit)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
@@ -542,29 +544,45 @@ class InitialHomePreparationTest {
         assertEquals(1, calls.get()); assertEquals(3, vm.serverShelves.value.size)
     }
 
-    @Test fun exhaustedHomeCanFetchNativeNewReleasesAndExploreOnlyOnDemandAndRestoreThem() = runBlocking {
-        val browsed = mutableListOf<String>()
-        val vm = viewModel({ _, _ -> page("Quick Picks") }, extra = { browse ->
+    @Test fun failedHomeContinuationCannotBlockIndependentSupplementsAndTheirCache() = runBlocking {
+        val browsed = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val vm = viewModel({ _, token -> if (token == null) page("Quick Picks", "broken")
+            else YouTubeHomeParser.ParsedHomeFeed(emptyList(), "broken", isError = true) }, extra = { browse ->
             browsed += browse
             page(if (browse == "FEmusic_new_releases") "New Releases" else "Trending Playlists")
         })
         assertTrue(vm.loadServerHome())
         assertTrue(browsed.isEmpty())
         vm.revealNextHomeSection()
-        withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
-        assertEquals(listOf("FEmusic_new_releases"), browsed)
-        vm.revealNextHomeSection()
+        vm.setHomeVisible(true)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
-        assertEquals(listOf("FEmusic_new_releases", "FEmusic_explore"), browsed)
+        assertEquals(setOf("FEmusic_new_releases", "FEmusic_explore"), browsed.toSet())
         assertEquals(listOf("Quick Picks", "New Releases", "Trending Playlists"), vm.serverShelves.value.map { it.title })
-        assertEquals(3, vm.revealedShelfCount.value)
-        withTimeout(5_000) { while (HomeCardCache(app).readServer(HomeCacheIdentity.home(preferences))?.completedBrowseIds?.size != 2) delay(10) }
-        val restored = viewModel({ _, _ -> error("Fresh cached Home must not refetch") }, extra = { error("Already loaded native browse") })
+        withTimeout(5_000) { while (HomeCardCache(app).readServer(HomeCacheIdentity.home(preferences))?.browseSources?.count { it.succeeded } != 3) delay(10) }
+        val restored = viewModel({ _, _ -> error("Fresh cached Home must not refetch") }, extra = { error("Fresh supplementary browse must not refetch") })
         assertTrue(restored.loadServerHome())
         assertEquals(3, restored.serverShelves.value.size)
-        restored.revealNextHomeSection()
+        restored.setHomeVisible(true)
         delay(100)
         assertEquals(2, browsed.size)
+    }
+    @Test fun supplementsPublishWhilePrimaryIsStillPendingAndRefreshDoesNotAccumulateStaleSections() = runBlocking {
+        val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val calls = AtomicInteger()
+        val vm = viewModel({ _, _ ->
+            if (calls.incrementAndGet() == 1) { entered.complete(Unit); release.await() }
+            page("primary-${calls.get()}")
+        }, extra = { browse -> page(browse) })
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { entered.await(); vm.serverShelves.first { it.size == 2 } }
+        assertEquals(setOf("FEmusic_new_releases", "FEmusic_explore"), vm.serverShelves.value.map { it.id }.toSet())
+        release.complete(Unit)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
+        repeat(3) {
+            withTimeout(5_000) { vm.refreshHome(true).join() }
+            assertEquals(3, vm.serverShelves.value.size)
+            assertEquals(1, vm.serverShelves.value.count { it.id.startsWith("primary-") })
+        }
     }
     @Test fun duplicateOnlyPagesCanAdvanceOnceToTheNextUsableNativePage() = runBlocking {
         val calls = mutableListOf<String?>()
@@ -587,10 +605,47 @@ class InitialHomePreparationTest {
         val vm = viewModel({ _, _ -> page("native") }, account = kotlinx.coroutines.flow.MutableStateFlow("account-a"), extra = {
             calls.incrementAndGet(); page("unrelated-account").copy(accountIdentity = "anonymous")
         })
-        assertTrue(vm.loadServerHome()); vm.revealNextHomeSection()
-        withTimeout(5_000) { while (calls.get() != 1) delay(10) }
+        assertTrue(vm.loadServerHome()); vm.setHomeVisible(true)
+        withTimeout(5_000) { while (calls.get() != 2) delay(10) }
         delay(50); repeat(5) { vm.revealNextHomeSection() }; delay(100)
-        assertEquals(1, calls.get()); assertEquals(listOf("native"), vm.serverShelves.value.map { it.id })
+        assertEquals(2, calls.get()); assertEquals(listOf("native"), vm.serverShelves.value.map { it.id })
+    }
+
+    @Test fun aFailedPrimaryCursorDoesNotBlockASupplementsOwnCursor() = runBlocking {
+        val mainPages = AtomicInteger()
+        val extraPages = AtomicInteger()
+        val vm = viewModel({ _, token -> if (token == null) page("main", "broken") else {
+            mainPages.incrementAndGet(); YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true)
+        } }, extra = { browse -> page(browse, if (browse == "FEmusic_new_releases") "extra-next" else null) },
+            extraPage = { browse, token ->
+                assertEquals("FEmusic_new_releases", browse); assertEquals("extra-next", token)
+                extraPages.incrementAndGet(); page("extra-page")
+            })
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.continuationStatus.first { it == ShelfLoadStatus.ERROR } }
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 4 } }
+        assertEquals(1, mainPages.get()); assertEquals(1, extraPages.get())
+    }
+    @Test fun canceledSupplementResponsesCannotCrossAnAccountChange() = runBlocking {
+        val account = kotlinx.coroutines.flow.MutableStateFlow("account-a")
+        val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val vm = viewModel({ _, _ -> page(account.value).copy(accountIdentity = account.value) }, account = account,
+            extra = { browse ->
+                val selected = account.value
+                if (selected == "account-a") { entered.complete(Unit); withContext(NonCancellable) { release.await() } }
+                page("$selected-$browse").copy(accountIdentity = selected)
+            })
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { entered.await() }
+        account.value = "account-b"
+        withTimeout(5_000) { vm.serverShelves.first { it.firstOrNull()?.id == "account-b" } }
+        release.complete(Unit)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
+        assertTrue(vm.serverShelves.value.all { it.title.startsWith("account-b") })
+        assertFalse(HomeCardCache(app).readServer(HomeCacheIdentity.home(preferences, "account-b"))!!.serverShelves.any { it.title.startsWith("account-a") })
     }
 
 }

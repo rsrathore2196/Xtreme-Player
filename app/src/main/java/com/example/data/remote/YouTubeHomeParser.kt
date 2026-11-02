@@ -66,6 +66,7 @@ object YouTubeHomeParser {
             string(it, "token").takeIf(String::isNotBlank)?.let { token -> return token }
         }
         endpoint.optJSONObject("innertubeCommand")?.let { continuationCommand(it)?.let { token -> return token } }
+        endpoint.optJSONObject("continuationEndpoint")?.let { continuationCommand(it)?.let { token -> return token } }
         val commands = endpoint.optJSONObject("commandExecutorCommand")?.optJSONArray("commands") ?: return null
         for (index in 0 until commands.length())
             continuationCommand(commands.optJSONObject(index))?.let { return it }
@@ -189,13 +190,18 @@ object YouTubeHomeParser {
             ?: rootJson.optJSONObject("continuationContents")?.optJSONObject("sectionListContinuation")
         val containers = mutableListOf<JSONObject>()
         sectionList?.let(containers::add)
+        fun continuationContainers(node: JSONObject, depth: Int = 0) {
+            if (depth > 5) return
+            for (key in listOf("appendContinuationItemsAction", "reloadContinuationItemsCommand"))
+                node.optJSONObject(key)?.let(containers::add)
+            node.optJSONObject("innertubeCommand")?.let { continuationContainers(it, depth + 1) }
+            node.optJSONObject("commandExecutorCommand")?.optJSONArray("commands")?.let { commands ->
+                for (i in 0 until commands.length()) commands.optJSONObject(i)?.let { continuationContainers(it, depth + 1) }
+            }
+        }
         for (key in listOf("onResponseReceivedActions", "onResponseReceivedCommands", "onResponseReceivedEndpoints")) {
             val actions = rootJson.optJSONArray(key) ?: continue
-            for (index in 0 until actions.length()) {
-                val action = actions.optJSONObject(index) ?: continue
-                (action.optJSONObject("appendContinuationItemsAction")
-                    ?: action.optJSONObject("reloadContinuationItemsCommand"))?.let(containers::add)
-            }
+            for (index in 0 until actions.length()) actions.optJSONObject(index)?.let { continuationContainers(it) }
         }
         if (containers.isEmpty()) throw IOException("Unsupported Home response")
         val rawSections = JSONArray()
@@ -206,9 +212,15 @@ object YouTubeHomeParser {
                 if (depth > 4) return
                 for (index in 0 until rows.length()) {
                     val row = rows.optJSONObject(index) ?: continue
-                    val nested = row.optJSONObject("itemSectionRenderer")?.optJSONArray("contents")
-                    if (nested != null) appendRows(nested, depth + 1)
-                    else rawSections.put(row.optJSONObject("richSectionRenderer")?.optJSONObject("content") ?: row)
+                    val nested = row.optJSONObject("itemSectionRenderer") ?: row.optJSONObject("sectionListRenderer")
+                        ?: row.optJSONObject("sectionListContinuation")
+                    if (nested != null) {
+                        extractContinuation(nested)?.let { sectionContinuation = it }
+                        nested.optJSONArray("contents")?.let { appendRows(it, depth + 1) }
+                    } else {
+                        val content = row.optJSONObject("richSectionRenderer")?.optJSONObject("content") ?: row
+                        if (content !== row) appendRows(JSONArray().put(content), depth + 1) else rawSections.put(row)
+                    }
                 }
             }
             appendRows(rows)
@@ -277,6 +289,8 @@ object YouTubeHomeParser {
             }
         }
 
-        return ParsedHomeFeed(HomeShelfIdentity.deduplicate(shelves), sectionContinuation)
+        val unique = HomeShelfIdentity.deduplicate(shelves)
+        android.util.Log.d("NativeHome", "parse shelves=${shelves.size} suppressed=${shelves.size - unique.size} cursor=${sectionContinuation != null}")
+        return ParsedHomeFeed(unique, sectionContinuation)
     }
 }

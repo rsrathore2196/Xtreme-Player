@@ -86,13 +86,13 @@ class HomePresentationRegressionTest {
         assertEquals(listOf("A", "B", "C"), page.shelves.map { it.title })
         assertEquals("next", page.continuationToken)
     }
-    @Test fun refreshUpdatesTheFirstPageInServerOrderAndRetainsExpandedPages() {
+    @Test fun aSuccessfulSourceRefreshReplacesItsOldGenerationInServerOrder() {
         val old = listOf(shelf("a", "old"), shelf("b", "retained"))
         val refreshed = listOf(shelf("c", "new"), shelf("a", "updated"))
         val result = refreshServerShelves(old, refreshed)
-        assertEquals(listOf("c", "a", "b"), result.map { it.id })
+        assertEquals(listOf("c", "a"), result.map { it.id })
         assertEquals(listOf("updated"), result[1].tracks.map { it.id })
-        assertSame(old[1], result[2])
+        assertFalse(result.any { it.id == "b" })
     }
     @Test fun continuationButtonCommandsAndReloadResponsesPreserveNativeItemsAndCursor() {
         for (endpoint in listOf(
@@ -115,4 +115,16 @@ class HomePresentationRegressionTest {
             .put("continuations", org.json.JSONArray("""[{"nextContinuationData":{}},{"nextContinuationData":{"continuation":"next"}}]"""))
         assertEquals("next", YouTubeHomeParser.parseHomeFeed(root).continuationToken)
     }
+    @Test fun nestedNativeCommandAndSectionContainersRetainTheirContinuation() {
+        val token = org.json.JSONObject("""{"continuationItemRenderer":{"continuationEndpoint":{"innertubeCommand":{"continuationCommand":{"token":"modern"}}}}}""")
+        val section = org.json.JSONObject().put("itemSectionRenderer", org.json.JSONObject().put("contents",
+            org.json.JSONArray().put(NativeFeedFixtures.shelf("New Releases", 1, 2)).put(token)))
+        val command = org.json.JSONObject().put("appendContinuationItemsAction", org.json.JSONObject().put("continuationItems", org.json.JSONArray().put(section)))
+        val root = org.json.JSONObject().put("onResponseReceivedEndpoints", org.json.JSONArray().put(org.json.JSONObject()
+            .put("commandExecutorCommand", org.json.JSONObject().put("commands", org.json.JSONArray().put(command)))))
+        val result = YouTubeHomeParser.parseHomeFeed(root, "old")
+        assertEquals("modern", result.continuationToken)
+        assertEquals(listOf("New Releases"), result.shelves.map { it.title })
+    }
+
 }

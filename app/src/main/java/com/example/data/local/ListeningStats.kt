@@ -31,6 +31,7 @@ interface ListeningStatsDao {
     @Query("SELECT '' AS origin, '' AS bucket, kind, identity, trackId, title, artist, artistId, coverUrl, durationMs, isrc, SUM(listenedMs) AS listenedMs, SUM(plays) AS plays FROM listening_totals WHERE kind = :kind AND length(bucket) = :length AND bucket >= :start AND bucket < :end GROUP BY identity")
     suspend fun range(kind: String, length: Int, start: String, end: String): List<ListeningTotal>
     @Query("SELECT * FROM listening_totals") suspend fun all(): List<ListeningTotal>
+    @Query("SELECT COUNT(*) FROM listening_totals") suspend fun count(): Int
     @Query("SELECT * FROM listening_totals WHERE kind='song' AND identity=:identity")
     suspend fun songRows(identity: String): List<ListeningTotal>
     @Query("DELETE FROM listening_totals WHERE origin=:origin AND bucket=:bucket AND kind='song' AND identity=:identity")
@@ -38,6 +39,7 @@ interface ListeningStatsDao {
     @Query("SELECT * FROM listening_totals WHERE origin=:origin AND bucket=:bucket AND kind=:kind AND identity=:identity")
     suspend fun row(origin: String, bucket: String, kind: String, identity: String): ListeningTotal?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun put(row: ListeningTotal)
+    @Query("SELECT * FROM listening_checkpoint") suspend fun allCheckpoints(): List<ListeningCheckpoint>
     @Query("SELECT * FROM listening_checkpoint WHERE occurrence=:occurrence") suspend fun checkpoint(occurrence: String): ListeningCheckpoint?
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun checkpoint(row: ListeningCheckpoint)
     // Pending journal entries must retain their watermarks until the journal's acknowledgement is durable.

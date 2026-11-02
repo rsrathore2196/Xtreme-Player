@@ -28,10 +28,10 @@ class HomeShelfDeduplicationTest {
         assertEquals((1..6).map { "yt_${NativeFeedFixtures.id(it)}" }, result.single().tracks.map { it.id })
         assertSame(result, appendServerShelves(result, listOf(page)))
     }
-    @Test fun sameTitleWithDifferentRecordingsOrExplicitDestinationsRemainsSeparate() {
+    @Test fun differentRecordingsRemainSeparateButContentCanOverrideChangedDestinations() {
         val first = shelf("one", 1, 2, 3, 4)
         assertEquals(2, appendServerShelves(listOf(first), listOf(shelf("two", 4, 5, 6, 7))).size)
-        assertEquals(2, appendServerShelves(listOf(first.copy(browseId = "VL-one")),
+        assertEquals(1, appendServerShelves(listOf(first.copy(browseId = "VL-one")),
             listOf(first.copy(id = "two", browseId = "VL-two"))).size)
     }
     @Test fun aSingleSharedTrackCannotCollapseDistinctNativeShelves() {
@@ -43,7 +43,7 @@ class HomeShelfDeduplicationTest {
         val refreshed = refreshServerShelves(old, listOf(shelf("new", 5, 4, 3, 2, 6)))
         assertEquals(1, refreshed.size); assertEquals("old", refreshed.single().id)
         assertEquals(cards.single().key, presentNativeShelves(cards, refreshed, ShelfLoadStatus.SUCCESS).single().key)
-        assertEquals(listOf(5, 4, 3, 2, 6, 1).map { "yt_${NativeFeedFixtures.id(it)}" }, refreshed.single().tracks.map { it.id })
+        assertEquals(listOf(5, 4, 3, 2, 6).map { "yt_${NativeFeedFixtures.id(it)}" }, refreshed.single().tracks.map { it.id })
     }
     @Test fun parserDeduplicatesWithinOneResponseAndIdsDoNotDependOnPageOrOrder() {
         val a = YouTubeHomeParser.parseHomeFeed(JSONObject(NativeFeedFixtures.home(
@@ -78,6 +78,25 @@ class HomeShelfDeduplicationTest {
         selected.getJSONObject("tabRenderer").put("selected", true)
         tabs.put(selected)
         assertEquals("Seasonal music", YouTubeHomeParser.parseHomeFeed(root).shelves.single().title)
+    }
+
+    @Test fun smallPartiallyChangedShelvesMergeAcrossBrowseSourcesButDistinctOnesRemain() {
+        val old = shelf("home", 1, 2, 3).copy(browseId = "VLhome")
+        val extra = shelf("explore", 3, 2, 4).copy(browseId = "VLexplore")
+        assertEquals(1, appendServerShelves(listOf(old), listOf(extra)).size)
+        assertEquals(2, appendServerShelves(listOf(old), listOf(shelf("other", 3, 5, 6))).size)
+        var feed = listOf(old)
+        repeat(20) { feed = refreshServerShelves(feed, listOf(extra, extra.copy(id = "changing-$it"))) }
+        assertEquals(1, feed.size)
+        assertEquals("home", feed.single().id)
+        assertEquals(listOf(3, 2, 4).map { "yt_${NativeFeedFixtures.id(it)}" }, feed.single().tracks.map { it.id })
+    }
+
+    @Test fun aMergedOldShelfCannotGiveTwoDistinctNewShelvesTheSameLazyKey() {
+        val old = shelf("old", 1, 2, 3, 4, 5, 6, 7, 8)
+        val split = refreshServerShelves(listOf(old), listOf(shelf("one", 1, 2, 3, 4), shelf("two", 5, 6, 7, 8)))
+        assertEquals(2, split.size)
+        assertEquals(2, split.map { it.id }.distinct().size)
     }
 
 }

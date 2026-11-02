@@ -59,7 +59,10 @@ object BackupRestoreManager {
         val restoredPlaylistsCount: Int = 0,
         val restoredTracksCount: Int = 0,
         val profileRestored: Boolean = false,
-        val needsOnboardingDetails: Boolean = false
+        val needsOnboardingDetails: Boolean = false,
+        val restoredListeningRowsCount: Int = 0,
+        val restoredListeningEventsCount: Int = 0,
+        val listeningStatsPresent: Boolean = false
     )
 
     private fun getPrefs(context: Context): SharedPreferences {
@@ -364,16 +367,22 @@ object BackupRestoreManager {
     ): Result<BackupInfo> = withContext(Dispatchers.IO) {
         val work = com.example.performance.BackgroundWorkCoordinator.busy()
         try {
-            com.example.data.repository.ListeningStatsRepository.flushExisting()
             (context.applicationContext as? com.example.XtremeMusicApp)?.settingsRepository?.awaitPendingWrites()
             val dao = musicDatabase.musicDao()
             var listeningTotals = emptyList<ListeningTotal>()
             var listeningMigrations = emptyList<ListeningIdentityMigration>()
-            val (playlists, allTracks, crossRefs) = musicDatabase.withTransaction {
-                dao.removeOrphanPlaylistTrackRefs()
-                listeningTotals = musicDatabase.listeningStatsDao().all()
-                listeningMigrations = musicDatabase.listeningStatsDao().identityMigrations()
-                Triple(dao.getAllPlaylistsSync(), dao.getAllTracksSync(), dao.getAllPlaylistCrossRefsSync())
+            var listeningHistory: ListeningHistoryBackup? = null
+            val (playlists, allTracks, crossRefs) = com.example.data.repository.ListeningStatsRepository.withPreparedDatabase(context, musicDatabase) { origin ->
+                musicDatabase.withTransaction {
+                    dao.removeOrphanPlaylistTrackRefs()
+                    listeningTotals = musicDatabase.listeningStatsDao().all()
+                    listeningMigrations = musicDatabase.listeningStatsDao().identityMigrations()
+                    val events = musicDatabase.listeningEventDao().allForBackup()
+                    val eventIds = events.mapTo(hashSetOf()) { it.id }
+                    listeningHistory = ListeningHistoryBackup(origin, events,
+                        musicDatabase.listeningStatsDao().allCheckpoints().filter { it.eventId in eventIds })
+                    Triple(dao.getAllPlaylistsSync(), dao.getAllTracksSync(), dao.getAllPlaylistCrossRefsSync())
+                }
             }
             val userProfile = UserProfilePreferences.getUserProfile(context)
             val settings = BackupSettings.capture(context)
@@ -381,15 +390,17 @@ object BackupRestoreManager {
                 "Backup is too large to restore safely"
             }
             val (jsonContent, tracksCount) = withContext(AppDispatchers.CpuBounded) {
+            require(requireNotNull(listeningHistory).events.size <= MAX_BACKUP_ITEMS) { "Listening history is too large to restore safely" }
             val favoriteTracks = allTracks.filter { it.isLiked }
 
             val rootJson = JSONObject()
             rootJson.put("app", "Xtreme Player")
             rootJson.put("version", com.example.BuildConfig.VERSION_NAME)
-            rootJson.put("schemaVersion", 5)
+            rootJson.put("schemaVersion", 6)
             rootJson.put("settings", BackupSettings.encode(settings))
             rootJson.put("listeningStats", ListeningStatsBackup.encode(listeningTotals))
             rootJson.put("listeningIdentityMigrations", ListeningStatsBackup.encodeMigrations(listeningMigrations))
+            rootJson.put("listeningHistory", requireNotNull(listeningHistory).encode())
             rootJson.put("createdAt", System.currentTimeMillis())
 
             // User Profile
@@ -519,7 +530,9 @@ object BackupRestoreManager {
         val ignoredOrphanRefs: Int = 0,
         val listeningStats: List<ListeningTotal> = emptyList(),
         val listeningMigrations: List<ListeningIdentityMigration> = emptyList(),
-        val settings: Map<String, Map<String, Any>> = emptyMap()
+        val settings: Map<String, Map<String, Any>> = emptyMap(),
+        val listeningHistory: ListeningHistoryBackup? = null,
+        val hasListeningStats: Boolean = false
     )
 
     private fun normalizeText(text: String): String =
@@ -613,8 +626,8 @@ object BackupRestoreManager {
         val root = JSONObject(text)
         if (root.has("app")) require(stringField(root, "app").equals("Xtreme Player", true)) { "Not an Xtreme Player backup" }
         val schema = longField(root, "schemaVersion", 1L)
-        require(schema in 1L..5L) { "Unsupported backup schema version: $schema" }
-        require(listOf("playlists", "libraryTracks", "tracks", "favoriteTracks", "userProfile").any(root::has)) {
+        require(schema in 1L..6L) { "Unsupported backup schema version: $schema" }
+        require(listOf("playlists", "libraryTracks", "tracks", "favoriteTracks", "userProfile", "listeningStats").any(root::has)) {
             "No backup data found"
         }
         val playlists = if (root.has("playlists")) arrayField(root, "playlists").let { array ->
@@ -704,11 +717,15 @@ object BackupRestoreManager {
                 "Empty user profile section"
             }
         }
-        require(playlists.isNotEmpty() || tracks.isNotEmpty() || profile != null) { "Backup file is empty" }
+        require(playlists.isNotEmpty() || tracks.isNotEmpty() || profile != null || root.has("listeningStats")) { "Backup file is empty" }
+        val history = if (root.has("listeningHistory")) {
+            require(root.has("listeningStats")) { "Listening history requires its committed aggregates" }
+            ListeningHistoryBackup.decode(root.getJSONObject("listeningHistory"))
+        } else null
         return ParsedBackup(playlists, tracks, validParentRefs, profile, root.has("playlists"), refs.size - validParentRefs.size,
             if (root.has("listeningStats")) ListeningStatsBackup.decode(root.getJSONArray("listeningStats")) else emptyList(),
             if (root.has("listeningIdentityMigrations")) ListeningStatsBackup.decodeMigrations(root.getJSONArray("listeningIdentityMigrations")) else emptyList(),
-            if (root.has("settings")) BackupSettings.decode(root.getJSONObject("settings")) else emptyMap())
+            if (root.has("settings")) BackupSettings.decode(root.getJSONObject("settings")) else emptyMap(), history, root.has("listeningStats"))
     }
 
     private fun restoredProfile(json: JSONObject, previous: UserProfile): UserProfile = previous.copy(
@@ -770,6 +787,8 @@ object BackupRestoreManager {
             var previousSettings = emptyMap<String, Map<String, Any>>()
             var settingsWriteAttempted = false
             var databaseCommitted = false
+            var restoredEventCount = 0
+            var verifiedListeningRows = 0
             try {
                 require(mode != RestoreMode.REPLACE || confirmReplace) {
                     "Explicit confirmation required before replacing existing playlists."
@@ -791,7 +810,8 @@ object BackupRestoreManager {
                 // Once validated restoration starts, cancellation must not separate Room's commit
                 // from profile publication or mistake an already committed transaction for failure.
                 val restoredTrackCount = withContext(kotlinx.coroutines.NonCancellable) {
-                    val restoredCount = musicDatabase.withTransaction {
+                    val restoredCount = com.example.data.repository.ListeningStatsRepository.withPreparedDatabase(context, musicDatabase) {
+                      musicDatabase.withTransaction {
                         val existingPlaylists = dao.getAllPlaylistsSync()
                         val existingTracks = dao.getAllTracksSync()
                         val existingIds = existingTracks.map { it.id }.toSet()
@@ -837,6 +857,18 @@ object BackupRestoreManager {
                                 // favorite choices, cached-file state, and actual playback history.
                             }
                         }
+                        backup.listeningHistory?.events?.forEach { event ->
+                            if (event.trackId !in trackIdMap) {
+                                val saved = tracksById[event.trackId]
+                                val total = backup.listeningStats.firstOrNull { it.trackId == event.trackId && it.kind == "song" }
+                                val track = saved ?: total?.track()?.let(TrackEntity::fromMusicTrack)
+                                    ?: TrackEntity(id = event.trackId, title = "Unknown Track", artist = event.artistName,
+                                        album = event.album, durationMs = event.trackDurationMs, coverUrl = "", audioUrl = "",
+                                        genre = event.genre, language = event.language, source = event.source)
+                                trackIdMap[event.trackId] = track.id
+                                if (saved == null) { importedTracks[track.id] = track; tracksById[track.id] = track }
+                            }
+                        }
                         // Legacy playlist deletion could leave junction rows; never attach a new
                         // imported playlist to those unrelated relationships by reusing their ID.
                         val localPlaylistIds = (existingPlaylists.map { it.playlistId } +
@@ -875,6 +907,8 @@ object BackupRestoreManager {
                             val originalId = migration.catalogIdentity.removePrefix("catalog:")
                             migration.copy(catalogIdentity = "catalog:${trackIdMap[originalId] ?: originalId}")
                         })
+                        restoredEventCount = backup.listeningHistory?.merge(musicDatabase, trackIdMap) ?: 0
+                        verifiedListeningRows = musicDatabase.listeningStatsDao().count()
                         if (backup.settings.isNotEmpty()) {
                             settingsWriteAttempted = true
                             BackupSettings.write(context, backup.settings)
@@ -886,20 +920,25 @@ object BackupRestoreManager {
                             check(UserProfilePreferences.persistUserProfile(context, staged)) { "Could not save restored user profile" }
                         }
                         importedTracks.size
+                      }
                     }
                     databaseCommitted = true
                     if (finishOnboarding && profile?.isOnboardingCompleted == true) {
                         check(UserProfilePreferences.persistUserProfile(context, profile)) { "Could not finish restored onboarding" }
                     }
-                    com.example.data.repository.ListeningStatsRepository.invalidateExisting()
+                    com.example.data.repository.ListeningStatsRepository.invalidateDatabase(musicDatabase)
                     BackupSettings.publish(context, backup.settings)
                     profile?.let { UserProfilePreferences.publishUserProfile(it) }
                     restoredCount
                 }
+                android.util.Log.i("BackupRestoreManager", "Listening restore: statsPresent=${backup.hasListeningStats}, importedTotals=${backup.listeningStats.size}, databaseTotals=$verifiedListeningRows, newEvents=$restoredEventCount")
                 RestoreSummary(true,
                     "Backup successfully restored! Recovered ${backup.playlists.size} playlists and $restoredTrackCount new tracks into your library." +
-                        if (backup.ignoredOrphanRefs > 0) " Ignored ${backup.ignoredOrphanRefs} links to deleted playlists." else "",
-                    backup.playlists.size, restoredTrackCount, backup.profile != null, needsDetails)
+                        (if (backup.hasListeningStats) " Listening statistics: ${backup.listeningStats.size} records; $restoredEventCount new history events."
+                            else " This backup does not contain listening statistics.") +
+                        (if (backup.ignoredOrphanRefs > 0) " Ignored ${backup.ignoredOrphanRefs} links to deleted playlists." else ""),
+                    backup.playlists.size, restoredTrackCount, backup.profile != null, needsDetails,
+                    backup.listeningStats.size, restoredEventCount, backup.hasListeningStats)
             } catch (error: Exception) {
                 var settingsRollbackFailed = false
                 if (settingsWriteAttempted && !databaseCommitted) {

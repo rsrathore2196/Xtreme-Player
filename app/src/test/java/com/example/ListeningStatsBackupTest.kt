@@ -37,7 +37,7 @@ class ListeningStatsBackupTest {
             repository.flush()
             val backup = BackupRestoreManager.createBackup(context, source).getOrThrow()
             val body = File(backup.filePath).readText()
-            assertEquals(5, JSONObject(body).getInt("schemaVersion"))
+            assertEquals(6, JSONObject(body).getInt("schemaVersion"))
             assertEquals(4, JSONObject(body).getJSONArray("listeningStats").length())
             assertEquals(2, JSONObject(body).getJSONArray("listeningIdentityMigrations").length())
             repeat(2) {
@@ -49,7 +49,7 @@ class ListeningStatsBackupTest {
             assertEquals(90_000, restored.summary(ListeningPeriod.LIFETIME).millis)
             assertEquals(1, restored.summary(ListeningPeriod.LIFETIME).plays)
             assertTrue(target.musicDao().getTrackById(track.id)!!.isLiked)
-            assertTrue("Import must not invent raw playback events", target.listeningEventDao().getActualPlays().isEmpty())
+            assertEquals("Raw historical events restore without being counted twice", 1, target.listeningEventDao().getActualPlays().size)
         } finally { repository.close(); restored.close(); source.close(); target.close(); folder.deleteRecursively() }
     }
     @Test fun malformedStatsAbortTheWholeRestoreBeforeAnyLibraryChanges() = runBlocking {

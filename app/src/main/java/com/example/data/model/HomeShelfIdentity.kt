@@ -27,16 +27,18 @@ internal object HomeShelfIdentity {
     private fun signature(shelf: ServerHomeShelf) = Signature(shelf, title(shelf.title), entries(shelf).mapTo(hashSetOf(), ::item))
     private fun same(a: Signature, b: Signature): Boolean {
         val first = a.shelf; val second = b.shelf
-        if (first.browseId.isNotBlank() && second.browseId.isNotBlank() &&
-            (first.browseId != second.browseId || first.browseParams != second.browseParams)) return false
         if (first.id == second.id) return true
         if (a.title != b.title) return false
         if (first.browseId.isNotBlank() && first.browseId == second.browseId && first.browseParams == second.browseParams) return true
         if (first.providerId.isNotBlank() && first.providerId == second.providerId) return true
         if (a.content == b.content) return true
         val overlap = a.content.count(b.content::contains)
-        return overlap >= 3 && overlap * 5 >= minOf(a.content.size, b.content.size) * 4 &&
-            overlap * 2 >= maxOf(a.content.size, b.content.size)
+        val smaller = minOf(a.content.size, b.content.size)
+        val larger = maxOf(a.content.size, b.content.size)
+        // A destination can change between Home and Explore. Content evidence
+        // still wins, including two-of-three small shelves, but not one shared item.
+        return overlap >= 2 && (smaller <= 4 && overlap * 3 >= smaller * 2 && overlap * 3 >= larger * 2 ||
+            overlap >= 3 && overlap * 5 >= smaller * 4 && overlap * 2 >= larger)
     }
     fun equivalent(first: ServerHomeShelf, second: ServerHomeShelf) = same(signature(first), signature(second))
     private fun merge(first: ServerHomeShelf, next: ServerHomeShelf): ServerHomeShelf {
@@ -74,14 +76,16 @@ internal object HomeShelfIdentity {
     }
     fun refresh(previous: List<ServerHomeShelf>, incoming: List<ServerHomeShelf>): List<ServerHomeShelf> {
         if (incoming.isEmpty()) return incoming
+        val prior = previous.map(::signature)
+        val reused = hashSetOf<String>()
         val fresh = deduplicate(incoming).map { shelf ->
-            previous.firstOrNull { equivalent(it, shelf) }?.let { old ->
-                (if (old.id == shelf.id) shelf else merge(shelf, old)).copy(id = old.id)
+            val next = signature(shelf)
+            prior.firstOrNull { it.shelf.id !in reused && same(it, next) }?.let { old ->
+                reused.add(old.shelf.id); shelf.copy(id = old.shelf.id)
             } ?: shelf
         }
-        // A refreshed explicit identity replaces its old payload. Other cached
-        // continuation shelves remain useful and join the same equivalence pass.
-        val refreshed = fresh.mapTo(hashSetOf()) { it.id }
-        return deduplicate(fresh + previous.filterNot { it.id in refreshed })
+        // A successful source refresh replaces that source's old generation.
+        // Other browse sources are retained independently by the feed owner.
+        return deduplicate(fresh)
     }
 }

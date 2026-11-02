@@ -45,6 +45,9 @@ data class ActualTrackPlayCount(val trackId: String, val artistName: String, val
 
 @Dao
 interface ListeningEventDao {
+    @Query("SELECT * FROM listening_events ORDER BY id")
+    suspend fun allForBackup(): List<ListeningEventEntity>
+
     /** One service-owned occurrence counts once; playback milestones and feedback rows do not add plays. */
     @Query("""SELECT totals.trackId, COALESCE((SELECT latest.artistName FROM listening_events latest
         WHERE latest.trackId = totals.trackId AND latest.eventType = 'ACTUAL_PLAY' AND latest.playedDurationMs > 0

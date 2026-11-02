@@ -61,7 +61,7 @@ class OnboardingBackupRestoreTest {
             val file = BackupRestoreManager.createBackup(context, db).getOrThrow()
             val body = File(file.filePath).readText()
             val json = JSONObject(body)
-            assertEquals(5, json.getInt("schemaVersion"))
+            assertEquals(6, json.getInt("schemaVersion"))
             assertFalse(json.getJSONObject("settings").getJSONObject("xtreme_smart_cache_preferences").has("stats_audio"))
             assertFalse(json.getJSONObject("settings").getJSONObject("xtreme_backup_preferences").has("auto_backup_location"))
             BackupSettings.write(context, preferences.mapValues { emptyMap() })
