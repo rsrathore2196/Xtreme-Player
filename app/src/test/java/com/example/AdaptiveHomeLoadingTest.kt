@@ -55,7 +55,8 @@ class AdaptiveHomeLoadingTest {
     }
     @After fun close() = runBlocking<Unit> { stores.forEach { it.clear() }; player.release(); db.close(); clockPump?.cancelAndJoin(); BackgroundWorkCoordinator.foreground(false); Dispatchers.resetMain() }
     private suspend fun model(initial: Int = 8, first: CompletableDeferred<Unit>? = null, optional: Boolean = false,
-        refreshTracks: Boolean = false, failProfile: Boolean = false): HomeViewModel {
+        refreshTracks: Boolean = false, failProfile: Boolean = false,
+        supplementWait: CompletableDeferred<Unit>? = null, failSupplements: Boolean = false): HomeViewModel {
         val store = ViewModelStore().also(stores::add)
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T = HomeViewModel(
@@ -77,6 +78,8 @@ class AdaptiveHomeLoadingTest {
                 connectivityUpdates = emptyFlow(),
                 supplementalLoader = { _, browse, _ ->
                     supplements.incrementAndGet()
+                    supplementWait?.await()
+                    if (failSupplements) throw java.io.IOException("Supplement unavailable")
                     YouTubeHomeParser.ParsedHomeFeed(listOf(shelf(if (browse == "FEmusic_new_releases") 12 else 13)), null)
                 }) as T
         }
@@ -147,12 +150,12 @@ class AdaptiveHomeLoadingTest {
         vm.setHomeVisible(false); delay(100); idle(30_000)
         assertEquals(9, vm.revealedShelfCount.value); assertEquals(1, pages.get())
     }
-    @Test fun returningUsersWithOlderMeaningfulHistoryAdmitOptionalShelvesAfterSixSeconds() = runBlocking<Unit> {
+    @Test fun returningUsersWithOlderActualHistoryAdmitOptionalShelvesAfterSixSeconds() = runBlocking<Unit> {
         db.withTransaction {
             db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song(1)))
             for (n in 0..300) db.listeningEventDao().insertListeningEvent(ListeningEventEntity(
                 trackId = song(1).id, eventType = "ACTUAL_PLAY", sessionId = "occurrence-$n", timestamp = n.toLong(),
-                playedDurationMs = if (n == 0) 30_000 else 0))
+                playedDurationMs = if (n == 0) 5_000 else 0))
         }
         val vm = model(optional = true)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 8 }; vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
@@ -213,6 +216,70 @@ class AdaptiveHomeLoadingTest {
         db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song(1)))
         db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = song(1).id, artistName = song(1).artist,
             eventType = "ACTUAL_PLAY", playedDurationMs = 30_000, sessionId = "returning"))
+    }
+    @Test fun returningActualPlaysThatCountForArtistsReserveTheOptionalStagesBeforeNativeExpansion() = runBlocking<Unit> {
+        db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song(1)))
+        db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = song(1).id, artistName = song(1).artist,
+            eventType = "ACTUAL_PLAY", playedDurationMs = 5_000, sessionId = "returning-short"))
+        val vm = model(optional = true)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 8 }; vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
+        stopClock(); idle()
+        assertEquals("Native expansion cannot take an eligible artist's slot", 3, vm.revealedShelfCount.value)
+        withTimeout(5_000) { vm.mostListenedArtists.first { it.isNotEmpty() } }
+        settled(vm, "initialArtistSettledAt")
+        assertEquals(0, profiles.get())
+        idle(); settled(vm, "initialProfileSettledAt")
+        assertNotNull(vm.profileShelf.value); assertEquals(3, vm.revealedShelfCount.value)
+        idle(); withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
+    }
+    @Test fun optionalIdleSequenceStartsAfterInitialNativeShelvesAreReady() = runBlocking<Unit> {
+        returningHistory()
+        val first = CompletableDeferred<Unit>()
+        val vm = model(first = first, optional = true)
+        withTimeout(5_000) { vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
+        stopClock(); idle(20_000)
+        assertFalse("Artists must not consume their slot before the initial native presentation", vm.artistPortraitsReady.value)
+        assertEquals(0, profiles.get())
+        first.complete(Unit)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 8 } }
+        idle(5_999); assertFalse(vm.artistPortraitsReady.value)
+        idle(1); settled(vm, "initialArtistSettledAt")
+        assertTrue(vm.mostListenedArtists.value.isNotEmpty()); assertEquals(3, vm.revealedShelfCount.value)
+        idle(5_999); assertEquals(0, profiles.get())
+        idle(1); settled(vm, "initialProfileSettledAt")
+        assertEquals(3, vm.revealedShelfCount.value)
+        idle(5_999); assertEquals(3, vm.revealedShelfCount.value)
+        idle(1); withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
+    }
+    @Test fun initialShortFeedWaitsForItsNativeSupplementWindowBeforeArtistAdmission() = runBlocking<Unit> {
+        returningHistory()
+        val release = CompletableDeferred<Unit>()
+        val vm = model(initial = 1, optional = true, supplementWait = release)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 1 }; while (supplements.get() != 2) delay(10) }
+        stopClock(); idle(20_000)
+        assertFalse(vm.artistPortraitsReady.value); assertEquals(0, profiles.get())
+        release.complete(Unit)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
+        idle(5_999); assertFalse(vm.artistPortraitsReady.value)
+        idle(1); settled(vm, "initialArtistSettledAt")
+        assertTrue(vm.mostListenedArtists.value.isNotEmpty()); assertEquals(0, profiles.get())
+        idle(); settled(vm, "initialProfileSettledAt")
+        assertEquals(3, vm.revealedShelfCount.value)
+    }
+    @Test fun failedSupplementsDoNotPermanentlyBlockOptionalStagesWhenOnlyTwoNativeShelvesExist() = runBlocking<Unit> {
+        returningHistory()
+        val vm = model(initial = 2, optional = true, failSupplements = true)
+        withTimeout(5_000) {
+            vm.serverShelves.first { it.size == 2 }
+            vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING }
+            while (supplements.get() != 2) delay(10)
+        }
+        settled(vm, "initialNativeReadyAt")
+        stopClock(); idle()
+        settled(vm, "initialArtistSettledAt")
+        assertTrue(vm.mostListenedArtists.value.isNotEmpty()); assertEquals(0, profiles.get())
+        idle(); settled(vm, "initialProfileSettledAt")
+        assertNotNull(vm.profileShelf.value); assertEquals(2, vm.revealedShelfCount.value)
     }
     @Test fun cachedOptionalCardsUseTheirSeparateSlotsWithoutProfileNetworkWork() = runBlocking<Unit> {
         returningHistory()

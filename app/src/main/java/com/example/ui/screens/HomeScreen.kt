@@ -527,78 +527,82 @@ fun HomeScreenContent(
                 }
             }
 
-            if (hasArtists) {
-                artworkItem(state = listState, key = "most_listened_artists", contentType = "artist_shelf") {
-                    val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
-                    val enrichArtists = optionalShelvesVisible
-                    if (artists.isEmpty()) return@artworkItem
-                    val visibleArtists = remember(artists) {
-                        artists.take(15)
-                    }
-                    val artistListState = rememberLazyListState()
-                    ObserveHomeScroll(artistListState)
-                    Column(Modifier.padding(top = 22.dp)) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
-                            verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                "Most Listened Artists",
-                                modifier = Modifier.weight(1f),
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = textPrimaryColor
-                            )
-                        }
-                        Spacer(Modifier.height(12.dp))
-                        LazyRow(
-                            state = artistListState,
-                            contentPadding = PaddingValues(horizontal = 20.dp),
-                            horizontalArrangement = Arrangement.spacedBy(14.dp)
-                        ) {
-                            items(visibleArtists, key = { it.name }, contentType = { "artist_card" }) { artist ->
-                                Column(
-                                    Modifier.width(168.dp).clip(RoundedCornerShape(18.dp))
-                                        .background(cardBg)
-                                        .clickable {
-                                            onOpenArtist(com.example.data.repository.ArtistPhotoRepository.cachedArtist(artist.name))
-                                        }.padding(12.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
+            val cardsToShow = nativeCards.filterIndexed { index, card ->
+                card.status == ShelfLoadStatus.LOADING || index < revealedCount
+            }
+            // Keep the initial native window first, then the two admitted local/profile stages.
+            for (index in 0..cardsToShow.size) {
+                if (index == minOf(3, cardsToShow.size)) {
+                    if (hasArtists) {
+                        artworkItem(state = listState, key = "most_listened_artists", contentType = "artist_shelf") {
+                            val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
+                            val enrichArtists = optionalShelvesVisible
+                            if (artists.isEmpty()) return@artworkItem
+                            val visibleArtists = remember(artists) {
+                                artists.take(15)
+                            }
+                            val artistListState = rememberLazyListState()
+                            ObserveHomeScroll(artistListState)
+                            Column(Modifier.padding(top = 22.dp)) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp),
+                                    verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "Most Listened Artists",
+                                        modifier = Modifier.weight(1f),
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = textPrimaryColor
+                                    )
+                                }
+                                Spacer(Modifier.height(12.dp))
+                                LazyRow(
+                                    state = artistListState,
+                                    contentPadding = PaddingValues(horizontal = 20.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
-                                    VisibleItemArtwork(artistListState, artist.name) {
-                                        com.example.ui.components.ArtistPortrait(
-                                            artist = com.example.data.repository.ArtistPhotoRepository.cachedArtist(artist.name),
-                                            deferEnrichment = true,
-                                            enrichmentAllowed = enrichArtists,
-                                            targetSize = with(androidx.compose.ui.platform.LocalDensity.current) { 124.8.dp.roundToPx() },
-                                            modifier = Modifier.size(124.8.dp).clip(CircleShape)
-                                        )
+                                    items(visibleArtists, key = { it.name }, contentType = { "artist_card" }) { artist ->
+                                        Column(
+                                            Modifier.width(168.dp).clip(RoundedCornerShape(18.dp))
+                                                .background(cardBg)
+                                                .clickable {
+                                                    onOpenArtist(com.example.data.repository.ArtistPhotoRepository.cachedArtist(artist.name))
+                                                }.padding(12.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            VisibleItemArtwork(artistListState, artist.name) {
+                                                com.example.ui.components.ArtistPortrait(
+                                                    artist = com.example.data.repository.ArtistPhotoRepository.cachedArtist(artist.name),
+                                                    deferEnrichment = true,
+                                                    enrichmentAllowed = enrichArtists,
+                                                    targetSize = with(androidx.compose.ui.platform.LocalDensity.current) { 124.8.dp.roundToPx() },
+                                                    modifier = Modifier.size(124.8.dp).clip(CircleShape)
+                                                )
+                                            }
+                                            Spacer(Modifier.height(8.dp))
+                                            Text(artist.name, color = textPrimaryColor, fontWeight = FontWeight.SemiBold,
+                                                modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE),
+                                                maxLines = 1, softWrap = false, textAlign = TextAlign.Center)
+                                        }
                                     }
-                                    Spacer(Modifier.height(8.dp))
-                                    Text(artist.name, color = textPrimaryColor, fontWeight = FontWeight.SemiBold,
-                                        modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE),
-                                        maxLines = 1, softWrap = false, textAlign = TextAlign.Center)
                                 }
                             }
                         }
                     }
-                }
-            }
 
-            // Independent shelf slots keep successful content and scroll anchors stable.
-            if (resolvedProfile != null && resolvedProfile.tracks.isNotEmpty()) {
-                artworkItem(state = listState, key = "profile_shelf", contentType = "server_song_shelf") {
-                    val section = remember(resolvedProfile) {
-                        SectionState(title = resolvedProfile?.title.orEmpty(), subtitle = resolvedProfile?.subtitle.orEmpty(),
-                            tracks = resolvedProfile.tracks, isLoaded = true)
+                    // Independent shelf slots keep successful content and scroll anchors stable.
+                    if (resolvedProfile != null && resolvedProfile.tracks.isNotEmpty()) {
+                        artworkItem(state = listState, key = "profile_shelf", contentType = "server_song_shelf") {
+                            val section = remember(resolvedProfile) {
+                                SectionState(title = resolvedProfile?.title.orEmpty(), subtitle = resolvedProfile?.subtitle.orEmpty(),
+                                    tracks = resolvedProfile.tracks, isLoaded = true)
+                            }
+                            SectionCardLayout(state = section, tracksPrepared = true,
+                                currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
+                                textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
+                        }
                     }
-                    SectionCardLayout(state = section, tracksPrepared = true,
-                        currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
-                        textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
                 }
-            }
-            val cardsToShow = nativeCards.filterIndexed { index, card ->
-                card.status == ShelfLoadStatus.LOADING || index < revealedCount
-            }
-            for (card in cardsToShow) {
+                val card = cardsToShow.getOrNull(index) ?: continue
                 artworkItem(state = listState, key = card.key, contentType = "server_song_shelf") {
                     when (card.status) {
                         ShelfLoadStatus.LOADING, ShelfLoadStatus.SUCCESS -> {

@@ -161,6 +161,9 @@ class InitialHomePreparationTest {
         assertEquals(listOf("refreshed"), vm.serverShelves.value.map { it.id })
     }
     @Test fun manualRefreshReusesBothActualRequestsWhenPromotingAnAutomaticRefresh() = runBlocking {
+        // A displayed stale native window admits profile work while the automatic refresh runs.
+        HomeCardCache(app).save(SavedHomeCards(HomeCacheIdentity.home(preferences), refreshedAt = 0,
+            serverShelves = listOf(shelf("native"), shelf("stale-two"), shelf("stale-three")), serverFetchSucceeded = true))
         val serverStarted = CompletableDeferred<Unit>(); val profileStarted = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
         val calls = AtomicInteger(); val profileCalls = AtomicInteger()
         val vm = viewModel({ _, _ -> calls.incrementAndGet(); serverStarted.complete(Unit); release.await(); page("native") }, { _, _ ->
@@ -669,9 +672,12 @@ class InitialHomePreparationTest {
             })
         vm.setHomeVisible(true)
         withTimeout(5_000) { vm.refreshHome(true).join() }
-        // Filling the initial window consumes the refresh's first reveal. A
-        // separate demand now prepares the primary cursor and surfaces failure.
-        reveal(vm)
+        // The refresh may already own its first continuation when the three
+        // source results publish together. Observe that outcome before adding demand.
+        withTimeout(5_000) {
+            (vm.javaClass.getDeclaredField("nativePageJob").apply { isAccessible = true }.get(vm) as? Job)?.join()
+        }
+        if (mainPages.get() == 0) reveal(vm)
         withTimeout(5_000) { vm.continuationStatus.first { it == ShelfLoadStatus.ERROR } }
         reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 4 } }

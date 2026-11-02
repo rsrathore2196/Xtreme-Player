@@ -90,6 +90,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private val localRestored = CompletableDeferred<Unit>()
     private val profileRestored = CompletableDeferred<Unit>()
     private val homeDrawAt = MutableStateFlow<Long?>(null)
+    private val initialNativeReadyAt = MutableStateFlow<Long?>(null)
     private val _optionalWorkReady = MutableStateFlow(false)
     val optionalWorkReady = _optionalWorkReady.asStateFlow()
     private val _artistPortraitsReady = MutableStateFlow(false)
@@ -166,6 +167,9 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private var recentMetadata: List<MusicTrack> = emptyList()
 
     init {
+        val initialPresentation = combine(homeDrawAt, initialNativeReadyAt) { drawn, native ->
+            if (drawn != null && native != null) maxOf(drawn, native) else null
+        }
         owner.launch {
             val foreground = combine(homeVisible, homeDrawAt, BackgroundWorkCoordinator.uiForeground,
                 BackgroundWorkCoordinator.interactions, nativeRevealAt) { active, drawn, visible, _, last ->
@@ -173,7 +177,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             }
             val available = combine(_serverShelves, _serverCards, _revealedShelfCount, _isRefreshing,
                 _paginationRevision) { _, _, _, refreshing, _ -> !refreshing && hasAutomaticNativeWork() }
-            val priority = combine(_userMode, listeningUnlockAt, initialProfileSettledAt) { _, _, _ -> nativePriorityAt() }
+            val priority = combine(_userMode, listeningUnlockAt, initialProfileSettledAt, initialNativeReadyAt) { _, _, _, _ -> nativePriorityAt() }
             combine(foreground, available, priority) { start, work, priorityAt ->
                 if (start != null && work && priorityAt != null) maxOf(start, priorityAt) else null
             }.collectLatest { start ->
@@ -208,7 +212,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                 .distinctUntilChanged().collect { eligible -> if (eligible) scheduleSupplements(false) }
         }
         owner.launch {
-            combine(homeVisible, homeDrawAt, listeningUnlockAt, BackgroundWorkCoordinator.uiForeground, BackgroundWorkCoordinator.interactions) {
+            combine(homeVisible, initialPresentation, listeningUnlockAt, BackgroundWorkCoordinator.uiForeground, BackgroundWorkCoordinator.interactions) {
                 active, drawn, qualified, foreground, _ ->
                 if (active && foreground && drawn != null && qualified != null) maxOf(drawn, qualified) else null
             }.collectLatest { drawn ->
@@ -221,7 +225,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             }
         }
         owner.launch {
-            combine(homeVisible, homeDrawAt, initialArtistSettledAt, BackgroundWorkCoordinator.uiForeground,
+            combine(homeVisible, initialPresentation, initialArtistSettledAt, BackgroundWorkCoordinator.uiForeground,
                 BackgroundWorkCoordinator.interactions) { active, drawn, artistReady, foreground, _ ->
                 if (active && foreground && drawn != null && artistReady != null) maxOf(drawn, artistReady) else null
             }.collectLatest { start ->
@@ -323,11 +327,14 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                             playedIds.asSequence().mapNotNull { byId[it] }
                                 .filter(seen::add).take(30).toList()
                         } }
-                        val meaningful = rowsSnapshot.mapNotNull { it.event }.filter(HomeRecommendationPolicy::meaningful)
+                        val events = rowsSnapshot.mapNotNull { it.event }
+                        val meaningful = events.filter(HomeRecommendationPolicy::meaningful)
                         if (!initialHistoryResolved) {
-                            val olderMeaningful = meaningful.isEmpty() && (rowsSnapshot.firstOrNull()?.total ?: 0) > rowsSnapshot.count { it.event != null } &&
-                                withContext(AppDispatchers.Database) { database.listeningEventDao().hasMeaningfulHistory() }
-                            if (meaningful.isNotEmpty() || olderMeaningful) listeningUnlockAt.value = elapsedTime()
+                            // Returning users qualify with the same genuine plays counted by artist rankings.
+                            // The three-distinct-meaningful-song rule still applies to a new session's first history.
+                            val olderPlayback = playedIds.isEmpty() && (rowsSnapshot.firstOrNull()?.total ?: 0) > events.size &&
+                                withContext(AppDispatchers.Database) { database.listeningEventDao().hasActualPlaybackHistory() }
+                            if (playedIds.isNotEmpty() || olderPlayback) listeningUnlockAt.value = elapsedTime()
                             initialHistoryResolved = true
                         }
                         if (listeningUnlockAt.value == null) {
@@ -418,6 +425,14 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         if (revealed != null) _revealedShelfCount.value = revealed.coerceAtMost(unique.size)
         _serverCards.value = presentNativeShelves(_serverCards.value, unique, status, message)
         _serverShelves.value = unique
+        markInitialNativeReady()
+    }
+    private fun markInitialNativeReady() {
+        // Wait for the initial native window, not just the scaffold's first draw.
+        // A genuinely short/failed response must still let the local stages progress.
+        if (_serverShelves.value.size >= 3 || primarySettled.value &&
+            supplementalBrowseIds.none { sourceJobs[it]?.isActive == true })
+            initialNativeReadyAt.compareAndSet(null, elapsedTime())
     }
     private fun snapshot() = SavedHomeCards(serverCacheKey, serverFetchedAt, _listeningHistoryCard.value,
         _mostListenedArtists.value.take(15), artistRevision, _serverShelves.value, _profileShelf.value, homeContinuationToken,
@@ -474,6 +489,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         if (!force && fresh(serverSuccess, serverFetchedAt, sources.values.none { it.shelves.isNotEmpty() }) &&
             (serverCacheKey == homeKey || serverAttemptAt != null)) {
             primarySettled.value = true
+            markInitialNativeReady()
             return@withContext true
         }
         serverJob?.takeIf { it.isActive }?.let { if (force || _serverShelves.value.isEmpty()) serverUrgent.value = true; return@withContext it.await() }
@@ -603,6 +619,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         _serverCards.value = presentNativeShelves(_serverCards.value, shelves,
             if (pending) ShelfLoadStatus.LOADING else ShelfLoadStatus.SUCCESS)
         _serverShelves.value = shelves
+        markInitialNativeReady()
         android.util.Log.d("NativeHome", "publish shelves=${shelves.size} revealed=${_revealedShelfCount.value} suppressed=${inputs.sumOf { it.size } - shelves.size} pending=$pending auth=${serverCacheKey.substringAfter('|') != "anonymous"}")
     }
     private fun sourceFailed(browse: String, token: String, category: String = "response_or_transport") {
@@ -707,9 +724,9 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     }
     /** Ineligible local cards never block anonymous/new-user Home expansion. */
     private fun nativePriorityAt(): Long? = when {
-        _userMode.value == HomeUserMode.LOADING -> null
+        _userMode.value == HomeUserMode.LOADING || initialNativeReadyAt.value == null -> null
         listeningUnlockAt.value != null -> initialProfileSettledAt.value
-        else -> 0L
+        else -> initialNativeReadyAt.value
     }
     private fun requestMoreHome(urgent: Boolean = true): Boolean {
         if (!_additionalShelvesUnlocked.value || !pendingNativeReveal) return false

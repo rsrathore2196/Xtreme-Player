@@ -49,9 +49,9 @@ class HomeSilentLoadingUiTest {
         CompositionLocalProvider(LocalAppColors provides DarkAppColors, LocalDynamicGlassEnabled provides false,
             LocalVisualEffectsActive provides false, LocalArtworkRequestsActive provides false, content = block)
     } }
-    @Test fun optionalShelvesSitDirectlyAfterRecentlyPlayedBeforeNativeShelves() = localShelfOrder(landscape = false)
+    @Test fun optionalShelvesFollowTheInitialThreeNativeShelves() = localShelfOrder(landscape = false)
     @Test @Config(qualifiers = "w891dp-h411dp-land")
-    fun landscapeOptionalShelvesFollowTheOverviewContainingRecentlyPlayed() = localShelfOrder(landscape = true)
+    fun landscapeOptionalShelvesFollowTheInitialThreeNativeShelves() = localShelfOrder(landscape = true)
     private fun localShelfOrder(landscape: Boolean) {
         lateinit var list: LazyListState
         lateinit var scope: CoroutineScope
@@ -65,7 +65,8 @@ class HomeSilentLoadingUiTest {
         val recent = if (landscape) 1 else 2
         val expected = listOf(
             recent to if (landscape) "hero_infinite_radio_card" else "card_1_recently_played_grid",
-            recent + 1 to "most_listened_artists", recent + 2 to "profile_shelf", recent + 3 to "server_shelf_s1")
+            recent + 1 to "server_shelf_s1", recent + 2 to "server_shelf_s2", recent + 3 to "server_shelf_s3",
+            recent + 4 to "most_listened_artists", recent + 5 to "profile_shelf")
         for ((index, key) in expected) {
             compose.runOnIdle { scope.launch { list.scrollToItem(index) } }
             compose.waitForIdle()
