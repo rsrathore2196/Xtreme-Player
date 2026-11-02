@@ -49,9 +49,9 @@ class HomeSilentLoadingUiTest {
         CompositionLocalProvider(LocalAppColors provides DarkAppColors, LocalDynamicGlassEnabled provides false,
             LocalVisualEffectsActive provides false, LocalArtworkRequestsActive provides false, content = block)
     } }
-    @Test fun optionalShelvesFollowTheInitialThreeNativeShelves() = localShelfOrder(landscape = false)
+    @Test fun optionalShelvesFollowRecentlyPlayedBeforeNativeShelves() = localShelfOrder(landscape = false)
     @Test @Config(qualifiers = "w891dp-h411dp-land")
-    fun landscapeOptionalShelvesFollowTheInitialThreeNativeShelves() = localShelfOrder(landscape = true)
+    fun landscapeOptionalShelvesFollowRecentHeroBeforeNativeShelves() = localShelfOrder(landscape = true)
     private fun localShelfOrder(landscape: Boolean) {
         lateinit var list: LazyListState
         lateinit var scope: CoroutineScope
@@ -65,8 +65,8 @@ class HomeSilentLoadingUiTest {
         val recent = if (landscape) 1 else 2
         val expected = listOf(
             recent to if (landscape) "hero_infinite_radio_card" else "card_1_recently_played_grid",
-            recent + 1 to "server_shelf_s1", recent + 2 to "server_shelf_s2", recent + 3 to "server_shelf_s3",
-            recent + 4 to "profile_shelf", recent + 5 to "most_listened_artists")
+            recent + 1 to "profile_shelf", recent + 2 to "most_listened_artists",
+            recent + 3 to "server_shelf_s1", recent + 4 to "server_shelf_s2", recent + 5 to "server_shelf_s3")
         for ((index, key) in expected) {
             compose.runOnIdle { scope.launch { list.scrollToItem(index) } }
             compose.waitForIdle()
@@ -89,6 +89,11 @@ class HomeSilentLoadingUiTest {
         val anchor = compose.runOnIdle { list.layoutInfo.visibleItemsInfo.first().key to list.firstVisibleItemScrollOffset }
         compose.runOnIdle {
             profile = ServerHomeShelf("profile", "Music for You", tracks = listOf(song))
+        }
+        compose.waitForIdle()
+        compose.runOnIdle {
+            assertEquals(anchor.first, list.layoutInfo.visibleItemsInfo.first().key)
+            assertEquals(anchor.second, list.firstVisibleItemScrollOffset)
             artists = listOf(MostListenedArtist("Singer", 1, listOf(song)))
         }
         compose.waitForIdle()
