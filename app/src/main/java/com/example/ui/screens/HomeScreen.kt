@@ -311,8 +311,9 @@ fun HomeScreenContent(
             homeView.awaitContentDraw { homeViewModel.onHomeFrameDrawn() }
         }
     }
+    val profileVisible = homeViewModel?.profileShelfVisible?.collectAsStateWithLifecycle()?.value ?: true
     val resolvedProfile = (homeViewModel?.profileShelf?.collectAsStateWithLifecycle()?.value ?: profileShelf)
-        ?.takeIf { optionalShelvesVisible }
+        ?.takeIf { profileVisible }
     val revealedCount = homeViewModel?.revealedShelfCount?.collectAsStateWithLifecycle()?.value ?: retainedWindow.value.visibleCount
 
     ObserveHomeScroll(listState)

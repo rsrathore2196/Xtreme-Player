@@ -94,6 +94,11 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     val optionalWorkReady = _optionalWorkReady.asStateFlow()
     private val _artistPortraitsReady = MutableStateFlow(false)
     val artistPortraitsReady = _artistPortraitsReady.asStateFlow()
+    private val initialArtistSettledAt = MutableStateFlow<Long?>(null)
+    private val initialProfileSettledAt = MutableStateFlow<Long?>(null)
+    private val profileWorkReady = MutableStateFlow(false)
+    private val _profileShelfVisible = MutableStateFlow(false)
+    val profileShelfVisible = _profileShelfVisible.asStateFlow()
     private val _additionalShelvesUnlocked = MutableStateFlow(false)
     val additionalShelvesUnlocked = _additionalShelvesUnlocked.asStateFlow()
     private val listeningUnlockAt = MutableStateFlow<Long?>(null)
@@ -163,7 +168,10 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             }
             val available = combine(_serverShelves, _serverCards, _revealedShelfCount, _isRefreshing,
                 _paginationRevision) { _, _, _, refreshing, _ -> !refreshing && hasAutomaticNativeWork() }
-            combine(foreground, available) { start, work -> start.takeIf { work } }.collectLatest { start ->
+            val priority = combine(_userMode, listeningUnlockAt, initialProfileSettledAt) { _, _, _ -> nativePriorityAt() }
+            combine(foreground, available, priority) { start, work, priorityAt ->
+                if (start != null && work && priorityAt != null) maxOf(start, priorityAt) else null
+            }.collectLatest { start ->
                 nativeAdmissionInput = null
                 if (start != null) {
                     unlockIdleAdmission(start)
@@ -208,11 +216,28 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             }
         }
         owner.launch {
-            combine(_optionalWorkReady, profileRequests) { ready, request -> request.takeIf { ready } }
+            combine(homeVisible, homeDrawAt, initialArtistSettledAt, BackgroundWorkCoordinator.uiForeground,
+                BackgroundWorkCoordinator.interactions) { active, drawn, artistReady, foreground, _ ->
+                if (active && foreground && drawn != null && artistReady != null) maxOf(drawn, artistReady) else null
+            }.collectLatest { start ->
+                profileWorkReady.value = false
+                if (start != null) {
+                    idleAdmission(start)
+                    profileWorkReady.value = true
+                    _profileShelfVisible.value = true
+                }
+            }
+        }
+        owner.launch {
+            combine(profileWorkReady, profileRequests) { ready, request -> request.takeIf { ready } }
                 .collectLatest { request ->
                     if (request == null) return@collectLatest
-                    try { if (loadProfileShelf(profileForcePending)) profileForcePending = false }
-                    finally { if (!_optionalWorkReady.value) profileJob?.cancelAndJoin() }
+                    try {
+                        val key = profileKey; val generation = profileGeneration
+                        if (loadProfileShelf(profileForcePending)) profileForcePending = false
+                        if (key == profileKey && generation == profileGeneration)
+                            initialProfileSettledAt.compareAndSet(null, elapsedTime())
+                    } finally { if (!profileWorkReady.value) profileJob?.cancelAndJoin() }
                 }
         }
         owner.launch {
@@ -343,7 +368,8 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     var artists = BackgroundWorkCoordinator.localDataPreparation { artistHistory.read(before) }
                     val identityBeforeRestore = ArtistPhotoRepository.identities.value
                     ArtistPhotoRepository.restoreSaved(getApplication(), artists.take(4).map { ArtistPhotoRepository.cachedArtist(it.name) })
-                    if (identityBeforeRestore != ArtistPhotoRepository.identities.value) artists = artistHistory.read(before)
+                    if (identityBeforeRestore != ArtistPhotoRepository.identities.value)
+                        artists = BackgroundWorkCoordinator.localDataPreparation { artistHistory.read(before) }
                     android.util.Log.d("ArtistPortrait", "shelf-ready count=${artists.size} at=${elapsedTime()}")
                     if (before != withContext(AppDispatchers.Database) { database.listeningEventDao().getArtistInputRevision() }) { artistRequests.update { it + 1 }; return@collectLatest }
                     _hasListenedArtists.value = artists.isNotEmpty()
@@ -351,10 +377,12 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     artistRevision = before; artistFailed = false; completedArtistRequest = request
                     cache.saveLocal(snapshot())
                     _artistStatus.value = if (artists.isEmpty()) ShelfLoadStatus.EMPTY else ShelfLoadStatus.SUCCESS
+                    initialArtistSettledAt.compareAndSet(null, elapsedTime())
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) {
                     artistFailed = true // Preserve the last valid cached ranking.
                     _artistStatus.value = ShelfLoadStatus.ERROR
+                    initialArtistSettledAt.compareAndSet(null, elapsedTime())
                 }
             }
         }
@@ -508,7 +536,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             if (restoring === profileCacheRestore) break
         }
         if (!force && fresh(profileSuccess, profileFetchedAt, _profileShelf.value == null)) return@withContext true
-        _optionalWorkReady.first { it }
+        profileWorkReady.first { it }
         profileJob?.takeIf { it.isActive }?.let { return@withContext it.await() }
         val now = System.currentTimeMillis()
         if (!force && profileAttemptAt?.let { now - it in 0 until 60_000L } == true) return@withContext false
@@ -544,7 +572,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         if (_serverShelves.value.isEmpty() && shelves.isNotEmpty()) nativeRevealAt.value = elapsedTime()
         var count = maxOf(3, _revealedShelfCount.value).coerceAtMost(shelves.size)
         if (!_additionalShelvesUnlocked.value) count = minOf(3, shelves.size)
-        else if (pendingNativeReveal && (!automaticRevealPending || nativeAdmissionInput == BackgroundWorkCoordinator.interactions.value) &&
+        else if (pendingNativeReveal && (!automaticRevealPending || nativePriorityAt() != null && nativeAdmissionInput == BackgroundWorkCoordinator.interactions.value) &&
             shelves.size > _revealedShelfCount.value && _revealedShelfCount.value > 0) {
             count = maxOf(3, _revealedShelfCount.value + 1).coerceAtMost(shelves.size); pendingNativeReveal = false
             nativeRevealAt.value = elapsedTime()
@@ -657,6 +685,12 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             val state = sources[browse]
             (state == null || !fresh(state.succeeded, state.fetchedAt, state.shelves.isEmpty())) && retryAllowed(browse, "initial")
         }
+    }
+    /** Ineligible local cards never block anonymous/new-user Home expansion. */
+    private fun nativePriorityAt(): Long? = when {
+        _userMode.value == HomeUserMode.LOADING -> null
+        listeningUnlockAt.value != null -> initialProfileSettledAt.value
+        else -> 0L
     }
     private fun requestMoreHome(urgent: Boolean = true): Boolean {
         if (!_additionalShelvesUnlocked.value || !pendingNativeReveal) return false
