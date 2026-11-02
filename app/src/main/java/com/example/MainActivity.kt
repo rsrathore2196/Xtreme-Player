@@ -62,6 +62,10 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> com.example.performance.BackgroundWorkCoordinator.touch(true)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> com.example.performance.BackgroundWorkCoordinator.touch(false)
+        }
         val now = SystemClock.uptimeMillis()
         if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_UP ||
             now - lastInteractionMs >= 200L) {
@@ -69,6 +73,11 @@ class MainActivity : ComponentActivity() {
             com.example.performance.BackgroundWorkCoordinator.interaction()
         }
         return super.dispatchTouchEvent(event)
+    }
+
+    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
+        com.example.performance.BackgroundWorkCoordinator.interaction()
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onStart() {
@@ -293,6 +302,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        com.example.performance.BackgroundWorkCoordinator.windowFocus(hasFocus)
         updateRefreshRate()
     }
 

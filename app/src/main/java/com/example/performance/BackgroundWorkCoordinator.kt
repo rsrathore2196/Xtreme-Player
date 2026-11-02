@@ -60,6 +60,31 @@ object BackgroundWorkCoordinator {
     }
     suspend fun awaitFirstFrame() { firstFrame.await() }
 
+    private val _interactions = MutableStateFlow(0L)
+    val interactions = _interactions.asStateFlow()
+    private val touching = AtomicBoolean(false)
+    private val focused = AtomicBoolean(true)
+    fun windowFocus(active: Boolean) {
+        focused.set(active)
+        if (!active) touching.set(false)
+        interaction()
+    }
+    fun touch(active: Boolean) { touching.set(active); interaction() }
+
+    /** Measured from an actual Home draw, never process age or active audio time. */
+    suspend fun awaitContinuousForegroundIdle(homeDrawAt: Long, quietMillis: Long = 10_000L) {
+        var idleSince = homeDrawAt
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val now = SystemClock.elapsedRealtime()
+            val eligible = foreground.get() && focused.get() && isInteractionIdle(awaitFrameQuiet = false)
+            if (!eligible) idleSince = now
+            val remaining = quietMillis - (now - maxOf(idleSince, lastInteraction.get()))
+            if (eligible && remaining <= 0L) return
+            delay(if (eligible) remaining.coerceIn(1L, 250L) else 250L)
+        }
+    }
+
     /** WorkManager can wake a headless process or coincide with a warm reopen.
      * Check BEFORE acquiring cache/database locks; workers do not own a busy lease.
      * Do not await Home milestones when there is no foreground Activity. */
@@ -269,7 +294,7 @@ object BackgroundWorkCoordinator {
     /** Recheck admission after a resource wait, without holding that resource while idling. */
     internal fun isInteractionIdle(requireForeground: Boolean = false, awaitFrameQuiet: Boolean = true): Boolean {
         val now = SystemClock.elapsedRealtime()
-        return (!requireForeground || foreground.get()) && !foregroundDrawPending.get() &&
+        return (!requireForeground || foreground.get()) && !foregroundDrawPending.get() && !touching.get() &&
             !scrolling.get() && navigationJobs.get() == 0 && now >= navigationUntil.get() &&
             now - lastInteraction.get() >= 250L && (!awaitFrameQuiet || now - lastSlowFrame.get() >= 250L)
     }
@@ -323,6 +348,7 @@ object BackgroundWorkCoordinator {
 
     /** A lifecycle-owned lease for first layout and full-screen transitions. */
     fun navigationBusy(): AutoCloseable {
+        interaction()
         navigationJobs.incrementAndGet()
         val work = busy()
         val section = trace("Navigation transition")
@@ -330,6 +356,7 @@ object BackgroundWorkCoordinator {
         return AutoCloseable {
             if (closed.compareAndSet(false, true)) {
                 navigationJobs.decrementAndGet()
+                interaction()
                 section.close()
                 work.close()
             }
@@ -360,11 +387,13 @@ object BackgroundWorkCoordinator {
             interaction()
             com.example.data.cache.HomeCardCache.retryPendingWrites()
         } else {
+            touching.set(false)
+            interaction()
             finishForegroundDrawTrace()
         }
         _uiForeground.value = visible
     }
-    fun interaction() { lastInteraction.set(SystemClock.elapsedRealtime()) }
+    fun interaction() { lastInteraction.set(SystemClock.elapsedRealtime()); _interactions.update { it + 1 } }
     fun frame(durationNanos: Long, budgetNanos: Long) {
         if (durationNanos > budgetNanos) {
             lastSlowFrame.set(SystemClock.elapsedRealtime())
@@ -404,57 +433,4 @@ object BackgroundWorkCoordinator {
         }
     }
 
-    private val _startupReadiness = MutableStateFlow(StartupReadiness())
-    val startupReadiness = _startupReadiness.asStateFlow()
-    private var initialDeadlineJob: Job? = null
-    private val initialStartedAt = AtomicLong(0L)
-    private val initialPresentationPending = AtomicBoolean(false)
-    private val preparedContentDrawn = AtomicBoolean(false)
-    private val homeReady = kotlinx.coroutines.CompletableDeferred<Unit>()
-    private val cachedHomeReady = kotlinx.coroutines.CompletableDeferred<Unit>()
-
-    val initialPreparationRemainingMillis: Long
-        get() {
-            val started = initialStartedAt.get()
-            if (started == 0L || !initialPresentationPending.get()) return 0L
-            val elapsed = SystemClock.elapsedRealtime() - started
-            return (15_000L - elapsed).coerceAtLeast(0L)
-        }
-
-    fun beginInitialPresentation() {
-        initialPresentationPending.set(true)
-        initialStartedAt.set(SystemClock.elapsedRealtime())
-    }
-
-    suspend fun awaitInitialPresentation() {
-        while (initialPresentationPending.get()) {
-            if (initialPreparationRemainingMillis <= 0L) {
-                initialPresentationPending.set(false)
-                break
-            }
-            delay(50L)
-        }
-    }
-
-    fun startupTask(task: StartupTask, status: StartupStatus) {
-        _startupReadiness.update { it.withStatus(task, status) }
-    }
-
-    fun cachedHomeRestored() {
-        cachedHomeReady.complete(Unit)
-    }
-
-    fun homeContentReady() {
-        homeReady.complete(Unit)
-    }
-
-    fun initialContentDrawn() {
-        preparedContentDrawn.set(true)
-        initialPresentationPending.set(false)
-        _startupReadiness.update { it.withStatus(StartupTask.PRESENTATION, StartupStatus.READY) }
-    }
-
-    suspend fun awaitInitialPresentationSettled() {
-        awaitIdle(quietMillis = 250L)
-    }
 }

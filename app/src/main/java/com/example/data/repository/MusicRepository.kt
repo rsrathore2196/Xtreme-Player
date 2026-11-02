@@ -81,23 +81,6 @@ data class SearchResultCategory(
     val catalogPlaylists: List<CatalogPlaylist> = emptyList()
 )
 
-/** Publish usable songs without waiting for album discovery; preserve their exact snapshot. */
-internal suspend fun loadGenreResults(genre: String, loadTracks: suspend () -> List<MusicTrack>,
-    loadAlbums: suspend (List<MusicTrack>) -> List<CatalogAlbum>,
-    onSongs: suspend (SearchResultCategory) -> Unit): SearchResultCategory {
-    val tracks = loadTracks()
-    currentCoroutineContext().ensureActive()
-    val songs = SearchResultCategory(topResult = tracks.firstOrNull(), exactMatches = tracks,
-        songs = tracks, matchedGenreOrType = genre)
-    onSongs(songs)
-    val albums = try { loadAlbums(tracks) } catch (cancelled: CancellationException) { throw cancelled }
-        catch (_: Exception) { emptyList() }
-    currentCoroutineContext().ensureActive()
-    return songs.copy(albums = albums.map { it.title }.ifEmpty {
-        tracks.map { it.album }.filter { it.isNotBlank() && it !in setOf("Single", "Online Stream", "Unknown") }.distinct()
-    }, catalogAlbums = albums)
-}
-
 @OptIn(ExperimentalCoroutinesApi::class)
 class MusicRepository private constructor(
     private val daoProvider: () -> MusicDao,
@@ -506,92 +489,6 @@ class MusicRepository private constructor(
         else streamResolver.resolveYouTubeFallback(track, quality)
     }
 
-    suspend fun getTracksByGenre(genre: String, profile: UserProfile? = null): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
-        val userProfile = homeProfile(profile)
-        val likedEntities = try {
-            withContext(AppDispatchers.Database) { musicDao.getFavoriteTracks().first() }
-        } catch (e: CancellationException) { throw e } catch (e: Exception) {
-            emptyList()
-        }
-        val likedIds = likedEntities.map { it.id }.toSet()
-
-        val targetLanguages = userProfile.languages.filter { it.isNotBlank() }
-        val targetCountry = userProfile.country
-
-        // Query YouTube Music API with genre + language / country preferences
-        val onlineGenreTracks = try {
-            val queries = mutableListOf<String>()
-            val primaryLang = targetLanguages.firstOrNull() ?: ""
-            if (genre.equals("All", ignoreCase = true)) {
-                if (primaryLang.isNotBlank()) queries.add("$primaryLang Top Hit Songs")
-                queries.add("$targetCountry Top Hits")
-                queries.add("Top Hit Songs")
-            } else {
-                if (primaryLang.isNotBlank() && !genre.equals(primaryLang, true)) {
-                    queries.add("$primaryLang $genre hits")
-                }
-                if (targetLanguages.size > 1 && !genre.equals(targetLanguages[1], true)) {
-                    queries.add("${targetLanguages[1]} $genre hits")
-                }
-                if (targetCountry.isNotBlank() && !CountryData.hasCountryNameInTitle(genre, targetCountry)) {
-                    queries.add("$genre hits $targetCountry")
-                }
-                queries.add("$genre top hits")
-            }
-
-            val fetched = mutableListOf<MusicTrack>()
-            for (q in queries.distinct().take(3)) {
-                try {
-                    fetched.addAll(YouTubeMusicApiService.searchSongs(q, limit = 15))
-                } catch (ce: CancellationException) { throw ce } catch (_: Exception) {}
-                if (fetched.size >= 25) break
-            }
-            if (fetched.isEmpty()) {
-                YouTubeMusicApiService.getGenreTracks(genre, limit = 25)
-            } else {
-                fetched
-            }
-        } catch (e: CancellationException) { throw e } catch (e: Exception) {
-            emptyList()
-        }
-
-        val localGenreTracks = if (genre.equals("All", ignoreCase = true)) {
-            MusicDataSource.curatedTracks
-        } else {
-            MusicDataSource.curatedTracks.filter { it.genre.equals(genre, ignoreCase = true) }
-        }
-
-        val allTracks = (onlineGenreTracks + localGenreTracks)
-            .distinctBy { "${it.title.lowercase().trim()}_${it.artist.lowercase().trim()}" }
-            .map { it.copy(isLiked = likedIds.contains(it.id)) }
-
-        // Filter & prioritize songs based on country & language preferences
-        val scored = allTracks.map { track ->
-            var score = 0
-            val lowerTitle = track.title.lowercase()
-            val lowerArtist = track.artist.lowercase()
-            val lowerLang = track.language.lowercase()
-
-            for (lang in targetLanguages) {
-                val l = lang.lowercase()
-                if (lowerLang == l || lowerTitle.contains(l) || lowerArtist.contains(l)) {
-                    score += 50
-                    break
-                }
-            }
-            if (targetCountry.isNotBlank() && !CountryData.hasCountryNameInTitle(track.title, targetCountry)) {
-                val c = targetCountry.lowercase()
-                if (lowerTitle.contains(c) || lowerArtist.contains(c)) {
-                    score += 20
-                }
-            }
-            track to score
-        }
-
-        val prioritized = scored.sortedByDescending { it.second }.map { it.first }
-        prioritized.ifEmpty { allTracks }
-    }
-
     /** Public category browsing stays metadata-only and uses the active profile's region. */
     suspend fun getExploreCategories(profile: UserProfile? = null): List<ExploreCategory> = withContext(AppDispatchers.Io) {
         val preferences = homeProfile(profile)
@@ -607,40 +504,6 @@ class MusicRepository private constructor(
         // Provider identity, browse parameters and continuation belong to each collection.
         SearchResultCategory(matchedGenreOrType = category.title, songs = page.tracks,
             catalogAlbums = page.albums, catalogPlaylists = page.playlists)
-    }
-
-    suspend fun getGenreAlbums(genre: String, profile: UserProfile? = null,
-        fallbackTracks: List<MusicTrack>? = null): List<CatalogAlbum> = withContext(AppDispatchers.CpuBounded) {
-        val userProfile = homeProfile(profile)
-        val albumsFromCatalog = try {
-            catalogBrowser.getGenreAlbums(
-                genre = genre,
-                country = userProfile.country,
-                languages = userProfile.languages,
-                limit = 12
-            )
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            emptyList()
-        }
-
-        if (albumsFromCatalog.isNotEmpty()) return@withContext albumsFromCatalog
-
-        // Fallback: extract albums from tracks related to the genre
-        val genreTracks = fallbackTracks ?: getTracksByGenre(genre, userProfile)
-        genreTracks.filter { it.album.isNotBlank() && it.album != "Single" && it.album != "Online Stream" && it.album != "Unknown" }
-            .distinctBy { it.album.lowercase().trim() }
-            .take(10)
-            .map { track ->
-                CatalogAlbum(
-                    id = if (track.id.startsWith("online_")) track.id.removePrefix("online_") else "album_${track.album.hashCode()}",
-                    title = track.album,
-                    artists = listOf(CatalogArtist(id = "", name = track.artist)),
-                    image = track.coverUrl,
-                    year = track.year.ifBlank { "2024" }
-                )
-            }
     }
 
     internal suspend fun hasRecentLosslessAttempt(track: MusicTrack) = streamResolver.hasRecentLosslessAttempt(track)

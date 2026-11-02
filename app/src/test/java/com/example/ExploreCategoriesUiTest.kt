@@ -76,15 +76,15 @@ class ExploreCategoriesUiTest {
         compose.onNodeWithTag("genre_chip_pop").assertDoesNotExist()
     }
 
-    @Test fun offlineIndexFallbackKeepsExistingGenrePillsAndSelection() {
-        var selected = ""
+    @Test fun anEmptyOrOfflineNativeIndexNeverCreatesLocalGenrePills() {
         content {
-            SearchScreen(SearchUiState(exploreIndexReady = true), onQueryChange = {}, onSelectGenre = { selected = it },
+            SearchScreen(SearchUiState(exploreIndexReady = true), onQueryChange = {}, onSelectGenre = { fail("No custom category exists") },
                 onTrackClick = { _, _ -> }, onToggleFavorite = {})
         }
-        compose.onNodeWithTag("search_screen").performScrollToNode(hasTestTag("genre_chip_pop"))
-        compose.onNodeWithTag("genre_chip_pop").performClick()
-        assertEquals("Pop", selected)
+        compose.onNodeWithTag("genre_chip_pop").assertDoesNotExist()
+        compose.onNodeWithTag("genre_chip_rock").assertDoesNotExist()
+        compose.onNodeWithTag("search_genres_loading_0").assertDoesNotExist()
+        compose.onNodeWithText("Explore Genres").assertExists()
     }
 
     @Test fun pendingIndexDoesNotFlashLegacyGenresBeforeTheCompleteCatalogueArrives() {

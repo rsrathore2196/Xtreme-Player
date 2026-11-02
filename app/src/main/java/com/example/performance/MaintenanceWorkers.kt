@@ -34,6 +34,9 @@ object MaintenanceScheduler {
         val app = context.applicationContext
         schedulingScope.launch {
             try {
+                // Restore persisted quota/counters on IO at actual cache use.
+                // Scanning and trimming remain owned by deferred maintenance.
+                SmartCacheManager.initialize(app, scheduleMaintenance = false)
                 BackgroundWorkCoordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE,
                     requireForeground = false, label = "Register cache maintenance") { schedule(app) }
             } catch (cancelled: CancellationException) { periodicRegistered.set(false); throw cancelled }

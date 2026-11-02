@@ -15,7 +15,10 @@ data class ServerHomeShelf(
     val subtitle: String = "",
     val tracks: List<MusicTrack> = emptyList(),
     val continuationToken: String? = null,
-    val items: List<ServerHomeItem> = emptyList()
+    val items: List<ServerHomeItem> = emptyList(),
+    val providerId: String = "",
+    val browseId: String = "",
+    val browseParams: String = ""
 )
 
 /** A collection retains its browse identity; its play overlay is never a substitute song. */

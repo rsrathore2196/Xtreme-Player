@@ -28,6 +28,10 @@ class NativeHomeFirstPublicationTest {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
         val profileEntered = CompletableDeferred<Unit>(); val profileRelease = CompletableDeferred<Unit>()
+        val idle = CompletableDeferred<Unit>()
+        com.example.performance.BackgroundWorkCoordinator.foreground(true)
+        com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(1))
         val calls = AtomicInteger(); val store = ViewModelStore()
         val db = MusicDatabase.createInMemoryDatabase(app)
         val repo = MusicRepository(db.musicDao(), app); val player = PlaybackManager(app, repo)
@@ -41,20 +45,27 @@ class NativeHomeFirstPublicationTest {
                             MusicTrack("yt_abcdefghijk", "Song", "Singer", "Album", 180_000, "", "")))), "later")
                     }, profileLoader = { _, _, _ ->
                         profileEntered.complete(Unit); profileRelease.await(); YouTubeMusicApiService.ProfileShelfResult(null)
-                    }) as T
+                    }, idleAdmission = { idle.await() }) as T
             }
             val vm = ViewModelProvider(store, factory)[HomeViewModel::class.java]
             assertTrue(vm.serverCards.value.all { it.status == ShelfLoadStatus.LOADING })
             val profile = async { vm.loadProfileShelf() }
             val refresh = vm.refreshHome(false)
-            withTimeout(5_000) { entered.await(); profileEntered.await() }
+            withTimeout(5_000) { entered.await() }
+            assertFalse("Optional discovery is deferred even when a native request is active", profileEntered.isCompleted)
             release.complete(Unit)
             withTimeout(5_000) { refresh.join(); vm.serverCards.first { it.singleOrNull()?.status == ShelfLoadStatus.SUCCESS } }
             assertEquals(1, vm.serverShelves.value.size); assertEquals(1, calls.get())
             assertFalse(vm.isRefreshing.value); assertFalse(profileRelease.isCompleted)
+            val beforeResume = com.example.performance.BackgroundWorkCoordinator.interactions.value
+            vm.onHomeFrameDrawn(); vm.setHomeVisible(true)
+            withTimeout(5_000) { com.example.performance.BackgroundWorkCoordinator.interactions.first { it > beforeResume } }
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(300))
+            idle.complete(Unit)
+            withTimeout(5_000) { profileEntered.await() }
             profileRelease.complete(Unit); profile.await()
         } finally {
-            release.complete(Unit); profileRelease.complete(Unit); store.clear(); player.release(); db.close(); Dispatchers.resetMain()
+            release.complete(Unit); profileRelease.complete(Unit); store.clear(); player.release(); db.close(); Dispatchers.resetMain(); com.example.performance.BackgroundWorkCoordinator.foreground(false)
         }
     }
 }

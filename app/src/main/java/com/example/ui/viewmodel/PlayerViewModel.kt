@@ -187,7 +187,7 @@ class PlayerViewModel(
         }
         state.copy(displayDirectTracks = if (state.query.isNotBlank()) direct.take(5) else direct,
             matchingPlaylistGenres = state.exploreCategories.map { it.title }.distinct()
-                .ifEmpty { MusicDataSource.genres }.let { names ->
+                .let { names ->
                     names.filter { it.contains(state.query, ignoreCase = true) }.ifEmpty { names.take(6) }
                 })
     }.flowOn(derivedStateDispatcher)
@@ -1003,37 +1003,22 @@ class PlayerViewModel(
             selectExploreCategory(category)
             return
         }
+        // Retired local genre names cannot launch synthetic search/album fan-out.
         val generation = legacySearchGeneration.incrementAndGet()
         val query = _searchState.value.query
-        _searchState.update { it.copy(selectedGenre = genre, selectedExploreCategory = null,
-            isSearching = !genre.equals("All", true) || query.isNotBlank(), genreError = null, requestId = generation,
-            result = if (it.selectedGenre == genre && it.selectedExploreCategory == null) it.result else SearchResultCategory(),
-            displayDirectTracks = null) }
+        _searchState.update { it.copy(selectedGenre = "All", selectedExploreCategory = null,
+            isSearching = query.isNotBlank(), genreError = null, requestId = generation,
+            result = if (it.selectedGenre == "All") it.result else SearchResultCategory(), displayDirectTracks = null) }
         searchJob?.cancel()
-        if (genre.equals("All", true) && query.isBlank()) return
+        if (query.isBlank()) return
         searchJob = viewModelScope.launch(AppDispatchers.CpuBounded) {
-          try {
-            val allGenres = genre.equals("All", ignoreCase = true)
-            val results = if (allGenres) {
-                repository.search(query, application)
-            } else {
-                val profile = com.example.data.local.UserProfilePreferences.getUserProfile(application)
-                com.example.data.repository.loadGenreResults(genre,
-                    loadTracks = { repository.getTracksByGenre(genre, profile).shuffled() },
-                    loadAlbums = { tracks -> repository.getGenreAlbums(genre, profile, fallbackTracks = tracks) },
-                    onSongs = { partial ->
-                        _searchState.update { if (generation != it.requestId || it.query != query || it.selectedGenre != genre) it
-                            else it.copy(result = partial) }
-                    })
-            }
-            ensureActive()
-            _searchState.update { if (generation != it.requestId || it.query != query || it.selectedGenre != genre) it else
-                it.copy(selectedGenre = if (allGenres) "All" else genre, result = results, isSearching = false) }
-          } catch (cancelled: CancellationException) { throw cancelled }
-          catch (_: Exception) {
-              _searchState.update { if (generation != it.requestId || it.selectedGenre != genre) it else
-                  it.copy(isSearching = false, genreError = "This category couldn't load. Tap refresh to try again.") }
-          }
+            try {
+                val result = repository.search(query, application)
+                ensureActive()
+                _searchState.update { if (it.requestId != generation || it.query != query) it
+                    else it.copy(result = result, isSearching = false) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { _searchState.update { if (it.requestId != generation) it else it.copy(isSearching = false) } }
         }
     }
 

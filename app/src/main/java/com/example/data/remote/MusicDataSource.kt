@@ -128,20 +128,6 @@ object MusicDataSource {
         )
     ) }
 
-    val genres = listOf(
-        "Pop",
-        "Hip-Hop",
-        "Rock",
-        "Electronic",
-        "Bollywood",
-        "Punjabi",
-        "Synthwave",
-        "Chillhop",
-        "Lo-Fi",
-        "Jazz",
-        "Ambient"
-    )
-
     val topMixes = listOf(
         MixItem("Cyberpunk 2088 Mix", "Synthwave, Electro, Darksynth", "https://images.unsplash.com/photo-1518709268805-4e9042af9f23?w=800&q=80", "Synthwave"),
         MixItem("Deep Focus & Coding", "Lofi Beats, Chillhop, Ambient", "https://images.unsplash.com/photo-1470225620780-dba8ba36b745?w=800&q=80", "Chillhop"),

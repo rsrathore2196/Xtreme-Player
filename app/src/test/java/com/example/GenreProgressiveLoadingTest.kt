@@ -1,46 +1,39 @@
 package com.example
 
-import com.example.data.model.MusicTrack
-import com.example.data.repository.*
-import kotlinx.coroutines.*
-import kotlinx.coroutines.test.runTest
+import android.app.Application
+import com.example.data.remote.YouTubeExploreParser
+import com.example.data.repository.CatalogRepository
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34], application = Application::class)
 class GenreProgressiveLoadingTest {
-    private val tracks = listOf(MusicTrack("yt_abcdefghijk", "Song", "Artist", "Album", 180000, "", ""))
-    private val albums = listOf(CatalogAlbum("album", "Album", emptyList(), "", "2026"))
-    @Test fun songsPublishBeforeAlbumsAndTheSameSnapshotSuppliesTheirFallback() = runTest {
-        val release = CompletableDeferred<Unit>()
-        val published = CompletableDeferred<SearchResultCategory>()
-        var loads = 0
-        val result = async { loadGenreResults("Pop", { loads++; tracks }, { supplied ->
-            assertSame(tracks, supplied); release.await(); albums
-        }, { published.complete(it) }) }
-        assertSame(tracks, published.await().songs)
-        assertFalse(result.isCompleted)
-        release.complete(Unit)
-        assertEquals(albums, result.await().catalogAlbums)
-        assertEquals(1, loads)
+    @Test fun emptyNativeGenreResponsesRemainEmptyWithoutLocalCandidates() {
+        try { YouTubeExploreParser.categories(JSONObject("{\"contents\":{}}")); fail("No local genre fallback is permitted") }
+        catch (_: java.io.IOException) { }
     }
-    @Test fun albumFailureRetainsPlayableSongsAndTheirExistingAlbumMetadata() = runTest {
-        val result = loadGenreResults("Pop", { tracks }, { throw java.io.IOException("Unavailable") }, {})
-        assertSame(tracks, result.songs)
-        assertEquals(listOf("Album"), result.albums)
+    @Test fun indexDiscoveryUsesOneNativeBrowseWithTheSelectedRegion() = runBlocking {
+        val calls = mutableListOf<String>()
+        val repo = CatalogRepository(browseLoader = { id, params, token, country, language ->
+            calls += id
+            assertEquals("GB", country); assertEquals("en", language)
+            assertNull(params); assertNull(token)
+            """{"contents":{"gridRenderer":{"items":[{"musicNavigationButtonRenderer":{"buttonText":{"runs":[{"text":"Jazz"}]},"clickCommand":{"browseEndpoint":{"browseId":"FEmusic_jazz","params":"opaque"}}}}]}}}"""
+        })
+        assertEquals(listOf("Jazz"), repo.exploreCategories("GB", "en").map { it.title })
+        assertEquals(listOf("FEmusic_moods_and_genres"), calls)
     }
-    @Test fun cancellationCannotPublishAnObsoleteSongsSnapshot() = runTest {
-        val release = CompletableDeferred<Unit>()
-        val started = CompletableDeferred<Unit>()
-        var published = false
-        val job = launch { loadGenreResults("Pop", {
-            started.complete(Unit)
-            withContext(NonCancellable) { release.await() }
-            tracks
-        }, { albums }, { published = true }) }
-        started.await()
-        job.cancel()
-        release.complete(Unit)
-        job.join()
-        assertFalse(published)
+    @Test fun failedNativeDiscoveryDoesNotSynthesizeGenresOrFanOutSearches() = runBlocking {
+        var calls = 0
+        val repo = CatalogRepository(browseLoader = { _, _, _, _, _ -> calls++; throw java.io.IOException("Offline") })
+        try { repo.exploreCategories("CA", "en"); fail("Failure must not fabricate local categories") }
+        catch (_: java.io.IOException) { }
+        assertEquals(1, calls)
     }
 }

@@ -3,6 +3,7 @@ package com.example.data.remote
 import com.example.data.model.MusicTrack
 import com.example.data.model.ServerHomeShelf
 import com.example.data.model.ServerHomeItem
+import com.example.data.model.HomeShelfIdentity
 import com.example.data.repository.CatalogDestination
 import org.json.JSONArray
 import org.json.JSONObject
@@ -181,7 +182,8 @@ object YouTubeHomeParser {
         val tabs = (contentsNode?.optJSONObject("singleColumnBrowseResultsRenderer")
             ?: contentsNode?.optJSONObject("twoColumnBrowseResultsRenderer"))
             ?.optJSONArray("tabs")
-        val tabContent = tabs?.optJSONObject(0)?.optJSONObject("tabRenderer")?.optJSONObject("content")
+        val tabRows = (0 until (tabs?.length() ?: 0)).mapNotNull { tabs?.optJSONObject(it)?.optJSONObject("tabRenderer") }
+        val tabContent = (tabRows.firstOrNull { it.optBoolean("selected") } ?: tabRows.firstOrNull { it.has("content") })?.optJSONObject("content")
         val sectionList = tabContent?.optJSONObject("sectionListRenderer")
             ?: contentsNode?.optJSONObject("sectionListRenderer")
             ?: rootJson.optJSONObject("continuationContents")?.optJSONObject("sectionListContinuation")
@@ -200,7 +202,16 @@ object YouTubeHomeParser {
         for (container in containers) {
             extractContinuation(container)?.let { sectionContinuation = it }
             val rows = container.optJSONArray("contents") ?: container.optJSONArray("continuationItems") ?: continue
-            for (index in 0 until rows.length()) rawSections.put(rows.opt(index))
+            fun appendRows(rows: JSONArray, depth: Int = 0) {
+                if (depth > 4) return
+                for (index in 0 until rows.length()) {
+                    val row = rows.optJSONObject(index) ?: continue
+                    val nested = row.optJSONObject("itemSectionRenderer")?.optJSONArray("contents")
+                    if (nested != null) appendRows(nested, depth + 1)
+                    else rawSections.put(row.optJSONObject("richSectionRenderer")?.optJSONObject("content") ?: row)
+                }
+            }
+            appendRows(rows)
         }
 
         if (rawSections != null) {
@@ -213,6 +224,7 @@ object YouTubeHomeParser {
 
                 if (shelfRenderer != null) {
                     val headerObj = shelfRenderer.optJSONObject("header")?.optJSONObject("musicCarouselShelfBasicHeaderRenderer")
+                        ?: shelfRenderer.optJSONObject("header")?.optJSONObject("musicImmersiveCarouselShelfBasicHeaderRenderer")
                         ?: shelfRenderer.optJSONObject("header")?.optJSONObject("musicShelfRenderer")
                         ?: shelfRenderer.optJSONObject("header")
                     val title = text(headerObj?.optJSONObject("title")).ifBlank { text(shelfRenderer.optJSONObject("title")) }
@@ -242,36 +254,29 @@ object YouTubeHomeParser {
 
                     if (items.isNotEmpty() && title.isNotBlank()) {
                         val shelfContinuation = extractContinuation(shelfRenderer)
-                        val titleSlug = title.lowercase(java.util.Locale.ROOT).replace(Regex("[^a-z0-9]+"), "_").take(30)
                         val target = headerObj?.optJSONObject("moreContentButton")?.optJSONObject("buttonRenderer")
                             ?.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
-                        val nativeId = shelfRenderer.optString("targetId").ifBlank { shelfRenderer.optString("shelfId") }
-                        val destination = target?.let { it.optString("browseId") + "|" + it.optString("params") }.orEmpty()
-                        val page = if (nativeId.isBlank() && destination.isBlank()) pageIdentity.orEmpty() else ""
-                        val descriptor = "$title|$nativeId|$destination|$page"
-                        val hash = java.security.MessageDigest.getInstance("SHA-256").digest(descriptor.toByteArray())
-                            .take(12).joinToString("") { "%02x".format(it) }
-                        val baseShelfId = "server_shelf_${titleSlug}_$hash"
-                        var shelfId = baseShelfId
-                        var collisionCounter = 1
-                        while (shelves.any { it.id == shelfId }) {
-                            shelfId = "${baseShelfId}_${collisionCounter++}"
-                        }
+                            ?: headerObj?.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)
+                                ?.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")
+                        val nativeId = string(shelfRenderer, "targetId").ifBlank { string(shelfRenderer, "shelfId") }
                         shelves.add(
                             ServerHomeShelf(
-                                id = shelfId,
+                                id = "",
                                 title = title,
                                 subtitle = subtitle,
                                 tracks = tracks,
                                 continuationToken = shelfContinuation,
-                                items = items
-                            )
+                                items = items,
+                                providerId = nativeId,
+                                browseId = target?.let { string(it, "browseId") }.orEmpty(),
+                                browseParams = target?.let { string(it, "params") }.orEmpty()
+                            ).let { it.copy(id = HomeShelfIdentity.stableId(it)) }
                         )
                     }
                 }
             }
         }
 
-        return ParsedHomeFeed(shelves, sectionContinuation)
+        return ParsedHomeFeed(HomeShelfIdentity.deduplicate(shelves), sectionContinuation)
     }
 }

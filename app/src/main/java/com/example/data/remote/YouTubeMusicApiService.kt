@@ -384,23 +384,26 @@ object YouTubeMusicApiService {
 
     internal suspend fun homeWithFallback(primary: suspend () -> YouTubeHomeParser.ParsedHomeFeed,
         fallback: suspend () -> YouTubeHomeParser.ParsedHomeFeed): YouTubeHomeParser.ParsedHomeFeed {
+        var primaryFailure: String? = null
         val native = try { primary() } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { null }
+            catch (error: Exception) { primaryFailure = error.javaClass.simpleName; null }
         if (native != null && !native.isError) return native
         return try { fallback() } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true,
-                errorMessage = "Music is temporarily unavailable. Please retry.") }
+            catch (error: Exception) { YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true,
+                errorMessage = "Native browse failed (${primaryFailure ?: native?.errorMessage ?: "empty"}); fallback failed (${error.javaClass.simpleName})") }
     }
 
     /** Successful empty feeds are authoritative; ordinary failures get one anonymous HTTP fallback. */
     suspend fun getHomeRecommendations(countryCode: String, continuation: String? = null,
-        languageCode: String = "en", includeAccount: Boolean = hasAuthenticatedAccount(), essential: Boolean = false
+        languageCode: String = "en", includeAccount: Boolean = hasAuthenticatedAccount(), essential: Boolean = false,
+        browseId: String = "FEmusic_home"
     ): YouTubeHomeParser.ParsedHomeFeed = withContext(AppDispatchers.Io) {
+        require(browseId in setOf("FEmusic_home", "FEmusic_new_releases", "FEmusic_explore"))
         val region = countryCode.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase(java.util.Locale.ROOT) ?: "US"
         homeWithFallback(primary = {
             com.example.recommendation.DiscoveryRequestCoordinator.network(essential = essential) {
                 val body = kotlinx.coroutines.withTimeoutOrNull(4_000L) {
-                    YouTubeAudioStreamService.discoveryResponseWithIdentity("browse", "FEmusic_home", region,
+                    YouTubeAudioStreamService.discoveryResponseWithIdentity("browse", browseId, region,
                         continuation = continuation, languageCode = languageCode, includeAccount = includeAccount)
                 } ?: throw java.io.IOException("Home request timed out")
                 withContext(AppDispatchers.CpuBounded) { YouTubeHomeParser.parseHomeFeed(JSONObject(body.body), continuation, region, languageCode)
@@ -414,7 +417,7 @@ object YouTubeMusicApiService {
                 val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
                     .put("clientName", client.clientName).put("clientVersion", client.clientVersion)
                     .put("hl", languageCode).put("gl", region)))
-                if (continuation == null) payload.put("browseId", "FEmusic_home") else payload.put("continuation", continuation)
+                if (continuation == null) payload.put("browseId", browseId) else payload.put("continuation", continuation)
                 val request = Request.Builder().url("https://music.youtube.com/youtubei/v1/browse")
                     .post(payload.toString().toRequestBody(jsonMediaType))
                     .header("User-Agent", client.userAgent).header("Referer", "https://music.youtube.com/")
@@ -1287,11 +1290,4 @@ object YouTubeMusicApiService {
         }
     }
 
-    /**
-     * Fetches Genre-specific tracks exclusively via YouTube Music API.
-     */
-    suspend fun getGenreTracks(genre: String, limit: Int = 25): List<MusicTrack> = withContext(Dispatchers.IO) {
-        val q = if (genre.equals("All", true)) "Top Hit Songs" else "$genre top hits"
-        searchSongs(q, limit)
-    }
 }

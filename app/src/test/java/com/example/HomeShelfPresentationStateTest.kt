@@ -36,16 +36,18 @@ class HomeShelfPresentationStateTest {
         assertEquals(first[1].key, refreshed[0].key)
         assertEquals(first[0].key, refreshed[1].key)
     }
-    @Test fun failedRequestsStopLoadingAndCarryARetryableMessage() {
-        val cards = presentNativeShelves(initialHomeSkeletons(), emptyList(), ShelfLoadStatus.ERROR, "Offline")
-        assertEquals(1, cards.size)
-        assertEquals(ShelfLoadStatus.ERROR, cards[0].status)
-        assertEquals("Offline", cards[0].message)
+    @Test fun failedOrEmptyRequestsRemoveLoadingWithoutCreatingErrorCards() {
+        assertTrue(presentNativeShelves(initialHomeSkeletons(), emptyList(), ShelfLoadStatus.ERROR, "Offline").isEmpty())
+        assertTrue(presentNativeShelves(initialHomeSkeletons(), emptyList(), ShelfLoadStatus.EMPTY).isEmpty())
     }
-    @Test fun successfulEmptyResponsesAreDistinctFromErrorsAndStopAllSkeletons() {
-        val cards = presentNativeShelves(initialHomeSkeletons(), emptyList(), ShelfLoadStatus.EMPTY)
-        assertEquals(ShelfLoadStatus.EMPTY, cards.single().status)
-        assertFalse(cards.any { it.status == ShelfLoadStatus.LOADING })
+    @Test fun aPendingPageRetainsExistingCardsAndHandsItsStableSlotToNewContent() {
+        val first = presentNativeShelves(initialHomeSkeletons(), listOf(shelf("one")), ShelfLoadStatus.SUCCESS)
+        val loading = presentNativeShelves(first, listOf(shelf("one")), ShelfLoadStatus.LOADING)
+        assertSame(first[0], loading[0]); assertEquals(ShelfLoadStatus.LOADING, loading.last().status)
+        val finished = presentNativeShelves(loading, listOf(shelf("one"), shelf("two")), ShelfLoadStatus.SUCCESS)
+        assertEquals(loading.last().key, finished.last().key)
+        val failure = presentNativeShelves(loading, listOf(shelf("one")), ShelfLoadStatus.ERROR)
+        assertEquals(first, failure)
     }
     @Test fun smallCacheReadsUseSmallChunksAndPreserveUnicode() {
         val text = "{\"title\":\"Music 🎵\"}"

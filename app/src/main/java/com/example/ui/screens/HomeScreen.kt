@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.content.res.Configuration
 import com.example.data.model.ServerHomeItem
+import com.example.ui.components.awaitContentDraw
 import com.example.ui.viewmodel.HomeShelfPresentation
 import com.example.ui.viewmodel.ShelfLoadStatus
 import com.example.data.repository.CatalogDestination
@@ -201,7 +202,6 @@ fun HomeScreen(
     onOpenCatalog: (CatalogDestination) -> Unit = {}
 ) {
     val isRefreshing by homeViewModel.isRefreshing.collectAsStateWithLifecycle()
-    val refreshErrorMessage by homeViewModel.refreshErrorMessage.collectAsStateWithLifecycle()
     val scrollMonitor: (Any, Boolean) -> Unit = remember(homeViewModel) {
         val activeLists = mutableSetOf<Any>()
         return@remember { list, active ->
@@ -232,9 +232,6 @@ fun HomeScreen(
                 onPlayInfiniteRadio = onPlayInfiniteRadio,
                 onAddToQueue = onAddToQueue,
                 boundaryOffset = contentOffset,
-                refreshErrorMessage = refreshErrorMessage,
-                onRetryRefresh = { homeViewModel.refreshHome(isExplicitPull = true) },
-                onDismissRefreshError = { homeViewModel.clearRefreshError() }
             )
         }
     }
@@ -259,9 +256,6 @@ fun HomeScreenContent(
     isRadioSession: Boolean = false,
     isRadioLoading: Boolean = false,
     boundaryOffset: () -> Float = { 0f },
-    refreshErrorMessage: String? = null,
-    onRetryRefresh: (() -> Unit)? = null,
-    onDismissRefreshError: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {},
@@ -298,8 +292,6 @@ fun HomeScreenContent(
 
     val nativeCards = homeViewModel?.serverCards?.collectAsStateWithLifecycle()?.value
         ?: remember(serverShelves) { serverShelves.map { HomeShelfPresentation("server_shelf_${it.id}", it, ShelfLoadStatus.SUCCESS) } }
-    val profileStatus = homeViewModel?.profileStatus?.collectAsStateWithLifecycle()?.value ?: ShelfLoadStatus.EMPTY
-    val continuationStatus = homeViewModel?.continuationStatus?.collectAsStateWithLifecycle()?.value ?: ShelfLoadStatus.EMPTY
     val artworkActive = com.example.ui.util.LocalArtworkRequestsActive.current
     LaunchedEffect(homeViewModel, listState, artworkActive) {
         if (homeViewModel == null) return@LaunchedEffect
@@ -307,10 +299,15 @@ fun HomeScreenContent(
         try {
             snapshotFlow { listState.layoutInfo.visibleItemsInfo.any { item ->
                 val key = item.key.toString()
-                key == "card_1_recently_played_grid" || key == "most_listened_artists" ||
-                    key.startsWith("native_") || key.startsWith("server_shelf_") || key.startsWith("profile_shelf")
+                key == "most_listened_artists"
             } }.distinctUntilChanged().collect(homeViewModel::setArtistSectionRelevant)
         } finally { homeViewModel.setArtistSectionRelevant(false) }
+    }
+    val homeView = androidx.compose.ui.platform.LocalView.current
+    LaunchedEffect(homeViewModel, artworkActive, homeView) {
+        if (artworkActive && homeViewModel != null) {
+            homeView.awaitContentDraw { homeViewModel.onHomeFrameDrawn() }
+        }
     }
     val resolvedProfile = homeViewModel?.profileShelf?.collectAsStateWithLifecycle()?.value ?: profileShelf
     val revealedCount = homeViewModel?.revealedShelfCount?.collectAsStateWithLifecycle()?.value ?: retainedWindow.value.visibleCount
@@ -528,6 +525,7 @@ fun HomeScreenContent(
             if (hasArtists) {
                 artworkItem(state = listState, key = "most_listened_artists", contentType = "artist_shelf") {
                     val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
+                    val enrichArtists = homeViewModel?.optionalWorkReady?.collectAsStateWithLifecycle()?.value ?: true
                     if (artists.isEmpty()) return@artworkItem
                     val visibleArtists = remember(artists) {
                         artists.take(15)
@@ -564,6 +562,7 @@ fun HomeScreenContent(
                                         com.example.ui.components.ArtistPortrait(
                                             artist = com.example.data.repository.CatalogArtist("", artist.name),
                                             deferEnrichment = true,
+                                            enrichmentAllowed = enrichArtists,
                                             modifier = Modifier.size(124.8.dp).clip(CircleShape)
                                         )
                                     }
@@ -579,20 +578,20 @@ fun HomeScreenContent(
             }
 
             // Independent shelf slots keep successful content and scroll anchors stable.
-            if (resolvedProfile != null && resolvedProfile.tracks.isNotEmpty() || profileStatus == ShelfLoadStatus.LOADING) {
+            if (resolvedProfile != null && resolvedProfile.tracks.isNotEmpty()) {
                 artworkItem(state = listState, key = "profile_shelf", contentType = "server_song_shelf") {
-                    val section = remember(resolvedProfile, profileStatus) {
+                    val section = remember(resolvedProfile) {
                         SectionState(title = resolvedProfile?.title.orEmpty(), subtitle = resolvedProfile?.subtitle.orEmpty(),
-                            tracks = resolvedProfile?.tracks.orEmpty(), isLoaded = resolvedProfile != null,
-                            isLoading = resolvedProfile == null && profileStatus == ShelfLoadStatus.LOADING)
+                            tracks = resolvedProfile.tracks, isLoaded = true)
                     }
                     SectionCardLayout(state = section, tracksPrepared = true,
                         currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
                         textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
                 }
             }
-            val cardsToShow = if (nativeCards.firstOrNull()?.let { it.shelf == null && it.status == ShelfLoadStatus.LOADING } == true)
-                nativeCards else nativeCards.take(revealedCount.coerceAtLeast(1))
+            val cardsToShow = nativeCards.filterIndexed { index, card ->
+                card.status == ShelfLoadStatus.LOADING || index < revealedCount
+            }
             for (card in cardsToShow) {
                 artworkItem(state = listState, key = card.key, contentType = "server_song_shelf") {
                     when (card.status) {
@@ -606,20 +605,8 @@ fun HomeScreenContent(
                                 textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick,
                                 shelfItems = shelf?.items.orEmpty(), onOpenCatalog = onOpenCatalog)
                         }
-                        ShelfLoadStatus.EMPTY -> if (card.shelf == null) HomeFeedNotice("No recommendations are available.", onRetryRefresh)
-                        ShelfLoadStatus.ERROR -> HomeFeedNotice(card.message.ifBlank { "Recommendations are temporarily unavailable." }, onRetryRefresh)
+                        ShelfLoadStatus.EMPTY, ShelfLoadStatus.ERROR -> Unit
                     }
-                }
-            }
-            if (continuationStatus == ShelfLoadStatus.LOADING) {
-                artworkItem(state = listState, key = "native_continuation_loading", contentType = "server_song_shelf") {
-                    SectionCardLayout(SectionState(isLoading = true), currentPlayingId, cardBg, cardBorderColor,
-                        textPrimaryColor, textMutedColor, onTrackClick, tracksPrepared = true)
-                }
-            }
-            if (continuationStatus == ShelfLoadStatus.ERROR) {
-                item(key = "native_continuation_error") {
-                    HomeFeedNotice("More recommendations are temporarily unavailable.") { homeViewModel?.revealNextHomeSection() }
                 }
             }
 
@@ -662,14 +649,6 @@ private fun rememberHomeRevealModifier(state: LazyListState, reveal: () -> Unit)
         }
     }
     return Modifier.nestedScroll(connection)
-}
-
-@Composable
-private fun HomeFeedNotice(message: String, retry: (() -> Unit)? = null) {
-    Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 22.dp).testTag("home_feed_notice")) {
-        Text(message, style = MaterialTheme.typography.bodyMedium, color = LocalAppColors.current.textMuted)
-        if (retry != null) androidx.compose.material3.TextButton(onClick = retry) { Text("Retry", color = LocalAppColors.current.primaryAccent) }
-    }
 }
 
 @Composable

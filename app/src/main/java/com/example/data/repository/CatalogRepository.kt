@@ -545,40 +545,6 @@ class CatalogRepository(context: Context? = null,
         // failure is retryable; one failing API must not hide another API's real songs.
         available ?: throw IOException("Artist catalogues are temporarily unavailable", failure)
     }
-    suspend fun getGenreAlbums(genre: String, country: String = "", languages: List<String> = emptyList(), limit: Int = 12): List<CatalogAlbum> = withContext(AppDispatchers.CpuBounded) {
-        val albums = mutableListOf<CatalogAlbum>()
-        val queries = mutableListOf<String>()
-
-        val primaryLang = languages.firstOrNull { it.isNotBlank() } ?: ""
-        if (primaryLang.isNotBlank() && !genre.equals("All", true)) {
-            queries.add("$primaryLang $genre")
-        }
-        if (country.isNotBlank() && !genre.equals("All", true)) {
-            queries.add("$country $genre")
-        }
-        if (genre.equals("All", true)) {
-            if (primaryLang.isNotBlank()) queries.add("$primaryLang Top Hits")
-            queries.add("Top Hits")
-        } else {
-            queries.add("$genre")
-            queries.add("$genre Hits")
-        }
-
-        for (q in queries.distinct().take(3)) {
-            try {
-                val root = request("search.getAlbumResults", "q" to q, "p" to "1", "n" to "10")
-                val raw = root.optJSONArray("results").objects()
-                val parsed = raw.mapNotNull(::album)
-                albums.addAll(parsed)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {}
-            if (albums.size >= limit) break
-        }
-
-        albums.distinctBy { it.id.ifBlank { it.title.lowercase() } }.take(limit)
-    }
-
     suspend fun albumSongs(selected: CatalogAlbum, continuation: CatalogBrowseContinuation? = null): CatalogPage = withContext(AppDispatchers.CpuBounded) {
         if (selected.provider == CatalogProvider.YOUTUBE_MUSIC) {
             val page = youtubeBrowse(selected.id, selected.browseParams, selected.countryCode,

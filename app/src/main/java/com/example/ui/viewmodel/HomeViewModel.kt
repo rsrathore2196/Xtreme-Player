@@ -14,6 +14,7 @@ import com.example.recommendation.HomeUserMode
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import java.util.Calendar
+import android.os.SystemClock
 
 /** Retains the existing server feed; local playback records never trigger server recommendations. */
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -24,7 +25,11 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private val profileLoader: suspend (UserProfile, Int, Boolean) -> YouTubeMusicApiService.ProfileShelfResult = { profile, rotation, force ->
         YouTubeMusicApiService.getProfileShelfResult(HomeCacheIdentity.region(profile), profile.languages, rotation, force) },
     private val accountIdentity: () -> String = YouTubeMusicApiService::discoveryAccountIdentity,
-    private val accountUpdates: Flow<*> = com.example.data.remote.YouTubeAudioStreamService.discoveryAccountChanges
+    private val accountUpdates: Flow<*> = com.example.data.remote.YouTubeAudioStreamService.discoveryAccountChanges,
+    private val idleAdmission: suspend (Long) -> Unit = { BackgroundWorkCoordinator.awaitContinuousForegroundIdle(it) },
+    private val elapsedTime: () -> Long = SystemClock::elapsedRealtime,
+    private val supplementalLoader: suspend (String, String, Boolean) -> com.example.data.remote.YouTubeHomeParser.ParsedHomeFeed = { region, browseId, authenticated ->
+        YouTubeMusicApiService.getHomeRecommendations(region, includeAccount = authenticated, browseId = browseId) }
 ) : AndroidViewModel(application) {
     private val owner = viewModelScope + AppDispatchers.HomeBookkeeping
     private val cache = HomeCardCache(application)
@@ -75,6 +80,10 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private val homeVisible = MutableStateFlow(false)
     private val localRestored = CompletableDeferred<Unit>()
     private val profileRestored = CompletableDeferred<Unit>()
+    private val homeDrawAt = MutableStateFlow<Long?>(null)
+    private val _optionalWorkReady = MutableStateFlow(false)
+    val optionalWorkReady = _optionalWorkReady.asStateFlow()
+    fun onHomeFrameDrawn() { if (homeDrawAt.value == null) homeDrawAt.value = elapsedTime() }
     private val artistSectionRelevant = MutableStateFlow(false)
     fun setArtistSectionRelevant(active: Boolean) { artistSectionRelevant.value = active }
     private var artistIdentityDirty = false
@@ -84,22 +93,24 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private var profileFetchedAt = 0L
     private var serverSuccess = false
     private var profileSuccess = false
-    private var serverAttemptAt = 0L
-    private var profileAttemptAt = 0L
+    private var serverAttemptAt: Long? = null
+    private var profileAttemptAt: Long? = null
     private var profileRotation = 0
+    private val supplementalBrowseIds = listOf("FEmusic_new_releases", "FEmusic_explore")
+    private val completedBrowseIds = linkedSetOf<String>()
+    private var sourceBrowseId = "FEmusic_home"
     private var homeContinuationToken: String? = null
     private val consumedContinuations = linkedSetOf<String>()
     private var serverJob: Deferred<Boolean>? = null
     private var serverUrgent = MutableStateFlow(false)
     private var profileJob: Deferred<Boolean>? = null
-    private var profileRequestJob: Job? = null
-    private var profileRequestIsExplicit = false
+    private val profileRequests = MutableStateFlow(0L)
+    private var profileForcePending = false
     private var pageJob: Job? = null
-    private var expansionJob: Job? = null
-    private var expansionUrgent = MutableStateFlow(false)
     private var refreshJob: Job? = null
     private var refreshIsExplicit = false
     private val artistRequests = MutableStateFlow(0L)
+    private var completedArtistRequest = 0L
     private var artistRevision: String? = null
     private var cachedArtistBaseline: Pair<String, List<MostListenedArtist>>? = null
     private var historyUnavailable = false
@@ -112,6 +123,25 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private var recentMetadata: List<MusicTrack> = emptyList()
 
     init {
+        owner.launch {
+            combine(homeVisible, homeDrawAt, BackgroundWorkCoordinator.uiForeground, BackgroundWorkCoordinator.interactions) {
+                active, drawn, foreground, _ -> drawn.takeIf { active && foreground }
+            }.collectLatest { drawn ->
+                _optionalWorkReady.value = false
+                if (drawn != null) {
+                    idleAdmission(drawn)
+                    _optionalWorkReady.value = true
+                }
+            }
+        }
+        owner.launch {
+            combine(_optionalWorkReady, profileRequests) { ready, request -> request.takeIf { ready } }
+                .collectLatest { request ->
+                    if (request == null) return@collectLatest
+                    try { if (loadProfileShelf(profileForcePending)) profileForcePending = false }
+                    finally { if (!_optionalWorkReady.value) profileJob?.cancelAndJoin() }
+                }
+        }
         owner.launch {
             try { restoreCachedHome() }
             catch (cancelled: CancellationException) { throw cancelled }
@@ -209,10 +239,10 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         }
         owner.launch {
             localRestored.await()
-            combine(artistRequests, artistSectionRelevant, homeVisible) { revision, relevant, active ->
-                if (relevant && active) revision else 0L
+            combine(artistRequests, _optionalWorkReady, homeVisible) { revision, idle, active ->
+                if (idle && active) revision else 0L
             }.distinctUntilChanged().collectLatest { request ->
-                if (request == 0L) return@collectLatest
+                if (request == 0L || request == completedArtistRequest) return@collectLatest
                 try {
                     cachedArtistBaseline?.let { (revision, artists) ->
                         withContext(AppDispatchers.CpuBounded) { artistHistory.restore(revision, artists) }
@@ -223,7 +253,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     if (before != withContext(AppDispatchers.Database) { database.listeningEventDao().getArtistInputRevision() }) { artistRequests.update { it + 1 }; return@collectLatest }
                     _hasListenedArtists.value = artists.isNotEmpty()
                     _mostListenedArtists.value = artists
-                    artistRevision = before; artistFailed = false
+                    artistRevision = before; artistFailed = false; completedArtistRequest = request
                     cache.saveLocal(snapshot())
                     _artistStatus.value = if (artists.isEmpty()) ShelfLoadStatus.EMPTY else ShelfLoadStatus.SUCCESS
                 } catch (cancelled: CancellationException) { throw cancelled }
@@ -245,34 +275,52 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             }
         }
     }
-    private fun publishServer(shelves: List<ServerHomeShelf>, status: ShelfLoadStatus = ShelfLoadStatus.SUCCESS, message: String = "") {
-        _serverCards.value = presentNativeShelves(_serverCards.value, shelves, status, message)
-        _serverShelves.value = shelves
+    private suspend fun publishServer(shelves: List<ServerHomeShelf>, status: ShelfLoadStatus = ShelfLoadStatus.SUCCESS,
+        message: String = "", revealed: Int? = null) {
+        val key = homeKey; val generation = serverGeneration
+        val unique = if (shelves.isEmpty() || shelves === _serverShelves.value) shelves else withContext(AppDispatchers.CpuBounded) {
+            HomeShelfIdentity.deduplicate(shelves)
+        }
+        if (key != homeKey || generation != serverGeneration) return
+        // Publish eligibility before rows so a ready shelf cannot appear hidden
+        // for a frame or briefly remove its matching loading slot.
+        if (revealed != null) _revealedShelfCount.value = revealed.coerceAtMost(unique.size)
+        _serverCards.value = presentNativeShelves(_serverCards.value, unique, status, message)
+        _serverShelves.value = unique
     }
     private fun snapshot() = SavedHomeCards(serverCacheKey, serverFetchedAt, _listeningHistoryCard.value,
         _mostListenedArtists.value.take(15), artistRevision, _serverShelves.value, _profileShelf.value, homeContinuationToken,
-        profileKey, profileFetchedAt, serverSuccess, profileSuccess, consumedContinuations.toSet())
-    private fun restoreHome(saved: SavedHomeCards) {
+        profileKey, profileFetchedAt, serverSuccess, profileSuccess, consumedContinuations.toSet(),
+        sourceBrowseId = sourceBrowseId, completedBrowseIds = completedBrowseIds.toSet())
+    private suspend fun restoreHome(saved: SavedHomeCards) {
+        val key = homeKey; val generation = serverGeneration
         if (homeKey != currentHomeKey(_userProfile.value) || saved.profileKey !in setOf(homeKey, HomeCacheIdentity.home(_userProfile.value, "anonymous"))) return
         publishServer(saved.serverShelves, when {
             saved.serverShelves.isNotEmpty() -> ShelfLoadStatus.SUCCESS
             saved.serverFetchSucceeded -> ShelfLoadStatus.EMPTY
             else -> ShelfLoadStatus.LOADING
-        }); homeContinuationToken = saved.continuationToken
+        })
+        if (key != homeKey || generation != serverGeneration) return
+        homeContinuationToken = saved.continuationToken
         serverCacheKey = saved.profileKey
         serverFetchedAt = saved.refreshedAt
         // Older snapshots intentionally omitted collection shelves. Keep their
         // usable cards visible, but refresh that incomplete representation once.
         serverSuccess = saved.serverFetchSucceeded && saved.serverContentVersion == SERVER_HOME_CONTENT_VERSION
-        consumedContinuations.clear(); consumedContinuations.addAll(saved.consumedContinuations)
+        sourceBrowseId = saved.sourceBrowseId.takeIf { it == "FEmusic_home" || it in supplementalBrowseIds } ?: "FEmusic_home"
+        completedBrowseIds.clear(); completedBrowseIds.addAll(saved.completedBrowseIds.filter { it in supplementalBrowseIds })
+        consumedContinuations.clear(); consumedContinuations.addAll(saved.consumedContinuations.map {
+            if (it.startsWith("FEmusic_") && '|' in it) it else "$sourceBrowseId|$it"
+        })
+        homeContinuationToken = homeContinuationToken?.takeUnless { "$sourceBrowseId|$it" in consumedContinuations }
 
     }
     private suspend fun restoreCachedHome() {
         val requested = cache.readServer(homeKey)
-        requested?.let(::restoreHome)
+        requested?.let { restoreHome(it) }
         if (homeKey != HomeCacheIdentity.home(_userProfile.value, "anonymous") &&
             requested?.serverFetchSucceeded != true && requested?.serverShelves.isNullOrEmpty()) {
-            cache.readServer(HomeCacheIdentity.home(_userProfile.value, "anonymous"))?.let(::restoreHome)
+            cache.readServer(HomeCacheIdentity.home(_userProfile.value, "anonymous"))?.let { restoreHome(it) }
         }
     }
     private fun restoreProfile(saved: SavedHomeCards) {
@@ -285,16 +333,15 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     suspend fun loadServerHome(force: Boolean = false): Boolean = withContext(AppDispatchers.HomeBookkeeping) {
         restored.await()
         if (!force && fresh(serverSuccess, serverFetchedAt, _serverShelves.value.isEmpty()) &&
-            (serverCacheKey == homeKey || serverAttemptAt > 0L)) {
-            if (visible) expandServerHome()
+            (serverCacheKey == homeKey || serverAttemptAt != null)) {
             return@withContext true
         }
         serverJob?.takeIf { it.isActive }?.let { if (force || _serverShelves.value.isEmpty()) serverUrgent.value = true; return@withContext it.await() }
         val now = System.currentTimeMillis()
-        if (!force && now - serverAttemptAt in 0 until 60_000L) return@withContext false
+        if (!force && serverAttemptAt?.let { now - it in 0 until 60_000L } == true) return@withContext false
         serverAttemptAt = now
         val key = homeKey; val generation = ++serverGeneration; val region = HomeCacheIdentity.region(_userProfile.value)
-        expansionJob?.cancel(); pageJob?.cancel(); _continuationStatus.value = ShelfLoadStatus.EMPTY
+        pageJob?.cancel(); pageJob = null; continuationFailure = null; _continuationStatus.value = ShelfLoadStatus.EMPTY
         if (_serverShelves.value.isEmpty()) publishServer(emptyList(), ShelfLoadStatus.LOADING)
         val urgent = MutableStateFlow(force || _serverShelves.value.isEmpty()).also { serverUrgent = it }
         val job = owner.async {
@@ -310,7 +357,11 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     return@async false
                 }
                 val responseAccount = response.accountIdentity ?: key.substringAfter('|')
-                if (responseAccount != "anonymous" && responseAccount != key.substringAfter('|')) return@async false
+                if (responseAccount != "anonymous" && responseAccount != key.substringAfter('|')) {
+                    _refreshErrorMessage.value = "Home response account did not match the request"
+                    if (_serverShelves.value.isEmpty()) publishServer(emptyList(), ShelfLoadStatus.ERROR)
+                    return@async false
+                }
                 val responseKey = HomeCacheIdentity.home(_userProfile.value, responseAccount)
                 val previous = _serverShelves.value.takeIf { serverSuccess && serverCacheKey == responseKey }.orEmpty()
                 val shelves = BackgroundWorkCoordinator.localDataPreparation {
@@ -320,10 +371,11 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                 serverCacheKey = responseKey
                 serverFetchedAt = System.currentTimeMillis(); serverSuccess = true
                 homeContinuationToken = response.continuationToken
-                consumedContinuations.clear()
+                consumedContinuations.clear(); completedBrowseIds.clear(); sourceBrowseId = "FEmusic_home"
                 _refreshErrorMessage.value = null
-                publishServer(shelves, if (shelves.isEmpty()) ShelfLoadStatus.EMPTY else ShelfLoadStatus.SUCCESS)
-                _revealedShelfCount.value = maxOf(4, _revealedShelfCount.value).coerceAtMost(shelves.size)
+                publishServer(shelves, if (shelves.isEmpty()) ShelfLoadStatus.EMPTY else ShelfLoadStatus.SUCCESS,
+                    revealed = maxOf(4, _revealedShelfCount.value))
+                if (generation != serverGeneration || key != homeKey) return@async false
                 if (response.shelves.isEmpty()) _refreshErrorMessage.value = "No recommendations are available. Tap to retry."
                 cache.saveHome(snapshot()); true
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -335,116 +387,135 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         }
         serverJob = job
         val loaded = try { job.await() } finally { if (serverJob === job && job.isCompleted) serverJob = null }
-        if (loaded && visible) expandServerHome()
         loaded
     }
     suspend fun loadProfileShelf(force: Boolean = false): Boolean = withContext(AppDispatchers.HomeBookkeeping) {
         profileRestored.await()
         if (!force && fresh(profileSuccess, profileFetchedAt, _profileShelf.value == null)) return@withContext true
+        _optionalWorkReady.first { it }
         profileJob?.takeIf { it.isActive }?.let { return@withContext it.await() }
         val now = System.currentTimeMillis()
-        if (!force && now - profileAttemptAt in 0 until 60_000L) return@withContext false
+        if (!force && profileAttemptAt?.let { now - it in 0 until 60_000L } == true) return@withContext false
         profileAttemptAt = now
         val key = profileKey; val generation = profileGeneration; val profile = _userProfile.value; val rotation = profileRotation++
         val job = owner.async {
             try {
                 val result = BackgroundWorkCoordinator.optionalProcessing {
                     BackgroundWorkCoordinator.awaitOptionalBatch()
-                    if (_profileShelf.value == null) _profileStatus.value = ShelfLoadStatus.LOADING
                     withContext(AppDispatchers.Io) { profileLoader(profile, rotation, force) }
                 }
                 if (generation != profileGeneration || key != profileKey || key != currentProfileKey(_userProfile.value)) return@async false
                 if (result.isError) { if (_profileShelf.value == null) _profileStatus.value = ShelfLoadStatus.ERROR; return@async false }
                 _profileShelf.value = result.shelf; _profileStatus.value = if (result.shelf == null) ShelfLoadStatus.EMPTY else ShelfLoadStatus.SUCCESS; profileFetchedAt = System.currentTimeMillis(); profileSuccess = true
                 cache.saveProfile(snapshot()); true
-            } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { if (_profileShelf.value == null) _profileStatus.value = ShelfLoadStatus.ERROR; false }
+            } catch (cancelled: CancellationException) {
+                if (generation == profileGeneration && key == profileKey) profileAttemptAt = null
+                throw cancelled
+            } catch (_: Exception) { if (_profileShelf.value == null) _profileStatus.value = ShelfLoadStatus.ERROR; false }
         }
         profileJob = job
         try { job.await() } finally { if (profileJob === job && job.isCompleted) profileJob = null }
+    }
+    private data class ContinuationFailure(val token: String, val attempts: Int, val retryAt: Long)
+    private var continuationFailure: ContinuationFailure? = null
+    private fun pageFailed(token: String, message: String = "Native Home continuation failed") {
+        val attempts = if (continuationFailure?.token == token) continuationFailure!!.attempts + 1 else 1
+        continuationFailure = ContinuationFailure(token, attempts,
+            elapsedTime() + (15_000L shl (attempts - 1).coerceAtMost(3)))
+        _continuationStatus.value = ShelfLoadStatus.ERROR
+        _refreshErrorMessage.value = message
     }
     fun revealNextHomeSection() {
         owner.launch {
             restored.await()
             if (_revealedShelfCount.value < _serverShelves.value.size) {
-                _revealedShelfCount.value = (_revealedShelfCount.value + 2).coerceAtMost(_serverShelves.value.size); return@launch
-            }
-            if (pageJob?.isActive == true) return@launch
-            pageJob = owner.launch { loadContinuation() }
+                _revealedShelfCount.value = (_revealedShelfCount.value + 2).coerceAtMost(_serverShelves.value.size)
+            } else requestMoreHome()
         }
     }
-    /** One optional, cancellable expansion owner; no artwork is mounted by prefetching. */
-    private fun expandServerHome(explicit: Boolean = false) {
-        expansionJob?.takeIf { it.isActive }?.let {
-            if (explicit) expansionUrgent.value = true
-            return
-        }
-        if (homeContinuationToken == null || !visible && !explicit) return
-        val key = homeKey; val generation = serverGeneration
-        val urgent = MutableStateFlow(explicit).also { expansionUrgent = it }
-        expansionJob = owner.launch {
-            BackgroundWorkCoordinator.optionalProcessing(urgent = { urgent.value }) {
-                repeat(BACKGROUND_HOME_PAGE_LIMIT) {
-                    BackgroundWorkCoordinator.awaitOptionalBatch()
-                    if (key != homeKey || generation != serverGeneration || !visible && !urgent.value) return@optionalProcessing
-                    if (!loadContinuation(urgent = urgent, reveal = false)) return@optionalProcessing
-                }
-            }
-        }
+    private fun requestMoreHome() {
+        if (pageJob?.isActive == true || serverJob?.isActive == true || homeContinuationToken == null && supplementalBrowseIds.all { it in completedBrowseIds }) return
+        pageJob = owner.launch { loadContinuation() }
     }
-
-    private suspend fun loadContinuation(urgent: MutableStateFlow<Boolean> = MutableStateFlow(false),
-        reveal: Boolean = true): Boolean {
-        val token = homeContinuationToken?.takeUnless { it in consumedContinuations } ?: return false
-        val requestOwner = currentCoroutineContext()[Job] ?: return false
-        pageJob?.takeIf { it !== requestOwner && it.isActive }?.let { it.join(); return homeContinuationToken != token }
-        pageJob = requestOwner
+    /** One bounded demand can traverse a duplicate/unsupported page, never an idle page fan-out. */
+    private suspend fun loadContinuation() {
+        val requestOwner = currentCoroutineContext()[Job]
         val key = homeKey; val generation = serverGeneration
         val responseAccount = serverCacheKey.substringAfter('|')
         try {
-            if (reveal) _continuationStatus.value = ShelfLoadStatus.LOADING
-            suspend fun request() = withContext(AppDispatchers.Io) {
-                homeLoader(HomeCacheIdentity.region(_userProfile.value), token, responseAccount != "anonymous")
+            repeat(2) {
+                val token = homeContinuationToken?.takeUnless { "$sourceBrowseId|$it" in consumedContinuations }
+                val browse = if (token == null) supplementalBrowseIds.firstOrNull { it !in completedBrowseIds } ?: return else sourceBrowseId
+                val cursorKey = "$browse|${token ?: "initial"}"
+                continuationFailure?.takeIf { it.token == cursorKey }?.let {
+                    if (it.attempts >= 3 || elapsedTime() < it.retryAt) return
+                }
+                _continuationStatus.value = ShelfLoadStatus.LOADING
+                publishServer(_serverShelves.value, ShelfLoadStatus.LOADING)
+                val result = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(MutableStateFlow(true)) {
+                    withContext(AppDispatchers.Io) {
+                        if (token == null) supplementalLoader(HomeCacheIdentity.region(_userProfile.value), browse, responseAccount != "anonymous")
+                        else homeLoader(HomeCacheIdentity.region(_userProfile.value), token, responseAccount != "anonymous")
+                    }
+                }
+                currentCoroutineContext().ensureActive()
+                if (generation != serverGeneration || key != homeKey || key != currentHomeKey(_userProfile.value) || token != homeContinuationToken) return
+                if (result.isError || result.accountIdentity != null && result.accountIdentity != responseAccount) {
+                    pageFailed(cursorKey, result.errorMessage ?: if (result.accountIdentity != null && result.accountIdentity != responseAccount)
+                        "Native Home response account did not match its cursor" else "Native Home continuation failed")
+                    return
+                }
+                val previous = _serverShelves.value
+                val appended = BackgroundWorkCoordinator.localDataPreparation {
+                    withContext(AppDispatchers.CpuBounded) { appendServerShelves(previous, result.shelves) }
+                }
+                if (generation != serverGeneration || key != homeKey || key != currentHomeKey(_userProfile.value) ||
+                    token != homeContinuationToken || previous !== _serverShelves.value) return
+                sourceBrowseId = browse
+                if (token == null) completedBrowseIds.add(browse) else consumedContinuations.add(cursorKey)
+                continuationFailure = null
+                homeContinuationToken = result.continuationToken?.takeUnless { "$browse|$it" in consumedContinuations }
+                val added = appended.size - previous.size
+                publishServer(appended, revealed = maxOf(_revealedShelfCount.value + 2,
+                    if (added > 0) previous.size + minOf(2, added) else 0))
+                _continuationStatus.value = ShelfLoadStatus.SUCCESS
+                _refreshErrorMessage.value = null
+                val finished = added > 0 || appended != previous ||
+                    homeContinuationToken == null && supplementalBrowseIds.all { it in completedBrowseIds }
+                // The token is committed before persistence. A new user gesture
+                // can own the next token while this completed page checkpoints.
+                if (finished && pageJob === requestOwner) pageJob = null
+                cache.saveHome(snapshot())
+                if (finished) return
             }
-            val result = if (!reveal)
-                com.example.recommendation.DiscoveryRequestCoordinator.withPriority(urgent) { request() }
-            else BackgroundWorkCoordinator.localDataPreparation { request() }
-            if (generation != serverGeneration || key != homeKey || key != currentHomeKey(_userProfile.value) || token != homeContinuationToken) return false
-            if (result.accountIdentity != null && result.accountIdentity != responseAccount) return false
-            if (result.isError) { _continuationStatus.value = ShelfLoadStatus.ERROR; return false } // Keep the cursor retryable.
-            val previous = _serverShelves.value
-            val appended = BackgroundWorkCoordinator.localDataPreparation {
-                withContext(AppDispatchers.CpuBounded) { appendServerShelves(previous, result.shelves) }
-            }
-            if (generation != serverGeneration || key != homeKey || key != currentHomeKey(_userProfile.value) ||
-                token != homeContinuationToken || previous !== _serverShelves.value) return false
-            consumedContinuations.add(token)
-            publishServer(appended)
-            _continuationStatus.value = ShelfLoadStatus.SUCCESS
-            homeContinuationToken = result.continuationToken?.takeUnless { it in consumedContinuations }
-            if (reveal) _revealedShelfCount.value = (_revealedShelfCount.value + 2).coerceAtMost(_serverShelves.value.size)
-            cache.saveHome(snapshot())
-            return true
-        } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { _continuationStatus.value = ShelfLoadStatus.ERROR; return false /* Keep the cursor and visible content. */ }
-        finally { if (pageJob === requestOwner) {
-            pageJob = null
-            if (_continuationStatus.value == ShelfLoadStatus.LOADING) _continuationStatus.value = ShelfLoadStatus.EMPTY
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { if (pageJob === requestOwner && generation == serverGeneration && key == homeKey) {
+            val browse = if (homeContinuationToken == null) supplementalBrowseIds.firstOrNull { it !in completedBrowseIds } ?: sourceBrowseId else sourceBrowseId
+            pageFailed("$browse|${homeContinuationToken ?: "initial"}")
         } }
+        finally {
+            if (pageJob === requestOwner && generation == serverGeneration && key == homeKey) {
+                publishServer(_serverShelves.value)
+                if (_continuationStatus.value == ShelfLoadStatus.LOADING) _continuationStatus.value = ShelfLoadStatus.EMPTY
+            }
+            if (pageJob === requestOwner) pageJob = null
+        }
     }
     private suspend fun applyUserProfile(profile: UserProfile) {
         val nextHome = currentHomeKey(profile); val nextProfile = currentProfileKey(profile)
         _userProfile.value = profile
         if (nextHome != homeKey) {
-            serverGeneration++; serverJob?.cancel(); expansionJob?.cancel(); pageJob?.cancel(); homeKey = nextHome
+            serverGeneration++; serverJob?.cancel(); pageJob?.cancel(); continuationFailure = null; homeKey = nextHome
             serverCacheKey = nextHome
-            publishServer(emptyList(), ShelfLoadStatus.LOADING); homeContinuationToken = null; consumedContinuations.clear()
-            serverFetchedAt = 0; serverSuccess = false; serverAttemptAt = 0
+            publishServer(emptyList(), ShelfLoadStatus.LOADING); homeContinuationToken = null; consumedContinuations.clear(); completedBrowseIds.clear(); sourceBrowseId = "FEmusic_home"
+            serverFetchedAt = 0; serverSuccess = false; serverAttemptAt = null
             _refreshErrorMessage.value = null
             restoreCachedHome()
             if (visible) owner.launch { loadServerHome(false) }
         }
         if (nextProfile != profileKey) {
-            profileGeneration++; profileJob?.cancel(); profileRequestJob?.cancel(); profileKey = nextProfile
-            _profileShelf.value = null; profileFetchedAt = 0; profileSuccess = false; profileAttemptAt = 0
+            profileGeneration++; profileJob?.cancel();  profileKey = nextProfile
+            _profileShelf.value = null; profileFetchedAt = 0; profileSuccess = false; profileAttemptAt = null
             cache.readProfile(nextProfile)?.let(::restoreProfile)
             if (visible) requestProfileShelf(false)
         }
@@ -452,7 +523,11 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     fun setHomeVisible(active: Boolean) {
         if (!active) setHomeScrolling(false)
         owner.launch {
-            visible = active; homeVisible.value = active; restored.await()
+            if (visible == active) return@launch
+            visible = active; homeVisible.value = active
+            if (active) BackgroundWorkCoordinator.interaction()
+            restored.await()
+            if (visible != active) return@launch
             if (active) {
                 applyUserProfile(_userProfile.value)
                 if (artistIdentityDirty) { artistIdentityDirty = false; artistRequests.update { it + 1 } }
@@ -460,9 +535,9 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             }
             else {
                 serverUrgent.value = false
-                expansionJob?.cancel()
+                pageJob?.cancel()
                 artistSectionRelevant.value = false
-                profileGeneration++; profileRequestJob?.cancel(); profileJob?.cancel(); profileAttemptAt = 0L
+                profileGeneration++;  profileJob?.cancel(); profileAttemptAt = null
                 _profileStatus.value = if (_profileShelf.value == null) ShelfLoadStatus.EMPTY else ShelfLoadStatus.SUCCESS
             }
         }
@@ -487,16 +562,14 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             try {
                 if (historyUnavailable) historyRetry.update { it + 1 }
                 if (artistFailed) artistRequests.update { it + 1 }
-                if (loadServerHome(isExplicitPull)) expandServerHome(isExplicitPull)
+                if (loadServerHome(isExplicitPull) && isExplicitPull) requestMoreHome()
             } finally { _isRefreshing.value = false }
         }
         refreshJob?.join()
     }
     private fun requestProfileShelf(force: Boolean) {
-        if (profileRequestJob?.isActive == true && (!force || profileRequestIsExplicit)) return
-        profileRequestJob?.cancel()
-        profileRequestIsExplicit = force
-        profileRequestJob = owner.launch { loadProfileShelf(force) }
+        profileForcePending = profileForcePending || force
+        profileRequests.update { it + 1 }
     }
     fun refreshAll() = refreshHome(true)
     fun clearRefreshError() { _refreshErrorMessage.value = null }

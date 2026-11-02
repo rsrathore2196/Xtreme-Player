@@ -30,21 +30,37 @@ class InitialHomePreparationTest {
     private lateinit var db: MusicDatabase
     private lateinit var player: PlaybackManager
     private val stores = mutableListOf<ViewModelStore>()
+    private var clockPump: Job? = null
+    private var elapsed = 100_000L
     private val preferences = UserProfile(name = "User", countryCode = "IN", country = "India", languages = listOf("Hindi"))
     private val track = MusicTrack("yt_abcdefghijk", "Song", "Singer", "Album", 180_000, "", "")
     private fun shelf(id: String) = ServerHomeShelf(id, id, tracks = listOf(track.copy(id = "yt_$id")))
     private fun page(id: String, cursor: String? = null) = YouTubeHomeParser.ParsedHomeFeed(listOf(shelf(id)), cursor)
     @Before fun setup() = runBlocking {
         Dispatchers.setMain(UnconfinedTestDispatcher())
+        com.example.performance.BackgroundWorkCoordinator.foreground(true)
+        com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
+        com.example.performance.BackgroundWorkCoordinator.scrolling(false)
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(1))
+        // Functional IO tests need the monotonic Android clock to advance just
+        // as it does on a device; dedicated idle-policy tests control it exactly.
+        clockPump = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            while (isActive) {
+                org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(25))
+                delay(25)
+            }
+        }
         UserProfilePreferences.saveUserProfile(app, preferences)
         db = MusicDatabase.createInMemoryDatabase(app)
         player = PlaybackManager(app, MusicRepository(db.musicDao(), app))
     }
-    @After fun stop() { stores.forEach { it.clear() }; player.release(); db.close(); Dispatchers.resetMain() }
+    @After fun stop() = runBlocking { stores.forEach { it.clear() }; player.release(); db.close(); clockPump?.cancelAndJoin(); Dispatchers.resetMain(); com.example.performance.BackgroundWorkCoordinator.foreground(false) }
     private fun viewModel(loader: suspend (String, String?) -> YouTubeHomeParser.ParsedHomeFeed,
         profile: suspend (UserProfile, Int) -> YouTubeMusicApiService.ProfileShelfResult = { _, _ -> YouTubeMusicApiService.ProfileShelfResult(null) },
         account: kotlinx.coroutines.flow.StateFlow<String>? = null,
-        authenticatedRequests: MutableList<Boolean>? = null): HomeViewModel {
+        authenticatedRequests: MutableList<Boolean>? = null,
+        idle: suspend (Long) -> Unit = {},
+        extra: suspend (String) -> YouTubeHomeParser.ParsedHomeFeed = { YouTubeHomeParser.ParsedHomeFeed(emptyList(), null) }): HomeViewModel {
         val store = ViewModelStore().also(stores::add)
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T =
@@ -52,9 +68,11 @@ class InitialHomePreparationTest {
                     { region, token, authenticated -> authenticatedRequests?.add(authenticated); loader(region, token) },
                     { selected, rotation, _ -> profile(selected, rotation) },
                     accountIdentity = { account?.value ?: YouTubeMusicApiService.discoveryAccountIdentity() },
-                    accountUpdates = account ?: YouTubeAudioStreamService.discoveryAccountChanges) as T
+                    accountUpdates = account ?: YouTubeAudioStreamService.discoveryAccountChanges,
+                    idleAdmission = idle, elapsedTime = { elapsed },
+                    supplementalLoader = { _, browse, _ -> extra(browse) }) as T
         }
-        return ViewModelProvider(store, factory)[HomeViewModel::class.java]
+        return ViewModelProvider(store, factory)[HomeViewModel::class.java].also { it.onHomeFrameDrawn() }
     }
     private suspend fun cached() {
         HomeCardCache(app).save(SavedHomeCards(HomeCacheIdentity.home(preferences), refreshedAt = System.currentTimeMillis(),
@@ -87,6 +105,7 @@ class InitialHomePreparationTest {
         val vm = viewModel({ _, _ -> calls.incrementAndGet(); page("refreshed") }, { _, _ ->
             profileCalls.incrementAndGet(); started.complete(Unit); release.await(); YouTubeMusicApiService.ProfileShelfResult(null)
         })
+        vm.setHomeVisible(true)
         val automatic = vm.refreshHome(false)
         withTimeout(5_000) { started.await() }
         assertEquals(0, calls.get())
@@ -105,6 +124,7 @@ class InitialHomePreparationTest {
         val vm = viewModel({ _, _ -> calls.incrementAndGet(); serverStarted.complete(Unit); release.await(); page("native") }, { _, _ ->
             profileCalls.incrementAndGet(); profileStarted.complete(Unit); release.await(); YouTubeMusicApiService.ProfileShelfResult(null)
         })
+        vm.setHomeVisible(true)
         val automatic = vm.refreshHome(false)
         withTimeout(5_000) { serverStarted.await(); profileStarted.await() }
         val manual = vm.refreshHome(true)
@@ -117,6 +137,7 @@ class InitialHomePreparationTest {
     @Test fun refreshCompletesWithHomeWhileOptionalProfileDiscoveryRemainsIndependent() = runBlocking {
         val started = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
         val vm = viewModel({ _, _ -> page("native") }, { _, _ -> started.complete(Unit); release.await(); YouTubeMusicApiService.ProfileShelfResult(null) })
+        vm.setHomeVisible(true)
         val refresh = vm.refreshHome(true)
         withTimeout(5_000) { started.await() }
         withTimeout(5_000) { refresh.join() }
@@ -134,6 +155,9 @@ class InitialHomePreparationTest {
         assertTrue(vm.loadServerHome(true))
         vm.revealNextHomeSection()
         withTimeout(5_000) { while (requests.get() < 1) delay(10) }; delay(50)
+        vm.revealNextHomeSection(); delay(100)
+        assertEquals("Repeated gestures respect failed-token backoff", 1, requests.get())
+        elapsed += 15_001
         vm.revealNextHomeSection()
         withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
         assertEquals(2, requests.get()); assertEquals(listOf("first", "next"), vm.serverShelves.value.map { it.title })
@@ -165,13 +189,14 @@ class InitialHomePreparationTest {
         db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
         db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
             eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
-        val vm = viewModel({ _, _ -> page("native") })
+        val releaseIdle = CompletableDeferred<Unit>()
+        val vm = viewModel({ _, _ -> page("native") }, idle = { releaseIdle.await() })
         assertTrue(vm.loadServerHome())
         assertEquals(com.example.recommendation.HomeUserMode.LOADING, vm.userMode.value)
         vm.setHomeVisible(true)
         withTimeout(5_000) { vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
         assertTrue("Room artist aggregation is not a startup prerequisite", vm.mostListenedArtists.value.isEmpty())
-        vm.setArtistSectionRelevant(true)
+        releaseIdle.complete(Unit)
         withTimeout(5_000) { vm.mostListenedArtists.first { it.isNotEmpty() } }
         assertEquals("Singer", vm.mostListenedArtists.value.single().name)
         assertEquals(1, vm.mostListenedArtists.value.single().playCount)
@@ -384,32 +409,29 @@ class InitialHomePreparationTest {
         withTimeout(5_000) { vm.loadServerHome() }
         assertEquals(3, vm.serverShelves.value.size)
     }
-    @Test fun visibleHomeExpandsAfterInitialPreparationWithoutMountingAllFetchedShelves() = runBlocking {
-        val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+    @Test fun visibleHomeFetchesFurtherPagesOnlyAfterDemandAndRevealsTheirShelves() = runBlocking {
         val tokens = java.util.Collections.synchronizedList(mutableListOf<String?>())
-        val vm = viewModel({ _, token ->
-            tokens += token
+        val vm = viewModel({ _, token -> tokens += token
             when (token) {
                 null -> YouTubeHomeParser.ParsedHomeFeed((1..3).map { shelf("native-$it") }, "more")
-                "more" -> { entered.complete(Unit); release.await()
-                    YouTubeHomeParser.ParsedHomeFeed((4..6).map { shelf("native-$it") }, "last") }
+                "more" -> YouTubeHomeParser.ParsedHomeFeed((4..6).map { shelf("native-$it") }, "last")
                 else -> page("native-7")
             }
         })
-        vm.loadServerHome()
+        assertTrue(vm.loadServerHome()); vm.setHomeVisible(true)
+        withTimeout(5_000) { vm.optionalWorkReady.first { it } }
         assertEquals(listOf<String?>(null), tokens)
-        assertEquals(3, vm.serverShelves.value.size)
-        vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
-        withTimeout(5_000) { entered.await() }
-        assertEquals(3, vm.serverShelves.value.size)
-        assertFalse(vm.isRefreshing.value)
-        release.complete(Unit)
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 6 } }
+        assertEquals(listOf(null, "more"), tokens)
+        assertTrue(vm.revealedShelfCount.value >= 5)
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.revealedShelfCount.first { it >= 6 } }
+        vm.revealNextHomeSection()
         withTimeout(5_000) { vm.serverShelves.first { it.size == 7 } }
         assertEquals(listOf(null, "more", "last"), tokens)
-        assertTrue(vm.revealedShelfCount.value <= 4)
         withTimeout(5_000) { while (HomeCardCache(app).read(HomeCacheIdentity.home(preferences))?.serverShelves?.size != 7) delay(10) }
         assertNull(HomeCardCache(app).read(HomeCacheIdentity.home(preferences))!!.continuationToken)
-        Unit
     }
     @Test fun explicitRefreshMergesExpandedCacheAndFetchesUniquePagesIndependentlyOfItsIndicator() = runBlocking {
         val key = HomeCacheIdentity.home(preferences)
@@ -468,11 +490,13 @@ class InitialHomePreparationTest {
             page("next")
         })
         vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
+        vm.revealNextHomeSection()
         withTimeout(5_000) { entered.await() }
         vm.setHomeVisible(false)
         withTimeout(5_000) { cancelled.await() }
         assertEquals(3, vm.serverShelves.value.size)
         vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
+        vm.revealNextHomeSection()
         withTimeout(5_000) { vm.serverShelves.first { it.size == 4 } }
         assertEquals(2, attempts.get())
     }
@@ -483,8 +507,8 @@ class InitialHomePreparationTest {
             else pages.incrementAndGet().let { page("extra-$it", "page-${it + 1}") }
         })
         vm.refreshHome(true).join()
-        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 + BACKGROUND_HOME_PAGE_LIMIT } }
-        assertEquals(BACKGROUND_HOME_PAGE_LIMIT, pages.get())
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 4 } }
+        assertEquals("One explicit refresh does not eagerly walk hidden pages", 1, pages.get())
         assertTrue(vm.revealedShelfCount.value <= 4)
     }
     @Test fun cancellingOptionalContinuationKeepsTheCursorAndPublishedContentRetryable() = runBlocking {
@@ -495,6 +519,7 @@ class InitialHomePreparationTest {
         } })
         assertTrue(vm.loadServerHome())
         vm.setHomeVisible(true)
+        vm.revealNextHomeSection()
         withTimeout(5_000) { entered.await() }
         vm.setHomeVisible(false)
         withTimeout(5_000) { cancelled.await() }
@@ -515,6 +540,57 @@ class InitialHomePreparationTest {
         withTimeout(5_000) { vm.serverShelves.first { it.singleOrNull()?.id == "legacy" } }
         vm.loadServerHome()
         assertEquals(1, calls.get()); assertEquals(3, vm.serverShelves.value.size)
+    }
+
+    @Test fun exhaustedHomeCanFetchNativeNewReleasesAndExploreOnlyOnDemandAndRestoreThem() = runBlocking {
+        val browsed = mutableListOf<String>()
+        val vm = viewModel({ _, _ -> page("Quick Picks") }, extra = { browse ->
+            browsed += browse
+            page(if (browse == "FEmusic_new_releases") "New Releases" else "Trending Playlists")
+        })
+        assertTrue(vm.loadServerHome())
+        assertTrue(browsed.isEmpty())
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
+        assertEquals(listOf("FEmusic_new_releases"), browsed)
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
+        assertEquals(listOf("FEmusic_new_releases", "FEmusic_explore"), browsed)
+        assertEquals(listOf("Quick Picks", "New Releases", "Trending Playlists"), vm.serverShelves.value.map { it.title })
+        assertEquals(3, vm.revealedShelfCount.value)
+        withTimeout(5_000) { while (HomeCardCache(app).readServer(HomeCacheIdentity.home(preferences))?.completedBrowseIds?.size != 2) delay(10) }
+        val restored = viewModel({ _, _ -> error("Fresh cached Home must not refetch") }, extra = { error("Already loaded native browse") })
+        assertTrue(restored.loadServerHome())
+        assertEquals(3, restored.serverShelves.value.size)
+        restored.revealNextHomeSection()
+        delay(100)
+        assertEquals(2, browsed.size)
+    }
+    @Test fun duplicateOnlyPagesCanAdvanceOnceToTheNextUsableNativePage() = runBlocking {
+        val calls = mutableListOf<String?>()
+        val original = shelf("first")
+        val vm = viewModel({ _, token -> calls += token
+            when (token) {
+                null -> YouTubeHomeParser.ParsedHomeFeed(listOf(original), "one")
+                "one" -> YouTubeHomeParser.ParsedHomeFeed(listOf(original.copy(id = "changed")), "two")
+                else -> page("New Releases")
+            }
+        })
+        assertTrue(vm.loadServerHome()); vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
+        assertEquals(listOf(null, "one", "two"), calls)
+        assertEquals(listOf("first", "New Releases"), vm.serverShelves.value.map { it.title })
+        assertEquals(2, vm.revealedShelfCount.value)
+    }
+    @Test fun anAnonymousSupplementCannotEnterAnAuthenticatedHomeOrRepeatOnEveryGesture() = runBlocking {
+        val calls = AtomicInteger()
+        val vm = viewModel({ _, _ -> page("native") }, account = kotlinx.coroutines.flow.MutableStateFlow("account-a"), extra = {
+            calls.incrementAndGet(); page("unrelated-account").copy(accountIdentity = "anonymous")
+        })
+        assertTrue(vm.loadServerHome()); vm.revealNextHomeSection()
+        withTimeout(5_000) { while (calls.get() != 1) delay(10) }
+        delay(50); repeat(5) { vm.revealNextHomeSection() }; delay(100)
+        assertEquals(1, calls.get()); assertEquals(listOf("native"), vm.serverShelves.value.map { it.id })
     }
 
 }

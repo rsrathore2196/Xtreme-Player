@@ -22,8 +22,12 @@ class HomePresentationRegressionTest {
         assertEquals("A native heading", page.shelves.single().title)
         assertEquals(listOf(3, 1, 2).map { "yt_${NativeFeedFixtures.id(it)}" }, page.shelves.single().tracks.map { it.id })
     }
-    @Test fun refreshedArtworkOrFirstTrackNeverChangesTheShelfIdentity() {
-        fun parse(vararg ids: Int) = YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.shelf("Mix", *ids)))).shelves.single()
+    @Test fun stableProviderIdentitySurvivesArtworkAndFirstTrackChanges() {
+        fun parse(vararg ids: Int): ServerHomeShelf {
+            val row = NativeFeedFixtures.shelf("Mix", *ids)
+            row.getJSONObject("musicCarouselShelfRenderer").put("targetId", "native-mix")
+            return YouTubeHomeParser.parseHomeFeed(org.json.JSONObject(NativeFeedFixtures.home(row))).shelves.single()
+        }
         assertEquals(parse(1, 2).id, parse(2, 3).id)
     }
     @Test fun continuationAppendKeepsAllEarlierPositions() {
@@ -47,11 +51,11 @@ class HomePresentationRegressionTest {
     @Test fun emptyPageCannotClearExistingCards() {
         val before = listOf(shelf("a", "one")); assertSame(before, appendServerShelves(before, emptyList()))
     }
-    @Test fun titleOnlyShelvesFromDifferentPagesHaveDistinctStableIds() {
+    @Test fun equivalentTitleOnlyShelvesDoNotGetNewIdsForEachPage() {
         val root = org.json.JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.shelf("Mix", 1)))
         val a = YouTubeHomeParser.parseHomeFeed(root, "page-a").shelves.single()
         val b = YouTubeHomeParser.parseHomeFeed(root, "page-b").shelves.single()
-        assertNotEquals(a.id, b.id); assertEquals(a.id, YouTubeHomeParser.parseHomeFeed(root, "page-a").shelves.single().id)
+        assertEquals(a.id, b.id); assertEquals(a.id, YouTubeHomeParser.parseHomeFeed(root, "page-a").shelves.single().id)
     }
     @Test fun collectionOverlaysRemainCollectionsAndCannotBecomeArbitrarySongs() {
         val row = NativeFeedFixtures.album(1)

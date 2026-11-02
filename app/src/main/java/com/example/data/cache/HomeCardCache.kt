@@ -5,6 +5,7 @@ import android.util.AtomicFile
 import com.example.data.model.MusicTrack
 import com.example.data.model.ServerHomeShelf
 import com.example.data.model.ServerHomeItem
+import com.example.data.model.HomeShelfIdentity
 import com.example.data.repository.CatalogAlbum
 import com.example.data.repository.CatalogArtist
 import com.example.data.repository.CatalogPlaylist
@@ -68,7 +69,9 @@ data class SavedHomeCards(
     val profileFetchSucceeded: Boolean = false,
     val consumedContinuations: Set<String> = emptySet(),
     val artistDataVersion: Int = 2,
-    val serverContentVersion: Int = SERVER_HOME_CONTENT_VERSION
+    val serverContentVersion: Int = SERVER_HOME_CONTENT_VERSION,
+    val sourceBrowseId: String = "FEmusic_home",
+    val completedBrowseIds: Set<String> = emptySet()
 )
 
 internal const val SERVER_HOME_CONTENT_VERSION = 2
@@ -166,6 +169,7 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
     private fun shelf(row: ServerHomeShelf) = JSONObject().put("id", row.id).put("title", row.title).put("subtitle", row.subtitle)
         .put("tracks", tracks(row.tracks)).put("continuationToken", row.continuationToken)
         .put("items", JSONArray(row.items.map(::item)))
+        .put("providerId", row.providerId).put("browseId", row.browseId).put("browseParams", row.browseParams)
     private fun item(entry: ServerHomeItem): JSONObject {
         if (entry is ServerHomeItem.Song) return JSONObject().put("type", "song").put("id", entry.track.id)
         val album = (entry as? ServerHomeItem.Album)?.album
@@ -204,11 +208,11 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
             }
         }.getOrNull() }
         return ServerHomeShelf(row.getString("id"), row.getString("title"), row.optString("subtitle"), tracks,
-            nullable(row, "continuationToken"), items)
+            nullable(row, "continuationToken"), items, row.optString("providerId"), row.optString("browseId"), row.optString("browseParams"))
     }
     private fun shelves(row: JSONObject?): List<ServerHomeShelf> = row?.optJSONArray("serverShelves")?.let { array ->
         (0 until minOf(60, array.length())).mapNotNull { runCatching { shelf(array.getJSONObject(it)) }.getOrNull() }
-    }.orEmpty()
+    }.orEmpty().let(HomeShelfIdentity::deduplicate)
     private fun local(homeKey: String, home: JSONObject?, local: JSONObject?): SavedHomeCards {
         val artists = local?.optJSONArray("artists")
         return SavedHomeCards(homeKey, home?.optLong("refreshedAt") ?: 0L,
@@ -220,7 +224,11 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
             continuationToken = home?.let { nullable(it, "continuationToken") }, serverFetchSucceeded = home?.optBoolean("success") == true,
             consumedContinuations = home?.optJSONArray("consumedContinuations")?.let { a -> (0 until a.length()).map(a::getString).toSet() }.orEmpty(),
             artistDataVersion = local?.optInt("artistDataVersion", 0) ?: 0,
-            serverContentVersion = home?.optInt("contentVersion", 0) ?: 0)
+            serverContentVersion = home?.optInt("contentVersion", 0) ?: 0,
+            sourceBrowseId = home?.optString("sourceBrowseId", "FEmusic_home") ?: "FEmusic_home",
+            completedBrowseIds = home?.optJSONArray("completedBrowseIds")?.let { a ->
+                (0 until a.length()).map(a::getString).toSet()
+            }.orEmpty())
     }
     fun peek(profile: String): SavedHomeCards? {
         val home = peekJson("server_${HomeCacheIdentity.fileKey(profile)}")?.takeIf { validHome(it, profile) }
@@ -252,16 +260,18 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
             profileShelf = row.optJSONObject("shelf")?.let(::shelf), profileFetchedAt = row.optLong("fetchedAt"), profileFetchSucceeded = row.optBoolean("success")) }
     }
     private data class HomeCheckpoint(val key: String, val fetchedAt: Long, val success: Boolean,
-        val shelves: List<ServerHomeShelf>, val continuation: String?, val consumed: Set<String>)
+        val shelves: List<ServerHomeShelf>, val continuation: String?, val consumed: Set<String>,
+        val sourceBrowseId: String, val completedBrowseIds: Set<String>)
     private data class ProfileCheckpoint(val key: String, val fetchedAt: Long, val success: Boolean, val shelf: ServerHomeShelf?)
     private data class LocalCheckpoint(val revision: String?, val artistVersion: Int, val recent: List<MusicTrack>, val artists: List<MostListenedArtist>)
     suspend fun saveHome(cards: SavedHomeCards) {
         write("server_${HomeCacheIdentity.fileKey(cards.profileKey)}",
-            HomeCheckpoint(cards.profileKey, cards.refreshedAt, cards.serverFetchSucceeded, cards.serverShelves, cards.continuationToken, cards.consumedContinuations)) {
+            HomeCheckpoint(cards.profileKey, cards.refreshedAt, cards.serverFetchSucceeded, cards.serverShelves, cards.continuationToken, cards.consumedContinuations, cards.sourceBrowseId, cards.completedBrowseIds)) {
             JSONObject().put("key", cards.profileKey).put("accountIdentity", cards.profileKey.substringAfter('|')).put("refreshedAt", cards.refreshedAt)
             .put("success", cards.serverFetchSucceeded).put("contentVersion", SERVER_HOME_CONTENT_VERSION)
-            .put("serverShelves", JSONArray(cards.serverShelves.map(::shelf)))
+            .put("serverShelves", JSONArray(HomeShelfIdentity.deduplicate(cards.serverShelves).map(::shelf)))
             .put("continuationToken", cards.continuationToken).put("consumedContinuations", JSONArray(cards.consumedContinuations.toList()))
+            .put("sourceBrowseId", cards.sourceBrowseId).put("completedBrowseIds", JSONArray(cards.completedBrowseIds.toList()))
         }
     }
     suspend fun saveProfile(cards: SavedHomeCards) {

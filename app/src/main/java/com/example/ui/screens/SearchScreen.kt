@@ -288,7 +288,6 @@ fun SearchScreen(
         // A pending restore is not an offline result. Publishing legacy pills
         // here first would replace/reflow the whole list when its index arrives.
         val raw = if (searchState.exploreCategories.isNotEmpty()) searchState.exploreCategories.map { it.title to it }
-        else if (searchState.exploreIndexReady) com.example.data.remote.MusicDataSource.genres.map { it to null }
         else emptyList()
         raw.mapNotNull { (title, cat) ->
             if (com.example.data.remote.YouTubeExploreParser.isExcludedGenre(title)) null
@@ -1377,9 +1376,9 @@ fun SearchScreen(
 
             // PLAYLISTS CATEGORY
             if (showPlaylists) {
-                val matchingGenres = searchState.matchingPlaylistGenres ?: MusicDataSource.genres.filter {
+                val matchingGenres = searchState.matchingPlaylistGenres ?: searchState.exploreCategories.map { it.title }.filter {
                     it.contains(searchState.query, ignoreCase = true)
-                }.ifEmpty { MusicDataSource.genres.take(6) }
+                }.ifEmpty { searchState.exploreCategories.take(6).map { it.title } }
 
                 item {
                     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {

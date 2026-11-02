@@ -148,8 +148,10 @@ fun OtherSettingsPage(
     var isOptimizingCache by remember { mutableStateOf(false) }
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
-        SmartCacheManager.configure(context)
-        SmartCacheManager.refreshStats()
+        kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.Io) {
+            SmartCacheManager.initialize(context, scheduleMaintenance = false)
+            SmartCacheManager.refreshStats()
+        }
     }
 
     val lyricsPreferences = remember(context) { OtherSettingsPreferences.observeLyricsSettings(context) }

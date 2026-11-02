@@ -4,12 +4,10 @@ import androidx.compose.runtime.Immutable
 import com.example.data.model.MusicTrack
 import com.example.data.model.ServerHomeShelf
 import com.example.data.model.ServerHomeItem
+import com.example.data.model.HomeShelfIdentity
 import com.example.recommendation.HomeRecommendationPolicy
 
 internal const val RECENTLY_PLAYED_CARD_LIMIT = 4
-// Bound optional network work per visit/refresh; scrolling can request further pages.
-internal const val BACKGROUND_HOME_PAGE_LIMIT = 3
-
 enum class ShelfLoadStatus { LOADING, SUCCESS, EMPTY, ERROR }
 
 @Immutable
@@ -21,18 +19,17 @@ internal fun initialHomeSkeletons() = List(3) { HomeShelfPresentation("native_in
 /** Keep the loading slot's identity at first publication and native identities on subsequent updates. */
 internal fun presentNativeShelves(previous: List<HomeShelfPresentation>, shelves: List<ServerHomeShelf>,
     status: ShelfLoadStatus, message: String = ""): List<HomeShelfPresentation> {
-    if (shelves.isEmpty()) return if (status == ShelfLoadStatus.LOADING) initialHomeSkeletons()
-        else listOf(HomeShelfPresentation(previous.firstOrNull()?.key ?: "native_initial_slot_0", status = status, message = message))
+    if (shelves.isEmpty()) return if (status == ShelfLoadStatus.LOADING) initialHomeSkeletons() else emptyList()
     val existing = previous.mapNotNull { it.shelf?.id?.let { id -> id to it } }.toMap()
-    return shelves.mapIndexed { index, shelf ->
+    val cards = shelves.mapIndexed { index, shelf ->
         val old = existing[shelf.id]
         val key = old?.key ?: previous.getOrNull(index)?.takeIf { it.shelf == null }?.key ?: "server_shelf_${shelf.id}"
-        val next = HomeShelfPresentation(key, shelf, if (shelf.tracks.isEmpty() && shelf.items.isEmpty()) ShelfLoadStatus.EMPTY else ShelfLoadStatus.SUCCESS)
+        val next = HomeShelfPresentation(key, shelf, ShelfLoadStatus.SUCCESS)
         if (old == next) old else next
     }
+    return if (status == ShelfLoadStatus.LOADING) cards + HomeShelfPresentation(
+        previous.lastOrNull()?.takeIf { it.shelf == null }?.key ?: "native_pending_page") else cards
 }
-
-private fun ServerHomeShelf.entries(): List<ServerHomeItem> = items.ifEmpty { tracks.map { ServerHomeItem.Song(it) } }
 
 /** The legacy broad revision is not a Home input; every actual event remains compared. */
 internal fun sameLocalHomeSnapshot(previous: List<com.example.data.local.ActualPlaySnapshotRow>,
@@ -44,32 +41,11 @@ internal fun sameLocalHomeSnapshot(previous: List<com.example.data.local.ActualP
     return previous.indices.all { previous[it].event == next[it].event }
 }
 
-/** Keep provider ordering and existing instances, merging only an identified continuation of the same shelf. */
-internal fun appendServerShelves(previous: List<ServerHomeShelf>, incoming: List<ServerHomeShelf>): List<ServerHomeShelf> {
-    val result = previous.toMutableList()
-    for (shelf in incoming) {
-        val index = result.indexOfFirst { it.id == shelf.id }
-        if (index >= 0) {
-            val old = result[index]
-            val oldItems = old.entries()
-            val ids = oldItems.mapTo(mutableSetOf()) { it.key }
-            val added = shelf.entries().filter { ids.add(it.key) }
-            if (added.isNotEmpty()) result[index] = old.copy(
-                tracks = old.tracks + added.filterIsInstance<ServerHomeItem.Song>().map { it.track },
-                items = if (old.items.isEmpty() && shelf.items.isEmpty()) emptyList() else oldItems + added)
-        } else if (result.none { it.title == shelf.title && it.entries().map { item -> item.key } == shelf.entries().map { item -> item.key } }) {
-            result.add(shelf)
-        }
-    }
-    return if (result == previous) previous else result
-}
+internal fun appendServerShelves(previous: List<ServerHomeShelf>, incoming: List<ServerHomeShelf>): List<ServerHomeShelf> =
+    HomeShelfIdentity.deduplicate(previous + incoming).let { if (it == previous) previous else it }
 
-/** Refresh the native first page, retaining previously fetched continuation shelves. */
-internal fun refreshServerShelves(previous: List<ServerHomeShelf>, incoming: List<ServerHomeShelf>): List<ServerHomeShelf> {
-    if (incoming.isEmpty()) return incoming
-    val refreshedIds = incoming.mapTo(hashSetOf()) { it.id }
-    return appendServerShelves(incoming, previous.filterNot { it.id in refreshedIds })
-}
+internal fun refreshServerShelves(previous: List<ServerHomeShelf>, incoming: List<ServerHomeShelf>): List<ServerHomeShelf> =
+    HomeShelfIdentity.refresh(previous, incoming)
 
 @Immutable
 data class SectionState(

@@ -26,12 +26,12 @@ import kotlinx.coroutines.flow.collect
 @Composable
 fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier,
     deferEnrichment: Boolean = false, targetSize: Int = 400,
-    backgroundColor: Color = Color(0xFF163255)) {
+    backgroundColor: Color = Color(0xFF163255), enrichmentAllowed: Boolean = true) {
     val context = LocalContext.current.applicationContext
     val active = LocalArtworkRequestsActive.current && LocalVisualEffectsActive.current
     var retries by remember(artist.name, artist.id, artist.musicBrainzId) { mutableIntStateOf(0) }
     var failedUrls by remember(artist.name, artist.id, artist.musicBrainzId) { mutableStateOf(emptySet<String>()) }
-    val photo by produceState(ArtistPhotoRepository.initialPhoto(artist), artist, retries, active) {
+    val photo by produceState(ArtistPhotoRepository.initialPhoto(artist), artist, retries, active, enrichmentAllowed) {
         value = ArtistPhotoRepository.initialPhoto(artist)
         if (!active) return@produceState
         coroutineScope {
@@ -42,7 +42,7 @@ fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier,
             } }
             // The repository serves saved portraits first, resolves visible misses
             // with bounded IO, and schedules stale-image upgrades independently.
-            val resolved = try { ArtistPhotoRepository.photo(context, artist) }
+            val resolved = try { if (enrichmentAllowed) ArtistPhotoRepository.photo(context, artist) else ArtistPhotoRepository.initialPhoto(artist) }
                 catch (e: kotlinx.coroutines.CancellationException) { throw e }
                 catch (_: Exception) { ArtistPhotoRepository.cachedPhoto(artist) }
             value = ArtistPhotoRepository.initialPhoto(artist) ?: resolved

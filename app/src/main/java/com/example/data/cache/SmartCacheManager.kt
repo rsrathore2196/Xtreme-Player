@@ -120,28 +120,33 @@ object SmartCacheManager {
     fun initialize(context: Context, repository: MusicRepository? = null, scheduleMaintenance: Boolean = true) {
         configure(context, repository)
         if (!initialized.compareAndSet(false, true)) return
-        val prefs = getPrefs()
-        val quota = configuredQuota(context)
-        if (prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) != quota)
-            prefs?.edit()?.putLong(KEY_MAX_QUOTA, quota)?.apply()
-        lastReconciliation.set(prefs?.getLong("stats_checked_at", 0L) ?: 0L)
-        legacyImageBytes.set(prefs?.getLong("stats_legacy_images", 0L) ?: 0L)
-        val audio = MusicCache.peekCacheUsage()
-        val image = (context.applicationContext as? com.example.XtremeMusicApp)?.initializedImageDiskCache?.size
-        val audioBytes = audio?.first ?: prefs?.getLong("stats_audio", 0L) ?: 0L
-        val imageBytes = (image?.plus(legacyImageBytes.get())) ?: prefs?.getLong("stats_images", 0L) ?: 0L
-        val lyrics = prefs?.getLong("stats_lyrics", 0L) ?: 0L
-        val metadata = prefs?.getLong("stats_metadata", 0L) ?: 0L
-        _stats.value = CacheStats(audioBytes + imageBytes + lyrics + metadata, audioBytes, imageBytes,
-            lyrics, metadata, audio?.second ?: prefs?.getInt("stats_audio_count", 0) ?: 0,
-            quota,
-            prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true,
-            prefs?.getBoolean(KEY_AUTO_PRECACHE, true) ?: true,
-            prefs?.getBoolean(KEY_WIFI_ONLY, false) ?: false, context.cacheDir.freeSpace)
-        // No directory traversal and no forced Media3/Coil cache construction.
-        if (scheduleMaintenance && System.currentTimeMillis() - lastReconciliation.get() !in 0 until STATS_MAX_AGE_MS)
-            refreshStats(userRequested = false)
-        else if (scheduleMaintenance && audioBytes + imageBytes > _stats.value.maxQuotaBytes) smartAutoTrim()
+        try {
+            val prefs = getPrefs()
+            val quota = configuredQuota(context)
+            if (prefs?.getLong(KEY_MAX_QUOTA, QUOTA_BALANCED) != quota)
+                prefs?.edit()?.putLong(KEY_MAX_QUOTA, quota)?.apply()
+            lastReconciliation.set(prefs?.getLong("stats_checked_at", 0L) ?: 0L)
+            legacyImageBytes.set(prefs?.getLong("stats_legacy_images", 0L) ?: 0L)
+            val audio = MusicCache.peekCacheUsage()
+            val image = (context.applicationContext as? com.example.XtremeMusicApp)?.initializedImageDiskCache?.size
+            val audioBytes = audio?.first ?: prefs?.getLong("stats_audio", 0L) ?: 0L
+            val imageBytes = (image?.plus(legacyImageBytes.get())) ?: prefs?.getLong("stats_images", 0L) ?: 0L
+            val lyrics = prefs?.getLong("stats_lyrics", 0L) ?: 0L
+            val metadata = prefs?.getLong("stats_metadata", 0L) ?: 0L
+            _stats.value = CacheStats(audioBytes + imageBytes + lyrics + metadata, audioBytes, imageBytes,
+                lyrics, metadata, audio?.second ?: prefs?.getInt("stats_audio_count", 0) ?: 0,
+                quota,
+                prefs?.getBoolean(KEY_SMART_AUTO_TRIM, true) ?: true,
+                prefs?.getBoolean(KEY_AUTO_PRECACHE, true) ?: true,
+                prefs?.getBoolean(KEY_WIFI_ONLY, false) ?: false, context.cacheDir.freeSpace)
+            // No directory traversal and no forced Media3/Coil cache construction.
+            if (scheduleMaintenance && System.currentTimeMillis() - lastReconciliation.get() !in 0 until STATS_MAX_AGE_MS)
+                refreshStats(userRequested = false)
+            else if (scheduleMaintenance && audioBytes + imageBytes > _stats.value.maxQuotaBytes) smartAutoTrim()
+        } catch (error: Exception) {
+            initialized.set(false)
+            throw error
+        }
     }
 
     private fun getPrefs(): SharedPreferences? {
