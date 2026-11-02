@@ -270,8 +270,9 @@ fun HomeScreenContent(
     // contents are collected inside the corresponding lazy item below.
     val hasRecent = homeViewModel?.hasRecentlyPlayed?.collectAsStateWithLifecycle()?.value
         ?: pillsCardTracks.isNotEmpty()
-    val hasArtists = homeViewModel?.hasListenedArtists?.collectAsStateWithLifecycle()?.value
-        ?: mostListenedArtists.isNotEmpty()
+    val optionalShelvesVisible = homeViewModel?.artistPortraitsReady?.collectAsStateWithLifecycle()?.value ?: true
+    val hasArtists = (homeViewModel?.hasListenedArtists?.collectAsStateWithLifecycle()?.value
+        ?: mostListenedArtists.isNotEmpty()) && optionalShelvesVisible
     val retainedWindow = rememberSaveable(stateSaver = Saver<HomeFeedWindow, Int>(
         save = { it.visibleCount }, restore = { HomeFeedWindow(it) }
     )) { mutableStateOf(HomeFeedWindow()) }
@@ -310,11 +311,13 @@ fun HomeScreenContent(
             homeView.awaitContentDraw { homeViewModel.onHomeFrameDrawn() }
         }
     }
-    val resolvedProfile = homeViewModel?.profileShelf?.collectAsStateWithLifecycle()?.value ?: profileShelf
+    val resolvedProfile = (homeViewModel?.profileShelf?.collectAsStateWithLifecycle()?.value ?: profileShelf)
+        ?.takeIf { optionalShelvesVisible }
     val revealedCount = homeViewModel?.revealedShelfCount?.collectAsStateWithLifecycle()?.value ?: retainedWindow.value.visibleCount
 
     ObserveHomeScroll(listState)
 
+    androidx.compose.runtime.CompositionLocalProvider(com.example.ui.util.LocalHomeThumbnailLoading provides true) {
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -526,7 +529,7 @@ fun HomeScreenContent(
             if (hasArtists) {
                 artworkItem(state = listState, key = "most_listened_artists", contentType = "artist_shelf") {
                     val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
-                    val enrichArtists = homeViewModel?.artistPortraitsReady?.collectAsStateWithLifecycle()?.value ?: true
+                    val enrichArtists = optionalShelvesVisible
                     if (artists.isEmpty()) return@artworkItem
                     val visibleArtists = remember(artists) {
                         artists.take(15)
@@ -614,6 +617,7 @@ fun HomeScreenContent(
             }
 
         }
+    }
     }
 }
 

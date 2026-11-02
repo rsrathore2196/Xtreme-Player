@@ -3,7 +3,7 @@ package com.example.ui.viewmodel
 import androidx.compose.runtime.Immutable
 
 @Immutable
-data class HomeFeedWindow(val visibleCount: Int = 4) {
+data class HomeFeedWindow(val visibleCount: Int = 3) {
     fun appendNext(available: Int): HomeFeedWindow = if (visibleCount >= available) this
         else copy(visibleCount = (visibleCount + 1).coerceAtMost(available))
 }

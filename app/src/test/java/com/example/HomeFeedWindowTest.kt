@@ -6,21 +6,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class HomeFeedWindowTest {
-    @Test fun initialWindowUsesTheExistingFourServerShelves() { assertEquals(4, HomeFeedWindow().visibleCount) }
+    @Test fun initialWindowUsesThreeServerShelves() { assertEquals(3, HomeFeedWindow().visibleCount) }
     @Test fun eachDemandRevealsOneAlreadyFetchedShelf() {
         val initial = HomeFeedWindow(); val next = initial.appendNext(9)
-        assertEquals(5, next.visibleCount); assertEquals(4, initial.visibleCount)
-        assertEquals(6, next.appendNext(9).visibleCount)
+        assertEquals(4, next.visibleCount); assertEquals(3, initial.visibleCount)
+        assertEquals(5, next.appendNext(9).visibleCount)
     }
     @Test fun demandNeverInventsUnavailableSectionsOrExceedsTheAvailableFeed() {
         val initial = HomeFeedWindow()
         assertSame(initial, initial.appendNext(2))
-        val complete = initial.appendNext(5)
+        val complete = initial.appendNext(5).appendNext(5)
         assertEquals(5, complete.visibleCount); assertSame(complete, complete.appendNext(5))
     }
     @Test fun lateServerResultsDoNotChangeTheExistingDisplayWindow() {
-        val initial = HomeFeedWindow(); assertEquals(4, initial.visibleCount)
-        assertEquals(5, initial.appendNext(30).visibleCount)
+        val initial = HomeFeedWindow(); assertEquals(3, initial.visibleCount)
+        assertEquals(4, initial.appendNext(30).visibleCount)
     }
     @Test fun initialLayoutAndRepeatedTailMeasurementsNeverCountAsScrollIntent() {
         val gate = HomeRevealGesture()

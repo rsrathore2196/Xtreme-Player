@@ -60,15 +60,16 @@ class ArtworkLoadingWorkloadTest {
         val onNetwork: suspend (String) -> Unit = {},
         val dimensions: Map<String, Int> = emptyMap(),
         val densityScaled: Boolean = false,
-        val nativeCache: Boolean = false
+        val nativeCache: Boolean = false,
+        val diskOnly: Boolean = false
     ) : Interceptor.Chain {
-        override fun withRequest(request: ImageRequest) = Chain(request, cached, failures, cachedDimension, size, calls, onNetwork, dimensions, densityScaled, nativeCache)
-        override fun withSize(size: Size) = Chain(request, cached, failures, cachedDimension, size, calls, onNetwork, dimensions, densityScaled, nativeCache)
+        override fun withRequest(request: ImageRequest) = Chain(request, cached, failures, cachedDimension, size, calls, onNetwork, dimensions, densityScaled, nativeCache, diskOnly)
+        override fun withSize(size: Size) = Chain(request, cached, failures, cachedDimension, size, calls, onNetwork, dimensions, densityScaled, nativeCache, diskOnly)
         override suspend fun proceed(request: ImageRequest): ImageResult {
             val url = request.data.toString()
             val remote = request.networkCachePolicy.readEnabled
             calls.add(url to remote)
-            if ((!remote && url !in cached) || url in failures)
+            if ((!remote && (url !in cached || diskOnly && !request.diskCachePolicy.readEnabled)) || url in failures)
                 return ErrorResult(null, request, IOException("No available image"))
             if (remote) onNetwork(url)
             val dimension = dimensions[url] ?: if (!remote) cachedDimension else 600
@@ -120,6 +121,37 @@ class ArtworkLoadingWorkloadTest {
         val result = ArtworkResolutionInterceptor().intercept(chain) as SuccessResult
         assertEquals(provider, result.request.data)
         assertEquals(listOf(provider), chain.calls.filter { it.second }.map { it.first })
+    }
+    @Test fun visibleHomeDiskCacheDoesNotWaitForTouchOrNetworkAdmission() = runBlocking {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        coordinator.foreground(true); coordinator.touch(true)
+        val req = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(provider, 300, visibleThumbnail = true), null).build()
+        val chain = Chain(req, cached = setOf(provider), diskOnly = true)
+        try {
+            assertTrue(withTimeout(1_000) { ArtworkResolutionInterceptor().intercept(chain) } is SuccessResult)
+            assertFalse(chain.calls.any { it.second })
+        } finally { coordinator.touch(false); coordinator.foreground(false) }
+    }
+    @Test fun visibleHomeCoverMissDoesNotWaitForTheWholeScrollToFinish() = runBlocking {
+        val coordinator = com.example.performance.BackgroundWorkCoordinator
+        coordinator.foreground(true); coordinator.scrolling(true)
+        val req = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(provider, 300, visibleThumbnail = true), null).build()
+        val chain = Chain(req)
+        try {
+            assertTrue(withTimeout(1_000) { ArtworkResolutionInterceptor().intercept(chain) } is SuccessResult)
+            assertEquals(listOf(provider), chain.calls.filter { it.second }.map { it.first })
+        } finally { coordinator.scrolling(false); coordinator.foreground(false) }
+    }
+    @Test fun smallHomeThumbnailDoesNotDownloadMaximumResolutionBeforeItsNativeTier() = runBlocking {
+        val native = "https://i.ytimg.com/vi/abcdefghijk/default.jpg?sqp=resize&rs=signature"
+        val req = request().newBuilder().size(160, 160).setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(native, 160, trackId = "yt_abcdefghijk", visibleThumbnail = true), null).build()
+        val chain = Chain(req, size = Size(160, 160))
+        ArtworkResolutionInterceptor().intercept(chain)
+        assertEquals(listOf("https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg"), chain.calls.filter { it.second }.map { it.first })
+        assertEquals("https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg", providerArtworkUrl(native, 160))
     }
 
     @Test fun cachedSmallArtworkDoesNotPreventARealResolutionImprovement() = runBlocking {
@@ -284,7 +316,7 @@ class ArtworkLoadingWorkloadTest {
             delay(100)
             assertFalse(result.isCompleted)
             assertTrue(chain.calls.none { it.second })
-        } finally { lease.close() }
+        } finally { lease.close(); org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(300)) }
         assertTrue(withTimeout(3_000) { result.await() } is SuccessResult)
     }
 
@@ -304,6 +336,7 @@ class ArtworkLoadingWorkloadTest {
             assertFalse(result.isCompleted)
             assertTrue(chain.calls.none { it.second })
             lease.close(); lease = null
+            org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(300))
             assertTrue(withTimeout(3_000) { result.await() } is SuccessResult)
         } finally { lease?.close(); result.cancelAndJoin() }
     }

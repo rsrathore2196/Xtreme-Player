@@ -39,7 +39,7 @@ import com.example.ui.util.rememberOptimizedImageRequest
 @Composable
 internal fun QuickPicksGrid(tracks: List<MusicTrack>, state: LazyListState, playing: String?, background: Color, border: Color,
     foreground: Color, muted: Color, play: (MusicTrack, List<MusicTrack>) -> Unit) {
-    val pages = remember(tracks) { tracks.chunked(6) }
+    val pages = remember(tracks) { tracks.take(18).chunked(6) }
     BoxWithConstraints(Modifier.fillMaxWidth()) {
         val pageWidth = (maxWidth - 40.dp).coerceAtLeast(200.dp)
         LazyRow(state = state, flingBehavior = rememberSnapFlingBehavior(state), modifier = Modifier.testTag("native_quick_picks_grid"),

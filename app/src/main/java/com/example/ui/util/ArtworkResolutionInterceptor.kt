@@ -47,8 +47,22 @@ data class ArtworkRequestMetadata(
     val targetSize: Int = sourceDimension,
     val visibleContent: Boolean = true,
     val visibility: ArtworkVisibility? = null,
-    val currentTrack: Boolean = false
+    val currentTrack: Boolean = false,
+    val visibleThumbnail: Boolean = false
 )
+
+/** Small visible Home cards need a native thumbnail, not a full-player rendition. */
+internal fun providerThumbnailUrl(url: String, dimension: Int): String {
+    val host = try { URI(url).host?.lowercase(java.util.Locale.ROOT) } catch (_: Exception) { null }
+    if (host?.endsWith(".ytimg.com") != true && host != "img.youtube.com") return providerArtworkUrl(url, dimension)
+    val tier = when { dimension <= 180 -> "mqdefault"; dimension <= 360 -> "hqdefault"; dimension <= 480 -> "sddefault"; else -> "maxresdefault" }
+    val sized = youtubeArtworkSize.replace(url) { "/$tier.${it.groupValues[1]}" }
+    if (sized == url) return url
+    val fragment = sized.indexOf('#').let { if (it < 0) sized.length else it }
+    val query = sized.indexOf('?').takeIf { it in 0 until fragment } ?: return sized
+    val kept = sized.substring(query + 1, fragment).split('&').filterNot { it.substringBefore('=') in setOf("sqp", "rs") }
+    return sized.substring(0, query) + (if (kept.isEmpty()) "" else "?" + kept.joinToString("&")) + sized.substring(fragment)
+}
 
 /** Request a larger rendition of the same provider image, never a different recording. */
 internal fun providerArtworkUrl(url: String, minimumDimension: Int): String {
@@ -167,7 +181,7 @@ class ArtworkResolutionInterceptor : Interceptor {
     }
 
     /** Recheck after BOTH resource waits; never wait for interaction holding a slot/URL lock. */
-    private suspend fun <T> admittedArtwork(url: String, current: Boolean = false, block: suspend () -> T): T {
+    private suspend fun <T> admittedArtwork(url: String, current: Boolean = false, visibleThumbnail: Boolean = false, block: suspend () -> T): T {
         val coordinator = com.example.performance.BackgroundWorkCoordinator
         val lock = artworkFlights[(url.hashCode() and Int.MAX_VALUE) % artworkFlights.size]
         // Foreground/current player artwork must execute immediately without waiting for background permits
@@ -180,12 +194,12 @@ class ArtworkResolutionInterceptor : Interceptor {
         while (true) {
             // Visible cache misses wait only for the current gesture to finish.
             // No offscreen preparation or global readiness milestone owns images.
-            coordinator.yieldToInteraction(awaitFrameQuiet = false)
+            if (!visibleThumbnail) coordinator.yieldToInteraction(awaitFrameQuiet = false)
             coldArtworkRequests.acquire()
             try {
                 lock.lock()
                 try {
-                    if (coordinator.isInteractionIdle(awaitFrameQuiet = false))
+                    if (visibleThumbnail || coordinator.isInteractionIdle(awaitFrameQuiet = false))
                         return coordinator.finishBoundedBatch { coordinator.traceWork("Artwork decode or fetch", block) }
                 } finally { lock.unlock() }
             } finally { coldArtworkRequests.release() }
@@ -202,10 +216,11 @@ class ArtworkResolutionInterceptor : Interceptor {
         val sourceDimension = if (metadata.targetSize == ImageConfig.HERO_BANNER_SIZE ||
             metadata.targetSize == ImageConfig.PLAYER_SCREEN_SIZE) {
             mapTargetSizeToArtworkDimension(metadata.targetSize, androidx.compose.ui.unit.IntSize(width, height))
-        } else maxOf(metadata.sourceDimension, width, height)
+        } else if (metadata.visibleThumbnail) maxOf(width, height).takeIf { it > 0 } ?: metadata.sourceDimension
+        else maxOf(metadata.sourceDimension, width, height)
         val originals = listOf(metadata.providerUrl).filter(String::isNotBlank)
-        val urls = (originals.map { providerArtworkUrl(it, sourceDimension) } +
-            youtubeArtworkAlternatives(metadata.trackId, originals) + originals).distinct()
+        val urls = (originals.map { if (metadata.visibleThumbnail) providerThumbnailUrl(it, sourceDimension) else providerArtworkUrl(it, sourceDimension) } +
+            (if (metadata.visibleThumbnail) originals else emptyList()) + youtubeArtworkAlternatives(metadata.trackId, originals) + originals).distinct()
         // A smaller view can reuse a larger rendition already fetched by Home or
         // the player. These alternatives are cache probes, never extra downloads.
         val cacheUrls = (urls.take(1) + originals.flatMap { source ->
@@ -232,7 +247,7 @@ class ArtworkResolutionInterceptor : Interceptor {
                 if (cacheOnly || memoryOnly) networkCachePolicy(CachePolicy.DISABLED)
                 if (memoryOnly) diskCachePolicy(CachePolicy.DISABLED)
             }.build()
-            val result = if (memoryOnly) chain.proceed(candidate) else admittedArtwork(url, metadata.currentTrack) {
+            val result = if (memoryOnly || cacheOnly && metadata.visibleThumbnail) chain.proceed(candidate) else admittedArtwork(url, metadata.currentTrack, metadata.visibleThumbnail) {
                 if (cacheOnly) chain.proceed(candidate) else {
                     // Recheck after resource waits so duplicate cards share Coil's file.
                     val hit = chain.proceed(candidate.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build())

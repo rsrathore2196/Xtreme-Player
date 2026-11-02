@@ -71,16 +71,30 @@ class InitialHomePreparationTest {
                     { selected, rotation, _ -> profile(selected, rotation) },
                     accountIdentity = { account?.value ?: YouTubeMusicApiService.discoveryAccountIdentity() },
                     accountUpdates = account ?: YouTubeAudioStreamService.discoveryAccountChanges,
-                    idleAdmission = idle, elapsedTime = { elapsed },
+                    idleAdmission = idle, elapsedTime = { elapsed }, unlockIdleAdmission = { awaitCancellation() },
                     supplementalLoader = { _, browse, _ -> extra(browse) },
                     supplementContinuationLoader = { _, browse, token, _ -> extraPage(browse, token) }, connectivityUpdates = connectivity) as T
         }
         return ViewModelProvider(store, factory)[HomeViewModel::class.java].also { vm ->
             @Suppress("UNCHECKED_CAST")
             val access = vm.javaClass.getDeclaredField("_additionalShelvesUnlocked").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<Boolean>
-            access.value = true // These tests exercise the unlocked native transport, not newcomer admission.
+            access.value = true // These tests exercise transport after admission; idle timing has dedicated tests.
+            @Suppress("UNCHECKED_CAST")
+            val qualification = vm.javaClass.getDeclaredField("listeningUnlockAt").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<Long?>
+            qualification.value = elapsed
             vm.onHomeFrameDrawn()
         }
+    }
+    private suspend fun reveal(vm: HomeViewModel) = withContext(com.example.performance.AppDispatchers.HomeBookkeeping) {
+        if (vm.continuationStatus.value != ShelfLoadStatus.LOADING) {
+            (vm.javaClass.getDeclaredField("nativePageJob").apply { isAccessible = true }.get(vm) as? Job)?.join()
+        }
+        vm.javaClass.getDeclaredField("nativeAdmissionInput").apply { isAccessible = true }
+            .set(vm, com.example.performance.BackgroundWorkCoordinator.interactions.value)
+        vm.revealAdmittedNativeShelf()
+        // Transport fixtures model an already admitted request. Automatic idle
+        // publication and interruption are covered by AdaptiveHomeLoadingTest.
+        vm.javaClass.getDeclaredField("automaticRevealPending").apply { isAccessible = true }.setBoolean(vm, false)
     }
     private suspend fun cached() {
         HomeCardCache(app).save(SavedHomeCards(HomeCacheIdentity.home(preferences), refreshedAt = System.currentTimeMillis(),
@@ -161,12 +175,12 @@ class InitialHomePreparationTest {
             if (requests.incrementAndGet() == 1) YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true) else page("next")
         } })
         assertTrue(vm.loadServerHome(true))
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { while (requests.get() < 1) delay(10) }; delay(50)
-        vm.revealNextHomeSection(); delay(100)
+        reveal(vm); delay(100)
         assertEquals("Repeated gestures respect failed-token backoff", 1, requests.get())
         elapsed += 15_001
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
         assertEquals(2, requests.get()); assertEquals(listOf("first", "next"), vm.serverShelves.value.map { it.title })
         withTimeout(5_000) { while (HomeCardCache(app).read(HomeCacheIdentity.home(preferences))?.serverShelves?.size != 2) delay(10) }
@@ -177,7 +191,7 @@ class InitialHomePreparationTest {
         val vm = viewModel({ country, token -> if (token == null) page(country, "cursor") else {
             started.complete(Unit); withContext(NonCancellable) { release.await() }; page("stale")
         } })
-        vm.loadServerHome(true); vm.revealNextHomeSection(); withTimeout(5_000) { started.await() }
+        vm.loadServerHome(true); reveal(vm); withTimeout(5_000) { started.await() }
         vm.updateUserProfile(preferences.copy(countryCode = "GB", country = "United Kingdom"))
         withTimeout(5_000) { vm.userProfile.first { it.countryCode == "GB" } }
         vm.loadServerHome(true); release.complete(Unit); delay(100)
@@ -187,9 +201,9 @@ class InitialHomePreparationTest {
         val vm = viewModel({ _, token -> if (token == null) YouTubeHomeParser.ParsedHomeFeed(emptyList(), "cursor")
             else YouTubeHomeParser.ParsedHomeFeed((1..6).map { shelf("server-$it") }, null) })
         assertTrue(vm.loadServerHome(true))
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 6 } }
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.revealedShelfCount.first { it >= 4 } }
         assertEquals((1..6).map { "server-$it" }, vm.serverShelves.value.map { it.title })
     }
@@ -266,7 +280,7 @@ class InitialHomePreparationTest {
         assertTrue(vm.loadServerHome(true))
         assertTrue(HomeCardCache(app).read(HomeCacheIdentity.home(preferences, "account-a"))?.serverShelves.isNullOrEmpty())
         assertEquals("anonymous-first", HomeCardCache(app).read(HomeCacheIdentity.home(preferences, "anonymous"))!!.serverShelves.single().id)
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
         assertEquals(listOf(true, false), authenticated)
     }
@@ -289,7 +303,8 @@ class InitialHomePreparationTest {
         vm.updateUserProfile(language)
         withTimeout(5_000) { vm.profileShelf.first { it?.id == "Punjabi" } }
         assertTrue(vm.loadServerHome()); assertTrue(vm.loadProfileShelf())
-        assertEquals(0, homeCalls.get()); assertEquals(0, profileCalls.get())
+        assertEquals("Matching fresh regional Home must not refetch", 0, homeCalls.get())
+        assertEquals("Matching fresh language/profile shelf must not refetch", 0, profileCalls.get())
     }
     @Test fun aSuccessfulEmptyRefreshClearsOldShelvesAndDoesNotRefetchOnTabReturn() = runBlocking {
         cached(); val calls = AtomicInteger()
@@ -406,7 +421,7 @@ class InitialHomePreparationTest {
         assertEquals(ShelfLoadStatus.SUCCESS, vm.serverCards.value.single().status)
         val saved = HomeCardCache(app).read(HomeCacheIdentity.home(preferences))!!
         assertEquals(listOf("quick"), saved.serverShelves.map { it.id }); assertEquals("albums", saved.continuationToken)
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
         assertEquals(listOf(null, "albums"), tokens)
     }
@@ -429,15 +444,15 @@ class InitialHomePreparationTest {
         assertTrue(vm.loadServerHome()); vm.setHomeVisible(true)
         withTimeout(5_000) { vm.optionalWorkReady.first { it } }
         assertEquals(listOf<String?>(null), tokens)
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 6 } }
         assertEquals(listOf(null, "more"), tokens)
         assertEquals(4, vm.revealedShelfCount.value)
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.revealedShelfCount.first { it == 5 } }
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.revealedShelfCount.first { it == 6 } }
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 7 } }
         assertEquals(listOf(null, "more", "last"), tokens)
         withTimeout(5_000) { while (HomeCardCache(app).read(HomeCacheIdentity.home(preferences))?.serverShelves?.size != 7) delay(10) }
@@ -500,13 +515,13 @@ class InitialHomePreparationTest {
             page("next")
         })
         vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { entered.await() }
         vm.setHomeVisible(false)
         withTimeout(5_000) { cancelled.await() }
         assertEquals(3, vm.serverShelves.value.size)
         vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 4 } }
         assertEquals(2, attempts.get())
     }
@@ -529,13 +544,13 @@ class InitialHomePreparationTest {
         } })
         assertTrue(vm.loadServerHome())
         vm.setHomeVisible(true)
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { entered.await() }
         vm.setHomeVisible(false)
         withTimeout(5_000) { cancelled.await() }
         assertEquals(listOf("quick"), vm.serverShelves.value.map { it.id })
         assertEquals("next", HomeCardCache(app).read(HomeCacheIdentity.home(preferences))!!.continuationToken)
-        slow = false; vm.revealNextHomeSection()
+        slow = false; reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
         Unit
     }
@@ -561,7 +576,7 @@ class InitialHomePreparationTest {
         })
         assertTrue(vm.loadServerHome())
         assertTrue(browsed.isEmpty())
-        vm.revealNextHomeSection()
+        reveal(vm)
         vm.setHomeVisible(true)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
         assertEquals(setOf("FEmusic_new_releases", "FEmusic_explore"), browsed.toSet())
@@ -605,7 +620,7 @@ class InitialHomePreparationTest {
                 else -> page("New Releases")
             }
         })
-        assertTrue(vm.loadServerHome()); vm.revealNextHomeSection()
+        assertTrue(vm.loadServerHome()); reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
         assertEquals(listOf(null, "one", "two"), calls)
         assertEquals(listOf("first", "New Releases"), vm.serverShelves.value.map { it.title })
@@ -618,7 +633,7 @@ class InitialHomePreparationTest {
         })
         assertTrue(vm.loadServerHome()); vm.setHomeVisible(true)
         withTimeout(5_000) { while (calls.get() != 2) delay(10) }
-        delay(50); repeat(5) { vm.revealNextHomeSection() }; delay(100)
+        delay(50); repeat(5) { reveal(vm) }; delay(100)
         assertEquals(2, calls.get()); assertEquals(listOf("native"), vm.serverShelves.value.map { it.id })
     }
 
@@ -636,9 +651,9 @@ class InitialHomePreparationTest {
         withTimeout(5_000) { vm.refreshHome(true).join() }
         // Filling the initial window consumes the refresh's first reveal. A
         // separate demand now prepares the primary cursor and surfaces failure.
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.continuationStatus.first { it == ShelfLoadStatus.ERROR } }
-        vm.revealNextHomeSection()
+        reveal(vm)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 4 } }
         assertEquals(1, mainPages.get()); assertEquals(1, extraPages.get())
     }
@@ -757,8 +772,11 @@ class InitialHomePreparationTest {
         vm.setHomeVisible(true)
         withTimeout(5_000) { vm.refreshHome(true).join() }
         repeat(4) { index ->
-            vm.revealNextHomeSection()
+            reveal(vm)
             withTimeout(5_000) { vm.paginationRevision.first { it >= index + 1 }; vm.serverShelves.first { it.size == index + 4 } }
+            withTimeout(5_000) {
+                (vm.javaClass.getDeclaredField("nativePageJob").apply { isAccessible = true }.get(vm) as? Job)?.join()
+            }
         }
         assertEquals(listOf("home", "FEmusic_new_releases", "home", "FEmusic_explore"), sequence)
         assertEquals(vm.serverCards.value.size, vm.serverCards.value.map { it.key }.distinct().size)

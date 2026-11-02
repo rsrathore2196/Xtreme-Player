@@ -27,7 +27,7 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NativeHomeRowsUiTest {
     @get:Rule val compose = createComposeRule()
-    private val tracks = (1..8).map { MusicTrack("yt_native$it", "Native song $it", "Artist $it", "Album", 120_000, "", "") }
+    private val tracks = (1..20).map { MusicTrack("yt_native$it", "Native song $it", "Artist $it", "Album", 120_000, "", "") }
     private fun content(kind: NativeShelfKind, click: (MusicTrack, List<MusicTrack>) -> Unit = { _, _ -> }) {
         compose.setContent { MaterialTheme {
             CompositionLocalProvider(LocalAppColors provides DarkAppColors.copy(dynamicGlassEnabled = false),
@@ -61,6 +61,16 @@ class NativeHomeRowsUiTest {
             .assertWidthIsEqualTo(224.dp).assertHeightIsEqualTo(126.dp)
         compose.onNodeWithText(tracks[0].title).performClick()
         compose.runOnIdle { assertEquals(tracks, queue) }
+    }
+    @Test fun quickPicksEndsAfterThreePagesOfSixWithoutChangingThePlaybackQueue() {
+        var selected: MusicTrack? = null; var queue: List<MusicTrack> = emptyList()
+        content(NativeShelfKind.QUICK_PICKS) { track, list -> selected = track; queue = list }
+        compose.onNodeWithTag("native_quick_picks_grid").performScrollToIndex(2)
+        compose.onNodeWithTag("native_quick_picks_grid").performTouchInput { swipeLeft(durationMillis = 350) }
+        compose.onNodeWithTag("habit_pill_yt_native18").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("habit_pill_yt_native19").assertDoesNotExist()
+        compose.onNodeWithTag("habit_pill_yt_native20").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(tracks[17], selected); assertEquals(tracks, queue) }
     }
     @Test fun standardMusicShelvesKeepTheirExistingSquareArtwork() {
         content(NativeShelfKind.STANDARD)

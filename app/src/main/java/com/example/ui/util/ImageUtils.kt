@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 
 /** Hidden tabs retain cached painters; unfinished requests follow actual visibility. */
 val LocalArtworkRequestsActive = compositionLocalOf { true }
+internal val LocalHomeThumbnailLoading = compositionLocalOf { false }
 
 internal const val ARTWORK_VISIBILITY_PARAMETER = "com.example.artwork.visibility"
 
@@ -220,6 +221,7 @@ fun rememberOptimizedImageRequest(
 ): ImageRequest {
     val context = LocalContext.current
     val visibleContent = LocalArtworkRequestsActive.current
+    val visibleThumbnail = LocalHomeThumbnailLoading.current && targetSize > 0
     val visibility = remember(context, url, track?.id, track?.title, track?.artist, track?.album,
         track?.durationMs, track?.coverUrl, targetSize, decodeSize) {
         ArtworkVisibility(visibleContent)
@@ -228,9 +230,9 @@ fun rememberOptimizedImageRequest(
     // Transport URL/bitrate changes do not change artwork. Metadata edits and a larger
     // destination do create a new request, including when a recycled row keeps its ID.
     return remember(context, url, track?.id, track?.title, track?.artist, track?.album,
-        track?.durationMs, track?.coverUrl, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize, visibility) {
+        track?.durationMs, track?.coverUrl, targetSize, crossfadeEnabled, preferStableArtwork, decodeSize, visibility, visibleThumbnail) {
         buildOptimizedImageRequest(context, url, targetSize, track, crossfadeEnabled,
-            preferStableArtwork, decodeSize, visibleContent, visibility = visibility)
+            preferStableArtwork, decodeSize, visibleContent, visibility = visibility, visibleThumbnail = visibleThumbnail)
     }
 }
 
@@ -247,20 +249,22 @@ internal fun buildOptimizedImageRequest(
     visibleContent: Boolean = true,
     visibility: ArtworkVisibility? = null,
     currentTrack: Boolean = false,
-    sourceSize: IntSize? = decodeSize
+    sourceSize: IntSize? = decodeSize,
+    visibleThumbnail: Boolean = false
 ): ImageRequest {
     val metadata = ArtworkRequestMetadata(
         trackId = track?.id,
         providerUrl = url,
-        sourceDimension = mapTargetSizeToArtworkDimension(targetSize, sourceSize),
+        sourceDimension = if (visibleThumbnail) targetSize.coerceIn(1, 3000) else mapTargetSizeToArtworkDimension(targetSize, sourceSize),
         preferStableArtwork = preferStableArtwork,
         targetSize = targetSize,
         visibleContent = visibleContent,
         visibility = visibility,
-        currentTrack = currentTrack
+        currentTrack = currentTrack,
+        visibleThumbnail = visibleThumbnail
     )
     // Direct provider URL: no Room lookup or search before the image can load.
-    val initialUrl = providerArtworkUrl(url, metadata.sourceDimension).ifBlank {
+    val initialUrl = (if (visibleThumbnail) providerThumbnailUrl(url, metadata.sourceDimension) else providerArtworkUrl(url, metadata.sourceDimension)).ifBlank {
         youtubeArtworkAlternatives(track?.id, emptyList()).firstOrNull().orEmpty()
     }
     val placeholder = if (currentTrack) {

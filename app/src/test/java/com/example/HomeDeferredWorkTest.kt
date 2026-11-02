@@ -28,7 +28,7 @@ import org.robolectric.shadows.ShadowSystemClock
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [32], application = Application::class, instrumentedPackages = ["com.example.ui.viewmodel"])
 class HomeDeferredWorkTest {
-    @Test fun artistQueriesAndProfileSearchWaitForAHomeDrawAndTenSecondsAfterTheLastInput() = runBlocking<Unit> {
+    @Test fun artistQueriesAndProfileSearchWaitForAHomeDrawAndSixSecondsAfterTheLastInput() = runBlocking<Unit> {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         val app = ApplicationProvider.getApplicationContext<Application>()
         val coordinator = BackgroundWorkCoordinator
@@ -62,9 +62,9 @@ class HomeDeferredWorkTest {
             ShadowSystemClock.advanceBy(Duration.ofSeconds(60)); delay(300)
             assertEquals(0, searches.get()); assertEquals(0, queries.get())
             vm.onHomeFrameDrawn()
-            ShadowSystemClock.advanceBy(Duration.ofSeconds(9)); delay(300)
+            ShadowSystemClock.advanceBy(Duration.ofSeconds(5)); delay(300)
             coordinator.interaction()
-            ShadowSystemClock.advanceBy(Duration.ofMillis(9_999)); delay(300)
+            ShadowSystemClock.advanceBy(Duration.ofMillis(5_999)); delay(300)
             assertEquals(0, searches.get()); assertEquals(0, queries.get())
             ShadowSystemClock.advanceBy(Duration.ofMillis(1))
             withTimeout(5_000) { vm.profileShelf.first { it != null }; vm.mostListenedArtists.first { it.isNotEmpty() } }
@@ -76,7 +76,7 @@ class HomeDeferredWorkTest {
             val resumeInteraction = coordinator.interactions.value
             vm.setHomeVisible(true)
             withTimeout(5_000) { coordinator.interactions.first { it > resumeInteraction } }
-            ShadowSystemClock.advanceBy(Duration.ofSeconds(10)); delay(300)
+            ShadowSystemClock.advanceBy(Duration.ofSeconds(6)); delay(300)
             withTimeout(5_000) { vm.optionalWorkReady.first { it } }
             assertEquals("Fresh retained artist inputs do not reaggregate", 1, queries.get())
             assertEquals("Fresh retained profile results do not refetch", 1, searches.get())
