@@ -22,30 +22,40 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 
 @Composable
 fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier,
     deferEnrichment: Boolean = false, targetSize: Int = 400,
     backgroundColor: Color = Color(0xFF163255), enrichmentAllowed: Boolean = true) {
     val context = LocalContext.current.applicationContext
-    val active = LocalArtworkRequestsActive.current && LocalVisualEffectsActive.current
+    val active = LocalArtworkRequestsActive.current
+    val mayEnrich by rememberUpdatedState(enrichmentAllowed)
+    val currentArtist by rememberUpdatedState(artist)
+    val started = remember(artist.id, artist.name, artist.musicBrainzId) { android.os.SystemClock.elapsedRealtime() }
     var retries by remember(artist.name, artist.id, artist.musicBrainzId) { mutableIntStateOf(0) }
     var failedUrls by remember(artist.name, artist.id, artist.musicBrainzId) { mutableStateOf(emptySet<String>()) }
-    val photo by produceState(ArtistPhotoRepository.initialPhoto(artist), artist, retries, active, enrichmentAllowed) {
-        value = ArtistPhotoRepository.initialPhoto(artist)
-        if (!active) return@produceState
+    var photo by remember(artist.id, artist.name, artist.musicBrainzId) {
+        mutableStateOf(ArtistPhotoRepository.initialPhoto(artist))
+    }
+    LaunchedEffect(artist.id, artist.name, artist.musicBrainzId, retries, active) {
+        photo = ArtistPhotoRepository.initialPhoto(artist) ?: photo
+        if (!active) return@LaunchedEffect
         coroutineScope {
             // An enriched detail identity can improve a Home portrait while Home
             // remains composed underneath the destination. Observe that same cache.
             launch { ArtistPhotoRepository.observePhoto(artist).collect { resolved ->
-                value = resolved ?: ArtistPhotoRepository.initialPhoto(artist)
+                photo = resolved ?: ArtistPhotoRepository.initialPhoto(currentArtist) ?: photo
             } }
             // The repository serves saved portraits first, resolves visible misses
             // with bounded IO, and schedules stale-image upgrades independently.
-            val resolved = try { if (enrichmentAllowed) ArtistPhotoRepository.photo(context, artist) else ArtistPhotoRepository.initialPhoto(artist) }
+            ArtistPhotoRepository.restoreSaved(context, listOf(currentArtist))
+            photo = ArtistPhotoRepository.initialPhoto(currentArtist) ?: photo
+            snapshotFlow { mayEnrich }.first { it }
+            val resolved = try { ArtistPhotoRepository.photo(context, currentArtist, refreshInBackground = !deferEnrichment) }
                 catch (e: kotlinx.coroutines.CancellationException) { throw e }
                 catch (_: Exception) { ArtistPhotoRepository.cachedPhoto(artist) }
-            value = ArtistPhotoRepository.initialPhoto(artist) ?: resolved
+            photo = ArtistPhotoRepository.initialPhoto(currentArtist) ?: resolved ?: photo
             awaitCancellation()
         }
     }
@@ -55,6 +65,7 @@ fun ArtistPortrait(artist: CatalogArtist, modifier: Modifier = Modifier,
         AsyncImage(model = rememberOptimizedImageRequest(url = displayed.orEmpty(), targetSize = targetSize,
             crossfadeEnabled = false, preferStableArtwork = deferEnrichment),
             contentDescription = artist.name, contentScale = ContentScale.Crop,
+            onSuccess = { android.util.Log.d("ArtistPortrait", "coil-ready key=${artist.name.hashCode()} elapsedMs=${android.os.SystemClock.elapsedRealtime() - started}") },
             onError = {
                 if (displayed != null) {
                     failedUrls = failedUrls + displayed

@@ -45,6 +45,9 @@ data class ActualTrackPlayCount(val trackId: String, val artistName: String, val
 
 @Dao
 interface ListeningEventDao {
+    @Query("SELECT EXISTS(SELECT 1 FROM listening_events WHERE eventType='ACTUAL_PLAY' AND (playedDurationMs >= 30000 OR (trackDurationMs > 0 AND playedDurationMs >= (trackDurationMs + 1) / 2)))")
+    suspend fun hasMeaningfulHistory(): Boolean
+
     @Query("SELECT * FROM listening_events ORDER BY id")
     suspend fun allForBackup(): List<ListeningEventEntity>
 

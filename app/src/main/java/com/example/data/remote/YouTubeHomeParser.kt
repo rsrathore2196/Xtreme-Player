@@ -259,7 +259,15 @@ object YouTubeHomeParser {
                             val item = when (collection) {
                                 is CatalogDestination.Album -> ServerHomeItem.Album(collection.album, text(renderer?.optJSONObject("subtitle")))
                                 is CatalogDestination.Playlist -> ServerHomeItem.Playlist(collection.playlist, text(renderer?.optJSONObject("subtitle")))
-                                else -> parseItem(itemObj)?.let { ServerHomeItem.Song(it) }
+                                else -> parseItem(itemObj)?.let { track ->
+                                    val watch = renderer?.optJSONObject("navigationEndpoint")?.optJSONObject("watchEndpoint")
+                                        ?: renderer?.optJSONObject("overlay")?.optJSONObject("musicItemThumbnailOverlayRenderer")
+                                            ?.optJSONObject("content")?.optJSONObject("musicPlayButtonRenderer")
+                                            ?.optJSONObject("playNavigationEndpoint")?.optJSONObject("watchEndpoint")
+                                    val videoType = watch?.optJSONObject("watchEndpointMusicSupportedConfigs")
+                                        ?.optJSONObject("watchEndpointMusicConfig")?.optString("musicVideoType").orEmpty()
+                                    ServerHomeItem.Song(track, videoType, renderer?.let { YouTubeExploreParser.thumbnail(it, landscapeOnly = true) }.orEmpty())
+                                }
                             }
                             if (item != null && seen.add(item.key)) {
                                 items.add(item)

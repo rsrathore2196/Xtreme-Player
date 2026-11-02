@@ -76,7 +76,7 @@ data class SavedHomeCards(
     val browseSources: List<HomeBrowseSnapshot> = emptyList()
 )
 
-internal const val SERVER_HOME_CONTENT_VERSION = 3
+internal const val SERVER_HOME_CONTENT_VERSION = 4
 
 class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDispatcher = AppDispatchers.Io) {
     private val app = context.applicationContext
@@ -174,6 +174,7 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
         .put("providerId", row.providerId).put("browseId", row.browseId).put("browseParams", row.browseParams)
     private fun item(entry: ServerHomeItem): JSONObject {
         if (entry is ServerHomeItem.Song) return JSONObject().put("type", "song").put("id", entry.track.id)
+            .put("videoType", entry.videoType).put("landscapeThumbnail", entry.landscapeThumbnail)
         val album = (entry as? ServerHomeItem.Album)?.album
         val playlist = (entry as? ServerHomeItem.Playlist)?.playlist
         return JSONObject().put("type", if (album != null) "album" else "playlist")
@@ -196,7 +197,7 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
             val title = value.optString("title")
             val country = value.optString("country", "US"); val language = value.optString("language", "en")
             when (value.optString("type")) {
-                "song" -> byId[id]?.let { ServerHomeItem.Song(it) }
+                "song" -> byId[id]?.let { ServerHomeItem.Song(it, value.optString("videoType"), value.optString("landscapeThumbnail")) }
                 "album" -> if (title.isBlank()) null else {
                     val artists = value.optJSONArray("artists")
                     ServerHomeItem.Album(CatalogAlbum(id, title,

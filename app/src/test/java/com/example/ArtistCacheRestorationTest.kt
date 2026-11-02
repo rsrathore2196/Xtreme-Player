@@ -83,7 +83,7 @@ class ArtistCacheRestorationTest {
             withTimeout(2000) { ArtistPhotoRepository.photo(context, CatalogArtist("", "Artist $cold")) })
         assertEquals(1, reads.allReads.get())
     }
-    @Test fun aVisiblePortraitPromotesAutomaticRestoreDuringInteraction() = runBlocking {
+    @Test fun aVisiblePortraitDoesNotWaitForOrPromoteBroadRestorationDuringInteraction() = runBlocking {
         val reads = seed(hot = true)
         val context = context(reads)
         BackgroundWorkCoordinator.scrolling(true)
@@ -92,7 +92,7 @@ class ArtistCacheRestorationTest {
         assertFalse(automatic.isCompleted)
         assertEquals("https://portraits.example/1099.jpg",
             withTimeout(2000) { ArtistPhotoRepository.photo(context, CatalogArtist("", "Artist 1099")) })
-        assertTrue(automatic.isCompleted)
+        assertFalse("Visible restoration must not scan unrelated entries", automatic.isCompleted)
     }
     @Test fun obsoleteNegativeArtistLookupsAreRetriedButVerifiedPortraitsAndCurrentCooldownsSurvive() = runBlocking {
         val prefs = app.getSharedPreferences("artist_images_v2", Context.MODE_PRIVATE)

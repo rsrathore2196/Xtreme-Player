@@ -7,10 +7,10 @@ import org.junit.Test
 
 class HomeFeedWindowTest {
     @Test fun initialWindowUsesTheExistingFourServerShelves() { assertEquals(4, HomeFeedWindow().visibleCount) }
-    @Test fun eachDemandRevealsTheNextTwoAlreadyFetchedShelves() {
+    @Test fun eachDemandRevealsOneAlreadyFetchedShelf() {
         val initial = HomeFeedWindow(); val next = initial.appendNext(9)
-        assertEquals(6, next.visibleCount); assertEquals(4, initial.visibleCount)
-        assertEquals(8, next.appendNext(9).visibleCount)
+        assertEquals(5, next.visibleCount); assertEquals(4, initial.visibleCount)
+        assertEquals(6, next.appendNext(9).visibleCount)
     }
     @Test fun demandNeverInventsUnavailableSectionsOrExceedsTheAvailableFeed() {
         val initial = HomeFeedWindow()
@@ -20,7 +20,7 @@ class HomeFeedWindowTest {
     }
     @Test fun lateServerResultsDoNotChangeTheExistingDisplayWindow() {
         val initial = HomeFeedWindow(); assertEquals(4, initial.visibleCount)
-        assertEquals(6, initial.appendNext(30).visibleCount)
+        assertEquals(5, initial.appendNext(30).visibleCount)
     }
     @Test fun initialLayoutAndRepeatedTailMeasurementsNeverCountAsScrollIntent() {
         val gate = HomeRevealGesture()
@@ -30,16 +30,11 @@ class HomeFeedWindowTest {
         repeat(10) { assertFalse(gate.consumeNearTail(gate.forwardInput(), nearTail = true)) }
         gate.settled(); assertTrue(gate.consumeNearTail(gate.forwardInput(), nearTail = true))
     }
-    @Test fun aCompletedPageRechecksTheSameNearEndGestureWithABoundedChain() {
+    @Test fun aCompletedPageDoesNotInventAnotherSwipeDemand() {
         val gate = HomeRevealGesture()
-        assertFalse(gate.afterPage(0, true, 1))
         val intent = gate.forwardInput()
         assertTrue(gate.consumeNearTail(intent, true))
-        assertTrue(gate.afterPage(intent, true, 2))
-        assertFalse(gate.afterPage(intent, true, 2))
-        assertTrue(gate.afterPage(intent, true, 3))
-        assertTrue(gate.afterPage(intent, true, 4))
-        assertFalse(gate.afterPage(intent, true, 5))
+        repeat(10) { assertFalse(gate.consumeNearTail(intent, true)) }
         gate.settled()
         assertTrue(gate.consumeNearTail(gate.forwardInput(), true))
     }

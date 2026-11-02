@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import android.content.res.Configuration
 import com.example.data.model.ServerHomeItem
+import com.example.data.model.nativeKind
 import com.example.ui.components.awaitContentDraw
 import com.example.ui.viewmodel.HomeShelfPresentation
 import com.example.ui.viewmodel.ShelfLoadStatus
@@ -274,8 +275,7 @@ fun HomeScreenContent(
     val retainedWindow = rememberSaveable(stateSaver = Saver<HomeFeedWindow, Int>(
         save = { it.visibleCount }, restore = { HomeFeedWindow(it) }
     )) { mutableStateOf(HomeFeedWindow()) }
-    val pageRevision = homeViewModel?.paginationRevision?.collectAsStateWithLifecycle()?.value ?: 0L
-    val revealModifier = rememberHomeRevealModifier(listState, pageRevision) {
+    val revealModifier = rememberHomeRevealModifier(listState) {
         if (homeViewModel != null) homeViewModel.revealNextHomeSection()
         else retainedWindow.value = retainedWindow.value.appendNext(serverShelves.size)
     }
@@ -526,7 +526,7 @@ fun HomeScreenContent(
             if (hasArtists) {
                 artworkItem(state = listState, key = "most_listened_artists", contentType = "artist_shelf") {
                     val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
-                    val enrichArtists = homeViewModel?.optionalWorkReady?.collectAsStateWithLifecycle()?.value ?: true
+                    val enrichArtists = homeViewModel?.artistPortraitsReady?.collectAsStateWithLifecycle()?.value ?: true
                     if (artists.isEmpty()) return@artworkItem
                     val visibleArtists = remember(artists) {
                         artists.take(15)
@@ -555,15 +555,16 @@ fun HomeScreenContent(
                                     Modifier.width(168.dp).clip(RoundedCornerShape(18.dp))
                                         .background(cardBg)
                                         .clickable {
-                                            onOpenArtist(com.example.data.repository.CatalogArtist("", artist.name))
+                                            onOpenArtist(com.example.data.repository.ArtistPhotoRepository.cachedArtist(artist.name))
                                         }.padding(12.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally
                                 ) {
                                     VisibleItemArtwork(artistListState, artist.name) {
                                         com.example.ui.components.ArtistPortrait(
-                                            artist = com.example.data.repository.CatalogArtist("", artist.name),
+                                            artist = com.example.data.repository.ArtistPhotoRepository.cachedArtist(artist.name),
                                             deferEnrichment = true,
                                             enrichmentAllowed = enrichArtists,
+                                            targetSize = with(androidx.compose.ui.platform.LocalDensity.current) { 124.8.dp.roundToPx() },
                                             modifier = Modifier.size(124.8.dp).clip(CircleShape)
                                         )
                                     }
@@ -604,7 +605,8 @@ fun HomeScreenContent(
                             SectionCardLayout(state = section, tracksPrepared = true,
                                 currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
                                 textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick,
-                                shelfItems = shelf?.items.orEmpty(), onOpenCatalog = onOpenCatalog)
+                                shelfItems = shelf?.items.orEmpty(), onOpenCatalog = onOpenCatalog,
+                                nativeKind = remember(shelf) { shelf?.nativeKind() ?: com.example.data.model.NativeShelfKind.STANDARD })
                         }
                         ShelfLoadStatus.EMPTY, ShelfLoadStatus.ERROR -> Unit
                     }
@@ -618,9 +620,8 @@ fun HomeScreenContent(
 
 /** Observe user intent without consuming scroll or changing any gesture/animation. */
 @Composable
-private fun rememberHomeRevealModifier(state: LazyListState, pageRevision: Long, reveal: () -> Unit): Modifier {
+private fun rememberHomeRevealModifier(state: LazyListState, reveal: () -> Unit): Modifier {
     val currentReveal by rememberUpdatedState(reveal)
-    val currentPageRevision by rememberUpdatedState(pageRevision)
     val gesture = remember(state) { HomeRevealGesture() }
     val intent = remember(state) { mutableLongStateOf(0L) }
     val threshold = with(LocalDensity.current) { 192.dp.toPx() }
@@ -639,10 +640,10 @@ private fun rememberHomeRevealModifier(state: LazyListState, pageRevision: Long,
         androidx.compose.runtime.snapshotFlow {
             val layout = state.layoutInfo
             val last = layout.visibleItemsInfo.lastOrNull()
-            Triple(intent.longValue, last != null && last.index == layout.totalItemsCount - 1 &&
-                last.offset + last.size <= layout.viewportEndOffset + threshold, currentPageRevision)
-        }.collect { (token, nearTail, completed) ->
-            if (gesture.consumeNearTail(token, nearTail) || gesture.afterPage(token, nearTail, completed)) currentReveal()
+            intent.longValue to (last != null && last.index == layout.totalItemsCount - 1 &&
+                last.offset + last.size <= layout.viewportEndOffset + threshold)
+        }.collect { (token, nearTail) ->
+            if (gesture.consumeNearTail(token, nearTail)) currentReveal()
         }
     }
     androidx.compose.runtime.LaunchedEffect(state) {
@@ -708,7 +709,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.artworkItem(
 
 /** No layout node or data transformation; only this item's image consumers observe visibility. */
 @Composable
-private fun VisibleItemArtwork(state: LazyListState, key: String, content: @Composable () -> Unit) {
+internal fun VisibleItemArtwork(state: LazyListState, key: String, content: @Composable () -> Unit) {
     val parentActive = com.example.ui.util.LocalArtworkRequestsActive.current
     val active by remember(state, key, parentActive) {
         androidx.compose.runtime.derivedStateOf {
@@ -737,7 +738,8 @@ fun SectionCardLayout(
     onTrackClick: (MusicTrack, List<MusicTrack>) -> Unit,
     tracksPrepared: Boolean = false,
     shelfItems: List<ServerHomeItem> = emptyList(),
-    onOpenCatalog: (CatalogDestination) -> Unit = {}
+    onOpenCatalog: (CatalogDestination) -> Unit = {},
+    nativeKind: com.example.data.model.NativeShelfKind = com.example.data.model.NativeShelfKind.STANDARD
 ) {
     // If no verified tracks and not loading, completely hide the entire shelf
     if (!state.isLoading && state.tracks.isEmpty() && shelfItems.isEmpty()) {
@@ -777,6 +779,11 @@ fun SectionCardLayout(
 
         if (state.isLoading && state.tracks.isEmpty() && shelfItems.isEmpty()) {
             SectionShimmerRow()
+        } else if (nativeKind == com.example.data.model.NativeShelfKind.QUICK_PICKS) {
+            QuickPicksGrid(safeTracks, shelfListState, currentPlayingId, cardBg, cardBorderColor, textPrimaryColor, textMutedColor, onTrackClick)
+        } else if (nativeKind == com.example.data.model.NativeShelfKind.MUSIC_VIDEOS) {
+            NativeMusicVideoRow(remember(shelfItems) { shelfItems.filterIsInstance<ServerHomeItem.Song>() }, safeTracks, shelfListState, currentPlayingId,
+                cardBg, cardBorderColor, textPrimaryColor, textMutedColor, onTrackClick)
         } else if (state.tracks.isNotEmpty() || shelfItems.isNotEmpty()) {
             LazyRow(
                 state = shelfListState,

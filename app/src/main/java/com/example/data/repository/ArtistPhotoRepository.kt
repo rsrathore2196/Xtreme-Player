@@ -33,6 +33,9 @@ object ArtistPhotoRepository {
     val identities: StateFlow<Long> = identityRevision.asStateFlow()
     private val photoScope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
     private val photoSlots = Semaphore(2)
+    internal var identityRequest: suspend (CatalogArtist, Context) -> CatalogArtist? = YouTubeMusicApiService::artistIdentity
+    private class Flight(val result: Deferred<String?>, var readers: Int = 0)
+    private val flights = mutableMapOf<String, Flight>()
     private var warmup: Deferred<Unit>? = null
     private val placeholderImage = Regex("(?i)(?:no[_-]?image|default[_-]?(?:artist|avatar)|placeholder)")
     private val mbidPattern = Regex("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
@@ -81,7 +84,7 @@ object ArtistPhotoRepository {
         photoRevision.update { it + 1L }
     }
 
-    /** Bounded shared restoration; a visible caller promotes automatic warming immediately. */
+    /** Explicit bounded broad restoration; visible portraits use targeted restoration instead. */
     @Synchronized
     fun prewarm(context: Context, automatic: Boolean = false): Deferred<Unit> {
         if (!automatic) restoreDemanded = true
@@ -120,13 +123,16 @@ object ArtistPhotoRepository {
                 if (url == null && version < PHOTO_VERSION) continue
                 val expires = row.optLong("expires")
                 val canonical = row.optString("canonicalName")
-                if (expires > now || url != null) synchronized(memory) {
+                val catalogId = row.optString("catalogId")
+                // A missing/expired photograph does not invalidate its verified
+                // artist identity; the next visible retry can browse it directly.
+                if (expires > now || url != null || catalogId.startsWith("UC")) synchronized(memory) {
                     // Disk restoration cannot overwrite a newer in-flight provider result.
                     if (memory.get(entry.first) == null) {
                         memory.put(entry.first, Photo(expires, url, source, mbid(row.optString("mbid")),
-                            row.optString("catalogId"), canonical))
+                            catalogId, canonical))
                         changed = true
-                        if (canonical.isNotBlank() && !entry.first.startsWith("portrait:mbid:") &&
+                        if (canonical.isNotBlank() && !entry.first.startsWith("portrait:mbid:") && !entry.first.startsWith("portrait:channel:") &&
                             entry.first.removePrefix("portrait:") != CatalogNames.normalize(canonical)) identitiesChanged = true
                     }
                 }
@@ -144,6 +150,34 @@ object ArtistPhotoRepository {
         restoreEntries(entries)
     }
 
+    /** Targeted disk restoration never waits for broad prewarming or network admission. */
+    suspend fun restoreSaved(context: Context, artists: List<CatalogArtist>) = withContext(AppDispatchers.Io) {
+        val start = android.os.SystemClock.elapsedRealtime()
+        val requested = artists.take(15)
+        requested.forEach { artist ->
+            try { restoreArtist(context.applicationContext, artist) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Retain memory portraits if persistent storage is unavailable. */ }
+        }
+        android.util.Log.d("ArtistPortrait", "saved-ready requested=${requested.size} ready=${requested.count { initialPhoto(it) != null }} elapsedMs=${android.os.SystemClock.elapsedRealtime() - start}")
+    }
+
+    private suspend fun sharedRefresh(context: Context, artist: CatalogArtist): String? {
+        val identity = key(artist)
+        val flight = synchronized(flights) {
+            flights.getOrPut(identity) { Flight(photoScope.async(start = CoroutineStart.LAZY) { refresh(context, artist) }) }
+                .also { it.readers++ }
+        }
+        try { flight.result.start(); return flight.result.await() }
+        finally { synchronized(flights) {
+            flight.readers--
+            if (flight.readers == 0) {
+                if (flights[identity] === flight) flights.remove(identity)
+                if (!flight.result.isCompleted) flight.result.cancel()
+            }
+        } }
+    }
+
     private fun needsRefresh(photo: Photo, now: Long) = photo.expires <= now
     private fun improvedIdentity(photo: Photo, artist: CatalogArtist) =
         photo.musicBrainzId.isBlank() && mbid(artist.musicBrainzId).isNotBlank() ||
@@ -159,7 +193,7 @@ object ArtistPhotoRepository {
                         label = "Artist portrait upgrade") {
                         // Admission precedes identity locks; never park an optional CPU
                         // continuation while it owns a portrait mutex or network permit.
-                        BackgroundWorkCoordinator.finishBoundedBatch { refresh(context, artist) }
+                        BackgroundWorkCoordinator.finishBoundedBatch { sharedRefresh(context, artist) }
                     }
                 } catch (e: CancellationException) { throw e }
                   catch (_: Exception) { /* A failed cache write must not crash the application. */ }
@@ -170,25 +204,32 @@ object ArtistPhotoRepository {
         }
     }
 
-    suspend fun photo(context: Context, artist: CatalogArtist): String? = withContext(AppDispatchers.Io) {
+    suspend fun photo(context: Context, artist: CatalogArtist, refreshInBackground: Boolean = true): String? = withContext(AppDispatchers.Io) {
         val name = CatalogNames.normalize(artist.name)
         if (name in setOf("", "unknown", "unknown artist", "various artists")) return@withContext null
         if (cachedEntry(artist) == null) {
-            prewarm(context).await()
             restoreArtist(context, artist)
         }
         val cached = cachedEntry(artist)
         val now = System.currentTimeMillis()
+        val identity = cached?.catalogId?.takeIf { it.startsWith("UC") }
+        val selected = if (!artist.id.startsWith("UC") && identity != null) artist.copy(id = identity,
+            name = cached.canonicalName.ifBlank { artist.name }, aliases = (artist.aliases + artist.name).distinct()) else artist
         image(cached?.url)?.let {
-            if (needsRefresh(requireNotNull(cached), now) || improvedIdentity(cached, artist))
-                upgradeLater(context.applicationContext, artist)
-            return@withContext it
+            if (needsRefresh(requireNotNull(cached), now) || improvedIdentity(cached, artist)) {
+                if (refreshInBackground) upgradeLater(context.applicationContext, selected)
+                else BackgroundWorkCoordinator.optionalProcessing {
+                    BackgroundWorkCoordinator.awaitOptionalBatch()
+                    sharedRefresh(context.applicationContext, selected)
+                }
+            }
+            return@withContext cachedPhoto(artist) ?: it
         }
         if (cached != null && cached.url == null && cached.expires > now && !improvedIdentity(cached, artist))
             return@withContext null
         // Uncached visible portraits use bounded IO immediately, not the 15-second optional idle gate.
         BackgroundWorkCoordinator.awaitNavigationIdle()
-        refresh(context.applicationContext, artist)
+        sharedRefresh(context.applicationContext, selected)
     }
 
     private suspend fun refresh(context: Context, artist: CatalogArtist): String? = withContext(AppDispatchers.Io) {
@@ -209,14 +250,17 @@ object ArtistPhotoRepository {
                 val source = "youtube"
                 var verifiedIdentity = artist
                 var identityVerified = false
+                val started = android.os.SystemClock.elapsedRealtime()
+                android.util.Log.d("ArtistPortrait", "lookup-start key=${identity.hashCode()} knownId=${artist.id.startsWith("UC")}")
                 val result = attempt {
-                    YouTubeMusicApiService.artistIdentity(artist, context)?.let { identity ->
+                    identityRequest(artist, context)?.let { identity ->
                         verifiedIdentity = identity.copy(musicBrainzId = artist.musicBrainzId,
                             aliases = artist.aliases)
                         identityVerified = true
                         identity.image
                     }
                 } ?: image(cached?.url)?.takeIf { cached?.source == "youtube" }
+                android.util.Log.d("ArtistPortrait", "lookup-end key=${identity.hashCode()} elapsedMs=${android.os.SystemClock.elapsedRealtime() - started} verified=$identityVerified photo=${result != null} failed=$failed")
                 val completed = System.currentTimeMillis()
                 val retry = if (failed) 60_000L else if (result == null) 3_600_000L else PHOTO_TTL
                 val canonical = if (identityVerified || result != null) verifiedIdentity.name else cached?.canonicalName.orEmpty()

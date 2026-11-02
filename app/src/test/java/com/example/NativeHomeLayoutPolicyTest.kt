@@ -1,0 +1,55 @@
+package com.example
+
+import android.app.Application
+import androidx.test.core.app.ApplicationProvider
+import com.example.data.cache.HomeCardCache
+import com.example.data.cache.SavedHomeCards
+import com.example.data.model.*
+import com.example.data.remote.YouTubeHomeParser
+import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
+import org.junit.Assert.*
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
+
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34], application = Application::class)
+class NativeHomeLayoutPolicyTest {
+    private fun video(type: String = "MUSIC_VIDEO_TYPE_OMV") = NativeFeedFixtures.song(1).apply {
+        getJSONObject("musicResponsiveListItemRenderer").put("navigationEndpoint", JSONObject().put("watchEndpoint", JSONObject()
+            .put("videoId", NativeFeedFixtures.id(1)).put("watchEndpointMusicSupportedConfigs", JSONObject()
+                .put("watchEndpointMusicConfig", JSONObject().put("musicVideoType", type)))))
+            .put("thumbnail", JSONObject().put("musicThumbnailRenderer", JSONObject().put("thumbnail", JSONObject()
+                .put("thumbnails", org.json.JSONArray().put(JSONObject().put("url", "https://i.ytimg.com/vi/${NativeFeedFixtures.id(1)}/hq720.jpg")
+                    .put("width", 1280).put("height", 720))))))
+    }
+    private fun parse(title: String, item: JSONObject) = YouTubeHomeParser.parseHomeFeed(JSONObject(
+        NativeFeedFixtures.home(NativeFeedFixtures.collectionShelf(title, item)))).shelves.single()
+    @Test fun quickPicksIsAnExactNativeSongShelfWithoutChangingOtherMusicOrCollections() {
+        assertEquals(NativeShelfKind.QUICK_PICKS, parse("Quick Picks", NativeFeedFixtures.song(1)).nativeKind())
+        assertEquals(NativeShelfKind.STANDARD, parse("Your Quick Picks albums", NativeFeedFixtures.album(2)).nativeKind())
+        assertEquals(NativeShelfKind.STANDARD, parse("Quick Picks", NativeFeedFixtures.album(2)).nativeKind())
+    }
+    @Test fun videoMetadataAndExactNativeHeadingsAreBothRequired() {
+        for (title in listOf("Music Videos", "New Music Videos")) {
+            val shelf = parse(title, video())
+            assertEquals(NativeShelfKind.MUSIC_VIDEOS, shelf.nativeKind())
+            val song = shelf.items.single() as ServerHomeItem.Song
+            assertEquals("MUSIC_VIDEO_TYPE_OMV", song.videoType)
+            assertTrue(song.landscapeThumbnail.endsWith("hq720.jpg"))
+            assertEquals(NativeShelfKind.STANDARD, parse(title, video("MUSIC_VIDEO_TYPE_ATV")).nativeKind())
+            assertEquals(NativeShelfKind.STANDARD, parse(title, NativeFeedFixtures.song(1, "Official music video")).nativeKind())
+        }
+        assertEquals(NativeShelfKind.STANDARD, parse("Recommended songs", video()).nativeKind())
+    }
+    @Test fun verifiedVideoMetadataSurvivesHomeCacheRestoration() = runBlocking {
+        val shelf = parse("Music Videos", video())
+        val cache = HomeCardCache(ApplicationProvider.getApplicationContext<Application>())
+        cache.saveHome(SavedHomeCards("IN|anonymous", serverShelves = listOf(shelf), serverFetchSucceeded = true))
+        val restored = cache.readServer("IN|anonymous")!!.serverShelves.single()
+        assertEquals(shelf.items.map { (it as ServerHomeItem.Song).copy(track = it.track.copy(audioUrl = "", recommendationOnly = true)) }, restored.items)
+        assertEquals(NativeShelfKind.MUSIC_VIDEOS, restored.nativeKind())
+    }
+}

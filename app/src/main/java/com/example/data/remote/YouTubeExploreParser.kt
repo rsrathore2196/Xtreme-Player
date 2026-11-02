@@ -101,7 +101,7 @@ internal object YouTubeExploreParser {
         return categories
     }
 
-    internal fun thumbnail(value: JSONObject): String {
+    internal fun thumbnail(value: JSONObject, landscapeOnly: Boolean = false): String {
         val thumbnails = mutableListOf<JSONObject>()
         walk(value.optJSONObject("thumbnailRenderer") ?: value.optJSONObject("thumbnail") ?: value.optJSONObject("image"), {}) { node ->
             (node.optJSONArray("thumbnails") ?: node.optJSONArray("sources"))?.let { array ->
@@ -109,7 +109,8 @@ internal object YouTubeExploreParser {
             }
             true
         }
-        return thumbnails.maxByOrNull { it.optInt("width") }?.let { string(it, "url") }
+        return thumbnails.filter { !landscapeOnly || it.optInt("width") > it.optInt("height") * 1.4 && it.optInt("height") > 0 }
+            .maxByOrNull { it.optInt("width") }?.let { string(it, "url") }
             ?.takeIf { it.startsWith("https://") }.orEmpty()
     }
     private fun browseEndpoint(value: JSONObject): JSONObject? = endpoint(value.optJSONObject("navigationEndpoint"))

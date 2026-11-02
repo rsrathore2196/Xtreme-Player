@@ -75,7 +75,12 @@ class InitialHomePreparationTest {
                     supplementalLoader = { _, browse, _ -> extra(browse) },
                     supplementContinuationLoader = { _, browse, token, _ -> extraPage(browse, token) }, connectivityUpdates = connectivity) as T
         }
-        return ViewModelProvider(store, factory)[HomeViewModel::class.java].also { it.onHomeFrameDrawn() }
+        return ViewModelProvider(store, factory)[HomeViewModel::class.java].also { vm ->
+            @Suppress("UNCHECKED_CAST")
+            val access = vm.javaClass.getDeclaredField("_additionalShelvesUnlocked").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<Boolean>
+            access.value = true // These tests exercise the unlocked native transport, not newcomer admission.
+            vm.onHomeFrameDrawn()
+        }
     }
     private suspend fun cached() {
         HomeCardCache(app).save(SavedHomeCards(HomeCacheIdentity.home(preferences), refreshedAt = System.currentTimeMillis(),
@@ -427,9 +432,11 @@ class InitialHomePreparationTest {
         vm.revealNextHomeSection()
         withTimeout(5_000) { vm.serverShelves.first { it.size == 6 } }
         assertEquals(listOf(null, "more"), tokens)
-        assertTrue(vm.revealedShelfCount.value >= 5)
+        assertEquals(4, vm.revealedShelfCount.value)
         vm.revealNextHomeSection()
-        withTimeout(5_000) { vm.revealedShelfCount.first { it >= 6 } }
+        withTimeout(5_000) { vm.revealedShelfCount.first { it == 5 } }
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.revealedShelfCount.first { it == 6 } }
         vm.revealNextHomeSection()
         withTimeout(5_000) { vm.serverShelves.first { it.size == 7 } }
         assertEquals(listOf(null, "more", "last"), tokens)
@@ -567,7 +574,7 @@ class InitialHomePreparationTest {
         delay(100)
         assertEquals(2, browsed.size)
     }
-    @Test fun supplementsPublishWhilePrimaryIsStillPendingAndRefreshDoesNotAccumulateStaleSections() = runBlocking {
+    @Test fun automaticSupplementsWaitForPrimaryButManualRefreshCanPromoteThemWithoutAccumulatingStaleSections() = runBlocking {
         val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
         val calls = AtomicInteger()
         val vm = viewModel({ _, _ ->
@@ -575,10 +582,13 @@ class InitialHomePreparationTest {
             page("primary-${calls.get()}")
         }, extra = { browse -> page(browse) })
         vm.setHomeVisible(true)
-        withTimeout(5_000) { entered.await(); vm.serverShelves.first { it.size == 2 } }
+        withTimeout(5_000) { entered.await() }
+        assertTrue(vm.serverShelves.value.isEmpty())
+        val manual = vm.refreshHome(true)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 2 } }
         assertEquals(setOf("FEmusic_new_releases", "FEmusic_explore"), vm.serverShelves.value.map { it.id }.toSet())
         release.complete(Unit)
-        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
+        withTimeout(5_000) { manual.join(); vm.serverShelves.first { it.size == 3 } }
         repeat(3) {
             withTimeout(5_000) { vm.refreshHome(true).join() }
             assertEquals(3, vm.serverShelves.value.size)
@@ -623,9 +633,11 @@ class InitialHomePreparationTest {
                 extraPages.incrementAndGet(); page("extra-page")
             })
         vm.setHomeVisible(true)
-        // The explicit refresh settles all initial source requests and starts
-        // its first demand; publication alone does not mean persistence finished.
-        withTimeout(5_000) { vm.refreshHome(true).join(); vm.continuationStatus.first { it == ShelfLoadStatus.ERROR } }
+        withTimeout(5_000) { vm.refreshHome(true).join() }
+        // Filling the initial window consumes the refresh's first reveal. A
+        // separate demand now prepares the primary cursor and surfaces failure.
+        vm.revealNextHomeSection()
+        withTimeout(5_000) { vm.continuationStatus.first { it == ShelfLoadStatus.ERROR } }
         vm.revealNextHomeSection()
         withTimeout(5_000) { vm.serverShelves.first { it.size == 4 } }
         assertEquals(1, mainPages.get()); assertEquals(1, extraPages.get())
@@ -745,7 +757,7 @@ class InitialHomePreparationTest {
         vm.setHomeVisible(true)
         withTimeout(5_000) { vm.refreshHome(true).join() }
         repeat(4) { index ->
-            if (index > 0) vm.revealNextHomeSection()
+            vm.revealNextHomeSection()
             withTimeout(5_000) { vm.paginationRevision.first { it >= index + 1 }; vm.serverShelves.first { it.size == index + 4 } }
         }
         assertEquals(listOf("home", "FEmusic_new_releases", "home", "FEmusic_explore"), sequence)
