@@ -176,6 +176,14 @@ class LosslessPrebufferRegressionTest {
         coordinator.firstFrameRendered()
         coordinator.foreground(true); coordinator.frame(2, 1)
         ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(16))
+        // Both initial admission and navigation resumption use elapsed time. Keep
+        // it progressing while asynchronous work records completion timestamps.
+        val clock = launch {
+            while (isActive) {
+                delay(25)
+                ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(25))
+            }
+        }
         val navigation = CompletableDeferred<AutoCloseable>()
         val reads = java.util.concurrent.atomic.AtomicInteger()
         val bytes = javaClass.getResourceAsStream("/audio/unindexed-silence.flac")!!.use { it.readBytes() }
@@ -204,7 +212,7 @@ class LosslessPrebufferRegressionTest {
             assertNotNull(resumed)
             assertTrue(resumed!!.covers(6_000))
         } finally {
-            lease?.close(); optional.cancelAndJoin(); coordinator.foreground(false)
+            lease?.close(); optional.cancelAndJoin(); clock.cancelAndJoin(); coordinator.foreground(false)
         }
     }
 

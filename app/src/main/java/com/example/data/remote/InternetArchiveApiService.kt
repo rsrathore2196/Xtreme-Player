@@ -510,7 +510,7 @@ object InternetArchiveApiService {
                 return emptyList()
             }
             val searchHeaders = AtomicInteger(2)
-            return parseLosslessItem(doc, root, recording?.track, onRejected = { reason, detail ->
+            return parseLosslessItem(doc, root, recording?.track, excludedUrls = recording?.excludedUrls.orEmpty(), onRejected = { reason, detail ->
                 recording?.failure = reason
                 if (reason == Reason.METADATA_INCOMPLETE) recording?.incomplete = true
                 recording?.track?.id?.let { com.example.playback.LosslessDiagnostics.record(it, reason, "archive-file", detail) }
@@ -609,6 +609,7 @@ object InternetArchiveApiService {
 
     /** Interpret actual per-file tags, without borrowing a collection's title/duration. */
     internal suspend fun parseLosslessItem(doc: JSONObject, root: JSONObject, requested: MusicTrack? = null,
+        excludedUrls: Set<String> = emptySet(),
         onRejected: (Reason, String) -> Unit = { _, _ -> },
         readHeader: suspend (String) -> ArchiveAudioMetadata.Tags? = ::readFlacHeader
     ): List<MusicTrack> = withContext(AppDispatchers.CpuBounded) {
@@ -632,6 +633,7 @@ object InternetArchiveApiService {
                 val hint = normalized(text(file, "title") + " " + text(file, "name"))
                 if (RecordingIdentity.title(requested) in hint) 1 else 0
             }
+            val selectedFile = requested?.let(::originalFileUrl)
             return@withContext ordered.mapNotNull { file ->
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val name = text(file, "name")
@@ -694,7 +696,7 @@ object InternetArchiveApiService {
                 val version = text(file, "version")
                 if (version.isNotBlank() && !fileTitle.contains(version, true)) fileTitle += " ($version)"
                 val title = if (isConcert && !Regex("(?i)\\blive\\b").containsMatchIn(fileTitle)) "$fileTitle (Live)" else fileTitle
-                MusicTrack(id = "ia_$identifier:$name", title = title, artist = artist, album = album,
+                val candidate = MusicTrack(id = "ia_$identifier:$name", title = title, artist = artist, album = album,
                     durationMs = duration, coverUrl = "https://archive.org/services/img/$identifier",
                     audioUrl = streamUrl, bitrateKbps = bitrate, qualityBadge = if (header != null &&
                         header.bitDepth > 16 && header.sampleRate >= 44_100) "Hi-Res • Lossless" else losslessQuality(file),
@@ -706,6 +708,15 @@ object InternetArchiveApiService {
                         }
                         if (codec.isNotBlank() && bitrate > 0) sourceBitrates.put(streamUrl, codec to bitrate)
                     }
+                // A targeted FLAC lookup already proved this recording. Unrelated album
+                // headers must not spend the remaining deadline and discard that match.
+                // Generic browsing still returns all files; exact selections and rejected
+                // transports cannot be substituted by this early delivery.
+                if (requested != null && name.endsWith(".flac", true) && streamUrl !in excludedUrls &&
+                    (selectedFile == null || selectedFile == streamUrl) &&
+                    RecordingIdentity.losslessConfidence(requested, candidate) != null)
+                    return@withContext listOf(candidate)
+                candidate
             }
     }
 

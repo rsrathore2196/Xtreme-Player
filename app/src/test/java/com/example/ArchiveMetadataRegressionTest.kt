@@ -99,4 +99,63 @@ class ArchiveMetadataRegressionTest {
         assertEquals(Reason.SOURCE_VERIFICATION_FAILED, InternetArchiveApiService.archiveFailureReason(com.example.data.remote.CatalogHttpException(404, null)))
         assertEquals(Reason.NETWORK_TIMEOUT, InternetArchiveApiService.archiveFailureReason(java.net.SocketTimeoutException()))
     }
+    @Test fun verifiedFileDoesNotWaitForUnrelatedAlbumHeaders() = runBlocking {
+        val request = MusicTrack("yt_song", "Song", "Artist", "Album", 180000, "", "")
+        val root = JSONObject("""{"metadata":{"title":"Album","creator":"Artist","rights":"public domain"},"files":[
+            {"name":"01 Song.flac","format":"Flac","title":"Song","artist":"Artist","length":"180"},
+            {"name":"02.flac","format":"Flac"}
+        ]}""")
+        val result = kotlinx.coroutines.withTimeoutOrNull(500) {
+            InternetArchiveApiService.parseLosslessItem(doc, root, request) { kotlinx.coroutines.awaitCancellation() }
+        }
+        assertNotNull("An unrelated slow header must not lose an already verified recording", result)
+        assertEquals("ia_album:01 Song.flac", result!!.single().id)
+    }
+
+    @Test fun explicitFileVerificationStillReachesTheSelectedCopy() = runBlocking {
+        val root = JSONObject("""{"metadata":{"title":"Album","creator":"Artist","rights":"public domain"},"files":[
+            {"name":"first.flac","format":"Flac","title":"Song","artist":"Artist","length":"180"},
+            {"name":"selected.flac","format":"Flac","title":"Song","artist":"Artist","length":"180"}
+        ]}""")
+        val request = MusicTrack("ia_album:selected.flac", "Song", "Artist", "Album", 180000, "", "")
+        val result = InternetArchiveApiService.parseLosslessItem(doc, root, request)
+        assertTrue(result.any { it.id == request.id })
+        assertEquals(2, InternetArchiveApiService.parseLosslessItem(doc, root).size)
+    }
+
+    @Test fun aRejectedFileDoesNotHideAnotherVerifiedFlacCopy() = runBlocking {
+        val root = JSONObject("""{"metadata":{"title":"Album","creator":"Artist","rights":"public domain"},"files":[
+            {"name":"first.flac","format":"Flac","title":"Song","artist":"Artist","length":"180"},
+            {"name":"second.flac","format":"Flac","title":"Song","artist":"Artist","length":"180"}
+        ]}""")
+        val request = MusicTrack("yt_song", "Song", "Artist", "Album", 180000, "", "")
+        val rejected = "https://archive.org/download/album/first.flac"
+        val result = InternetArchiveApiService.parseLosslessItem(doc, root, request, excludedUrls = setOf(rejected))
+        assertEquals("ia_album:second.flac", result.single().id)
+    }
+
+    @Test fun maximumResolverReceivesVerifiedFlacBeforeAnUnrelatedHeaderCanTimeout() = runBlocking {
+        val request = MusicTrack("yt_song", "Song", "Artist", "Album", 180000, "", "")
+        val root = JSONObject("""{"metadata":{"title":"Album","creator":"Artist","rights":"public domain"},"files":[
+            {"name":"01 Song.flac","format":"Flac","title":"Song","artist":"Artist","length":"180"},
+            {"name":"02.flac","format":"Flac"}
+        ]}""")
+        val policy = com.example.playback.PlaybackSourcePolicy(com.example.playback.AudioQualityCeiling.MAX,
+            sources = listOf(com.example.playback.PlaybackSource.archive, com.example.playback.PlaybackSource.youtube))
+        val resolver = StreamResolver(supportsLossless = { true }, resolveYouTube = { _, _, _, _ -> null },
+            searchYouTube = { emptyList() }, findLossless = { track, excluded, _ ->
+                InternetArchiveApiService.LosslessSearchPage(InternetArchiveApiService.parseLosslessItem(
+                    doc, root, track, excludedUrls = excluded) { kotlinx.coroutines.awaitCancellation() })
+            })
+        try {
+            val resolved = kotlinx.coroutines.withTimeout(2_000) {
+                resolver.resolve(request, policy.ceiling.audioQuality, sourcePolicy = policy)
+            }
+            assertEquals(request.id, resolved.id)
+            assertEquals("https://archive.org/download/album/01%20Song.flac", resolved.audioUrl)
+            assertEquals("INTERNET_ARCHIVE", resolved.source)
+            assertTrue(resolved.isLossless)
+        } finally { resolver.clear() }
+    }
+
 }
