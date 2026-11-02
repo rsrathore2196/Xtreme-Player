@@ -21,14 +21,29 @@ internal fun presentNativeShelves(previous: List<HomeShelfPresentation>, shelves
     status: ShelfLoadStatus, message: String = ""): List<HomeShelfPresentation> {
     if (shelves.isEmpty()) return if (status == ShelfLoadStatus.LOADING) initialHomeSkeletons() else emptyList()
     val existing = previous.mapNotNull { it.shelf?.id?.let { id -> id to it } }.toMap()
+    val reserved = shelves.mapNotNull { existing[it.id]?.key }.toSet()
+    val assigned = hashSetOf<String>()
+    fun available(key: String) = key !in assigned && key !in reserved
+    fun fallback(base: String): String {
+        var key = base
+        var suffix = 0
+        while (!available(key)) key = "${base}_${++suffix}"
+        return key
+    }
     val cards = shelves.mapIndexed { index, shelf ->
         val old = existing[shelf.id]
-        val key = old?.key ?: previous.getOrNull(index)?.takeIf { it.shelf == null }?.key ?: "server_shelf_${shelf.id}"
+        val key = old?.key?.takeUnless(assigned::contains)
+            ?: previous.getOrNull(index)?.takeIf { it.shelf == null && available(it.key) }?.key
+            ?: fallback("server_shelf_${shelf.id}")
+        assigned.add(key)
         val next = HomeShelfPresentation(key, shelf, ShelfLoadStatus.SUCCESS)
         if (old == next) old else next
     }
-    return if (status == ShelfLoadStatus.LOADING) cards + HomeShelfPresentation(
-        previous.lastOrNull()?.takeIf { it.shelf == null }?.key ?: "native_pending_page") else cards
+    if (status != ShelfLoadStatus.LOADING) return cards
+    val pendingKey = previous.lastOrNull { it.shelf == null && available(it.key) }?.key
+        ?: fallback("native_pending_page")
+    return cards + HomeShelfPresentation(pendingKey)
+
 }
 
 /** The legacy broad revision is not a Home input; every actual event remains compared. */

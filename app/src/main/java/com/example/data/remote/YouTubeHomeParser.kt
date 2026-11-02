@@ -177,6 +177,9 @@ object YouTubeHomeParser {
             throw IOException("Invalid Home response")
         val shelves = mutableListOf<ServerHomeShelf>()
         var sectionContinuation: String? = null
+        val pageCursors = hashSetOf<String>()
+        val nestedCursors = hashSetOf<String>()
+        var nativeRenderers = 0
 
         // Navigate sectionListRenderer
         val contentsNode = rootJson.optJSONObject("contents")
@@ -206,7 +209,7 @@ object YouTubeHomeParser {
         if (containers.isEmpty()) throw IOException("Unsupported Home response")
         val rawSections = JSONArray()
         for (container in containers) {
-            extractContinuation(container)?.let { sectionContinuation = it }
+            extractContinuation(container)?.let { pageCursors.add(it); sectionContinuation = it }
             val rows = container.optJSONArray("contents") ?: container.optJSONArray("continuationItems") ?: continue
             fun appendRows(rows: JSONArray, depth: Int = 0) {
                 if (depth > 4) return
@@ -215,7 +218,7 @@ object YouTubeHomeParser {
                     val nested = row.optJSONObject("itemSectionRenderer") ?: row.optJSONObject("sectionListRenderer")
                         ?: row.optJSONObject("sectionListContinuation")
                     if (nested != null) {
-                        extractContinuation(nested)?.let { sectionContinuation = it }
+                        extractContinuation(nested)?.let { nestedCursors.add(it); sectionContinuation = it }
                         nested.optJSONArray("contents")?.let { appendRows(it, depth + 1) }
                     } else {
                         val content = row.optJSONObject("richSectionRenderer")?.optJSONObject("content") ?: row
@@ -235,6 +238,7 @@ object YouTubeHomeParser {
                     ?: section.optJSONObject("musicImmersiveCarouselShelfRenderer")
 
                 if (shelfRenderer != null) {
+                    nativeRenderers++
                     val headerObj = shelfRenderer.optJSONObject("header")?.optJSONObject("musicCarouselShelfBasicHeaderRenderer")
                         ?: shelfRenderer.optJSONObject("header")?.optJSONObject("musicImmersiveCarouselShelfBasicHeaderRenderer")
                         ?: shelfRenderer.optJSONObject("header")?.optJSONObject("musicShelfRenderer")
@@ -290,7 +294,7 @@ object YouTubeHomeParser {
         }
 
         val unique = HomeShelfIdentity.deduplicate(shelves)
-        android.util.Log.d("NativeHome", "parse shelves=${shelves.size} suppressed=${shelves.size - unique.size} cursor=${sectionContinuation != null}")
+        android.util.Log.d("NativeHome", "parse sections=${rawSections.length()} renderers=$nativeRenderers shelves=${shelves.size} omitted=${nativeRenderers - shelves.size} suppressed=${shelves.size - unique.size} cursor=${sectionContinuation != null} pageCursors=${pageCursors.size} nestedCursors=${nestedCursors.size} distinctCursors=${(pageCursors + nestedCursors).size} selectedScope=${if (sectionContinuation == null) "none" else if (sectionContinuation in pageCursors) "page" else "nested"}")
         return ParsedHomeFeed(unique, sectionContinuation)
     }
 }

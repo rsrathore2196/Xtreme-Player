@@ -61,7 +61,8 @@ class InitialHomePreparationTest {
         authenticatedRequests: MutableList<Boolean>? = null,
         idle: suspend (Long) -> Unit = {},
         extra: suspend (String) -> YouTubeHomeParser.ParsedHomeFeed = { YouTubeHomeParser.ParsedHomeFeed(emptyList(), null) },
-        extraPage: suspend (String, String) -> YouTubeHomeParser.ParsedHomeFeed = { _, _ -> error("Unexpected supplemental cursor") }): HomeViewModel {
+        extraPage: suspend (String, String) -> YouTubeHomeParser.ParsedHomeFeed = { _, _ -> error("Unexpected supplemental cursor") },
+        connectivity: kotlinx.coroutines.flow.Flow<Boolean> = kotlinx.coroutines.flow.emptyFlow()): HomeViewModel {
         val store = ViewModelStore().also(stores::add)
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T =
@@ -72,7 +73,7 @@ class InitialHomePreparationTest {
                     accountUpdates = account ?: YouTubeAudioStreamService.discoveryAccountChanges,
                     idleAdmission = idle, elapsedTime = { elapsed },
                     supplementalLoader = { _, browse, _ -> extra(browse) },
-                    supplementContinuationLoader = { _, browse, token, _ -> extraPage(browse, token) }) as T
+                    supplementContinuationLoader = { _, browse, token, _ -> extraPage(browse, token) }, connectivityUpdates = connectivity) as T
         }
         return ViewModelProvider(store, factory)[HomeViewModel::class.java].also { it.onHomeFrameDrawn() }
     }
@@ -622,9 +623,9 @@ class InitialHomePreparationTest {
                 extraPages.incrementAndGet(); page("extra-page")
             })
         vm.setHomeVisible(true)
-        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
-        vm.revealNextHomeSection()
-        withTimeout(5_000) { vm.continuationStatus.first { it == ShelfLoadStatus.ERROR } }
+        // The explicit refresh settles all initial source requests and starts
+        // its first demand; publication alone does not mean persistence finished.
+        withTimeout(5_000) { vm.refreshHome(true).join(); vm.continuationStatus.first { it == ShelfLoadStatus.ERROR } }
         vm.revealNextHomeSection()
         withTimeout(5_000) { vm.serverShelves.first { it.size == 4 } }
         assertEquals(1, mainPages.get()); assertEquals(1, extraPages.get())
@@ -646,6 +647,135 @@ class InitialHomePreparationTest {
         withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
         assertTrue(vm.serverShelves.value.all { it.title.startsWith("account-b") })
         assertFalse(HomeCardCache(app).readServer(HomeCacheIdentity.home(preferences, "account-b"))!!.serverShelves.any { it.title.startsWith("account-a") })
+    }
+
+    @Test fun manualRefreshPromotesExistingSupplementRequestsAndWaitsForBothWithoutDuplicates() = runBlocking {
+        val releases = mapOf("FEmusic_new_releases" to CompletableDeferred<Unit>(), "FEmusic_explore" to CompletableDeferred<Unit>())
+        val urgent = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.flow.StateFlow<Boolean>>()
+        val calls = java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>()
+        val vm = viewModel({ _, _ -> page("primary") }, extra = { browse ->
+            calls.getOrPut(browse) { AtomicInteger() }.incrementAndGet()
+            urgent[browse] = requireNotNull(com.example.recommendation.DiscoveryRequestCoordinator.requestUrgency())
+            releases.getValue(browse).await()
+            page(browse)
+        })
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { while (urgent.size < 2) delay(10) }
+        assertTrue(urgent.values.all { !it.value })
+        val manual = vm.refreshHome(true)
+        withTimeout(5_000) { urgent.values.forEach { it.first { promoted -> promoted } }; vm.isRefreshing.first { it } }
+        assertFalse(manual.isCompleted)
+        releases.getValue("FEmusic_new_releases").complete(Unit)
+        withTimeout(5_000) { vm.serverShelves.first { it.any { shelf -> shelf.title == "FEmusic_new_releases" } } }
+        assertTrue("Explore is still a required manual request", vm.isRefreshing.value)
+        releases.getValue("FEmusic_explore").complete(Unit)
+        withTimeout(5_000) { manual.join() }
+        assertFalse(vm.isRefreshing.value)
+        assertEquals(setOf(1), calls.values.map { it.get() }.toSet())
+        assertEquals(3, vm.serverShelves.value.size)
+    }
+    @Test fun manualPromotionBypassesOptionalAdmissionWithoutStartingNewRequests() = runBlocking {
+        val scrollingOwner = Any()
+        val calls = AtomicInteger()
+        com.example.performance.BackgroundWorkCoordinator.scrolling(scrollingOwner, true)
+        try {
+            val vm = viewModel({ _, _ -> page("primary") }, extra = { browse -> calls.incrementAndGet(); page(browse) })
+            vm.setHomeVisible(true)
+            withTimeout(5_000) { vm.serverShelves.first { it.isNotEmpty() } }
+            assertNull(withTimeoutOrNull(150) { while (calls.get() == 0) delay(10); Unit })
+            withTimeout(5_000) { vm.refreshHome(true).join() }
+            assertEquals(2, calls.get())
+            assertEquals(3, vm.serverShelves.value.size)
+            assertFalse(vm.isRefreshing.value)
+        } finally { com.example.performance.BackgroundWorkCoordinator.scrolling(scrollingOwner, false) }
+    }
+    @Test fun aFourthSupplementAttemptCanRecoverOnALaterHomeVisitAfterBoundedBackoff() = runBlocking<Unit> {
+        val calls = AtomicInteger()
+        val vm = viewModel({ _, _ -> page("primary") }, extra = { browse ->
+            if (browse != "FEmusic_new_releases") page(browse)
+            else if (calls.incrementAndGet() < 4) YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true)
+            else page("recovered")
+        })
+        vm.setHomeVisible(true)
+        suspend fun settled(attempt: Int) { withTimeout(5_000) {
+            while (calls.get() < attempt) delay(10)
+            vm.serverCards.first { it.none { card -> card.status == ShelfLoadStatus.LOADING } }
+        } }
+        settled(1)
+        for ((attempt, wait) in listOf(2 to 15_001L, 3 to 30_001L, 4 to 60_001L)) {
+            elapsed += wait
+            vm.setHomeVisible(false); delay(50); vm.setHomeVisible(true)
+            settled(attempt)
+        }
+        assertEquals(4, calls.get())
+        withTimeout(5_000) { vm.serverShelves.first { it.any { shelf -> shelf.title == "recovered" } } }
+    }
+    @Test fun connectivityRecoveryRetriesFailedSourcesAndFlappingDoesNotCreateARetryLoop() = runBlocking {
+        val online = kotlinx.coroutines.flow.MutableStateFlow(false)
+        val calls = AtomicInteger()
+        val vm = viewModel({ _, _ -> page("primary") }, extra = { browse ->
+            if (browse == "FEmusic_new_releases") { calls.incrementAndGet(); YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true) }
+            else page(browse)
+        }, connectivity = online)
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { while (calls.get() < 1) delay(10); vm.serverCards.first { it.none { card -> card.status == ShelfLoadStatus.LOADING } } }
+        online.value = true
+        withTimeout(5_000) { while (calls.get() < 2) delay(10); vm.serverCards.first { it.none { card -> card.status == ShelfLoadStatus.LOADING } } }
+        online.value = false; delay(50); online.value = true
+        delay(150)
+        assertEquals(2, calls.get())
+        elapsed += 15_001
+        online.value = false; delay(50); online.value = true
+        withTimeout(5_000) { while (calls.get() < 3) delay(10) }
+        assertTrue(vm.serverShelves.value.any { it.title == "FEmusic_explore" })
+    }
+    @Test fun endlessPrimaryPaginationStillGivesBothSupplementaryCursorsBoundedTurns() = runBlocking {
+        val sequence = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val primaryPages = AtomicInteger()
+        val vm = viewModel({ _, token ->
+            if (token == null) page("primary", "home-1") else {
+                sequence += "home"
+                val next = primaryPages.incrementAndGet()
+                page("home-page-$next", "home-${next + 1}")
+            }
+        }, extra = { browse -> page(browse, "extra-1") }, extraPage = { browse, token ->
+            sequence += browse
+            page("$browse-page-$token", "$token-next")
+        })
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { vm.refreshHome(true).join() }
+        repeat(4) { index ->
+            if (index > 0) vm.revealNextHomeSection()
+            withTimeout(5_000) { vm.paginationRevision.first { it >= index + 1 }; vm.serverShelves.first { it.size == index + 4 } }
+        }
+        assertEquals(listOf("home", "FEmusic_new_releases", "home", "FEmusic_explore"), sequence)
+        assertEquals(vm.serverCards.value.size, vm.serverCards.value.map { it.key }.distinct().size)
+    }
+
+    @Test fun manualRefreshRecoversAfterThreeFailuresWithoutDroppingACachedSupplement() = runBlocking {
+        val now = System.currentTimeMillis()
+        val sources = listOf("FEmusic_home", "FEmusic_new_releases", "FEmusic_explore").map { browse ->
+            HomeBrowseSnapshot(browse, "anonymous", listOf(shelf(browse)), fetchedAt = now, succeeded = true)
+        }
+        HomeCardCache(app).saveHome(SavedHomeCards(HomeCacheIdentity.home(preferences), now,
+            serverShelves = sources.flatMap { it.shelves }, serverFetchSucceeded = true, browseSources = sources))
+        val calls = AtomicInteger()
+        val vm = viewModel({ _, _ -> page("FEmusic_home") }, extra = { browse ->
+            if (browse == "FEmusic_new_releases" && calls.incrementAndGet() <= 3)
+                YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true)
+            else page(if (browse == "FEmusic_new_releases") "recovered" else browse)
+        })
+        vm.setHomeVisible(true)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
+        repeat(3) {
+            withTimeout(5_000) { vm.refreshHome(true).join() }
+            assertTrue(vm.serverShelves.value.any { shelf -> shelf.id == "FEmusic_new_releases" })
+        }
+        assertEquals(3, calls.get())
+        withTimeout(5_000) { vm.refreshHome(true).join() }
+        assertEquals(4, calls.get())
+        assertTrue(vm.serverShelves.value.any { it.id == "recovered" })
+        assertFalse(vm.isRefreshing.value)
     }
 
 }

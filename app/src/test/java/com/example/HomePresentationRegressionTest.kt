@@ -127,4 +127,21 @@ class HomePresentationRegressionTest {
         assertEquals(listOf("New Releases"), result.shelves.map { it.title })
     }
 
+    @Test fun supportedPageAndCarouselContinuationsKeepTheirSeparateOwnersAndLogOnlyCounts() {
+        fun continuation(token: String) = org.json.JSONArray().put(org.json.JSONObject().put("nextContinuationData", org.json.JSONObject().put("continuation", token)))
+        val shelf = NativeFeedFixtures.shelf("Quick Picks", 1, 2)
+        shelf.getJSONObject("musicCarouselShelfRenderer").put("continuations", continuation("private-shelf-cursor"))
+        val root = org.json.JSONObject(NativeFeedFixtures.home(shelf))
+        root.getJSONObject("contents").getJSONObject("singleColumnBrowseResultsRenderer").getJSONArray("tabs")
+            .getJSONObject(0).getJSONObject("tabRenderer").getJSONObject("content").getJSONObject("sectionListRenderer")
+            .put("continuations", continuation("private-page-cursor"))
+        org.robolectric.shadows.ShadowLog.clear()
+        val result = YouTubeHomeParser.parseHomeFeed(root)
+        assertEquals("private-page-cursor", result.continuationToken)
+        assertEquals("private-shelf-cursor", result.shelves.single().continuationToken)
+        val diagnostics = org.robolectric.shadows.ShadowLog.getLogsForTag("NativeHome").joinToString { it.msg }
+        assertTrue(diagnostics.contains("renderers=1")); assertTrue(diagnostics.contains("pageCursors=1"))
+        assertFalse(diagnostics.contains("private-page-cursor")); assertFalse(diagnostics.contains("private-shelf-cursor"))
+    }
+
 }

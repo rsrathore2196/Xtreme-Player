@@ -82,7 +82,8 @@ class HomeSilentLoadingUiTest {
         try {
             val factory = object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T = HomeViewModel(repository, player, app, db,
-                    homeLoader = { _, _, _ -> YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true) }) as T
+                    homeLoader = { _, _, _ -> YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true) },
+                    supplementalLoader = { _, _, _ -> YouTubeHomeParser.ParsedHomeFeed(emptyList(), null) }) as T
             }
             val vm = ViewModelProvider(store, factory)[HomeViewModel::class.java]
             content { HomeScreenContent(homeViewModel = vm, listState = listFixture(), onTrackClick = { _, _ -> }, onToggleFavorite = {}) }

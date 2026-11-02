@@ -385,12 +385,21 @@ object YouTubeMusicApiService {
     internal suspend fun homeWithFallback(primary: suspend () -> YouTubeHomeParser.ParsedHomeFeed,
         fallback: suspend () -> YouTubeHomeParser.ParsedHomeFeed): YouTubeHomeParser.ParsedHomeFeed {
         var primaryFailure: String? = null
-        val native = try { primary() } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { primaryFailure = error.javaClass.simpleName; null }
+        val native = try { primary() } catch (cancelled: CancellationException) {
+            android.util.Log.d("NativeHome", "failure stage=primary category=cancelled"); throw cancelled
+        } catch (error: Exception) {
+            primaryFailure = error.javaClass.simpleName
+            android.util.Log.d("NativeHome", "failure stage=primary category=$primaryFailure")
+            null
+        }
         if (native != null && !native.isError) return native
-        return try { fallback() } catch (cancelled: CancellationException) { throw cancelled }
-            catch (error: Exception) { YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true,
-                errorMessage = "Native browse failed (${primaryFailure ?: native?.errorMessage ?: "empty"}); fallback failed (${error.javaClass.simpleName})") }
+        return try { fallback() } catch (cancelled: CancellationException) {
+            android.util.Log.d("NativeHome", "failure stage=fallback category=cancelled"); throw cancelled
+        } catch (error: Exception) {
+            android.util.Log.d("NativeHome", "failure stage=fallback category=${error.javaClass.simpleName}")
+            YouTubeHomeParser.ParsedHomeFeed(emptyList(), null, isError = true,
+                errorMessage = "Native browse failed (${primaryFailure ?: native?.errorMessage ?: "empty"}); fallback failed (${error.javaClass.simpleName})")
+        }
     }
 
     /** Successful empty feeds are authoritative; ordinary failures get one anonymous HTTP fallback. */

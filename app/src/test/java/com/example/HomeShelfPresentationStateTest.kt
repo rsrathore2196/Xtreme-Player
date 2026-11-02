@@ -49,6 +49,40 @@ class HomeShelfPresentationStateTest {
         val failure = presentNativeShelves(loading, listOf(shelf("one")), ShelfLoadStatus.ERROR)
         assertEquals(first, failure)
     }
+    @Test fun threeReadyShelvesAndAnotherLoadingSourceAlwaysHaveUniqueKeys() {
+        val initial = initialHomeSkeletons()
+        val cards = presentNativeShelves(initial, (1..3).map { shelf("s$it") }, ShelfLoadStatus.LOADING)
+        assertEquals(4, cards.size)
+        assertEquals(cards.size, cards.map { it.key }.toSet().size)
+        assertEquals(initial.map { it.key }, cards.take(3).map { it.key })
+        assertEquals("native_pending_page", cards.last().key)
+    }
+    @Test fun simultaneousSourcesHandOffSlotsWithoutReusingAnAssignedSuccessfulKey() {
+        var cards = initialHomeSkeletons()
+        for (count in 1..6) {
+            val before = cards.filter { it.shelf != null }.associate { it.shelf!!.id to it.key }
+            cards = presentNativeShelves(cards, (1..count).map { shelf("s$it") }, ShelfLoadStatus.LOADING)
+            assertEquals(cards.size, cards.map { it.key }.distinct().size)
+            cards.filter { it.shelf != null }.forEach { card -> before[card.shelf!!.id]?.let { assertEquals(it, card.key) } }
+        }
+        val successful = cards.filter { it.shelf != null }
+        val done = presentNativeShelves(cards, successful.map { it.shelf!! }, ShelfLoadStatus.SUCCESS)
+        assertEquals(successful, done)
+    }
+    @Test fun refreshAndReorderingReserveExistingSuccessKeysBeforeAllocatingLoadingKeys() {
+        val old = presentNativeShelves(initialHomeSkeletons(), listOf(shelf("one"), shelf("two"), shelf("three")), ShelfLoadStatus.LOADING)
+        val reordered = presentNativeShelves(old, listOf(shelf("new"), shelf("three"), shelf("one"), shelf("two")), ShelfLoadStatus.LOADING)
+        assertEquals(reordered.size, reordered.map { it.key }.distinct().size)
+        for (card in old.filter { it.shelf != null }) assertEquals(card.key, reordered.first { it.shelf?.id == card.shelf!!.id }.key)
+        val failed = presentNativeShelves(reordered, reordered.mapNotNull { it.shelf }, ShelfLoadStatus.ERROR)
+        assertEquals(reordered.filter { it.shelf != null }, failed)
+    }
+    @Test fun aPendingFallbackCannotCollideWithAnExistingSuccessfulFallbackKey() {
+        val old = listOf(HomeShelfPresentation("native_pending_page", shelf("one"), ShelfLoadStatus.SUCCESS))
+        val cards = presentNativeShelves(old, listOf(shelf("one")), ShelfLoadStatus.LOADING)
+        assertEquals("native_pending_page", cards.first().key)
+        assertEquals("native_pending_page_1", cards.last().key)
+    }
     @Test fun smallCacheReadsUseSmallChunksAndPreserveUnicode() {
         val text = "{\"title\":\"Music 🎵\"}"
         var largestRead = 0

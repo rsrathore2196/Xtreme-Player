@@ -31,7 +31,11 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private val supplementalLoader: suspend (String, String, Boolean) -> com.example.data.remote.YouTubeHomeParser.ParsedHomeFeed = { region, browseId, authenticated ->
         YouTubeMusicApiService.getHomeRecommendations(region, includeAccount = authenticated, browseId = browseId) },
     private val supplementContinuationLoader: suspend (String, String, String, Boolean) -> com.example.data.remote.YouTubeHomeParser.ParsedHomeFeed = { region, browse, token, authenticated ->
-        YouTubeMusicApiService.getHomeRecommendations(region, continuation = token, includeAccount = authenticated, browseId = browse) }
+        YouTubeMusicApiService.getHomeRecommendations(region, continuation = token, includeAccount = authenticated, browseId = browse) },
+    private val connectivityUpdates: Flow<Boolean> = flow {
+        val monitor = withContext(AppDispatchers.Io) { com.example.playback.NetworkQualityMonitor.getInstance(application) }
+        emitAll(monitor.connectionType.map { it != com.example.playback.NetworkConnectionType.OFFLINE }.distinctUntilChanged())
+    }
 ) : AndroidViewModel(application) {
     private val owner = viewModelScope + AppDispatchers.HomeBookkeeping
     private val cache = HomeCardCache(application)
@@ -107,6 +111,11 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private var profileForcePending = false
     private val sources = linkedMapOf<String, HomeBrowseSnapshot>()
     private val sourceJobs = mutableMapOf<String, Job>()
+    private val sourceUrgency = mutableMapOf<String, MutableStateFlow<Boolean>>()
+    // Two primary turns per cycle keep native Home preferred without starving supplements.
+    private val paginationOrder = listOf("FEmusic_home", "FEmusic_new_releases", "FEmusic_home", "FEmusic_explore")
+    private var paginationTurn = 0
+    private var lastConnectivityRetryAt: Long? = null
     private val sourceGenerations = mutableMapOf<String, Long>()
     private val sourceFailures = mutableMapOf<String, ContinuationFailure>()
     private val loadingSources = mutableSetOf<String>()
@@ -129,7 +138,24 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
 
     init {
         owner.launch {
-            combine(homeVisible, homeDrawAt) { active, drawn -> active && drawn != null }
+            var previous: Boolean? = null
+            combine(homeVisible, BackgroundWorkCoordinator.uiForeground) { active, foreground -> active && foreground }
+                .distinctUntilChanged().flatMapLatest { active -> if (active) connectivityUpdates else emptyFlow() }
+                .distinctUntilChanged().collect { online ->
+                    val recovered = online && previous == false
+                    previous = online
+                    val now = elapsedTime()
+                    if (recovered && (lastConnectivityRetryAt == null || now - lastConnectivityRetryAt!! >= 15_000L)) {
+                        lastConnectivityRetryAt = now
+                        supplementalBrowseIds.forEach { browse -> sourceFailures[browse]?.takeIf { it.token == "initial" }?.let {
+                            sourceFailures[browse] = it.copy(retryAt = now)
+                        } }
+                        scheduleSupplements(false)
+                    }
+                }
+        }
+        owner.launch {
+            combine(homeVisible, homeDrawAt, BackgroundWorkCoordinator.uiForeground) { active, drawn, foreground -> active && drawn != null && foreground }
                 .distinctUntilChanged().collect { eligible -> if (eligible) scheduleSupplements(false) }
         }
         owner.launch {
@@ -353,7 +379,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         if (!force && serverAttemptAt?.let { now - it in 0 until 60_000L } == true) return@withContext false
         serverAttemptAt = now
         val key = homeKey; val generation = serverGeneration; val region = HomeCacheIdentity.region(_userProfile.value)
-        sourceJobs.remove("FEmusic_home")?.cancel()
+        sourceJobs.remove("FEmusic_home")?.cancel(); sourceUrgency.remove("FEmusic_home")
         val sourceGeneration = (sourceGenerations["FEmusic_home"] ?: 0L) + 1
         sourceGenerations["FEmusic_home"] = sourceGeneration
         sourceFailures.remove("FEmusic_home")
@@ -443,7 +469,6 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         val shelves = withContext(AppDispatchers.CpuBounded) { HomeShelfIdentity.refresh(previous, rows) }
         if (key != homeKey || generation != serverGeneration) return
         if (snapshot != sources.toMap()) { publishSources(revealNew); return }
-        if (shelves != previous) android.util.Log.d("NativeHome", "publish shelves=${shelves.size} suppressed=${rows.size - shelves.size}")
         _revealedShelfCount.value = maxOf(4, _revealedShelfCount.value +
             if (revealNew) (shelves.size - previous.size).coerceAtLeast(0) else 0).coerceAtMost(shelves.size)
         val pending = loadingSources.isNotEmpty() || _continuationStatus.value == ShelfLoadStatus.LOADING ||
@@ -451,34 +476,43 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         _serverCards.value = presentNativeShelves(_serverCards.value, shelves,
             if (pending) ShelfLoadStatus.LOADING else ShelfLoadStatus.SUCCESS)
         _serverShelves.value = shelves
+        android.util.Log.d("NativeHome", "publish shelves=${shelves.size} revealed=${_revealedShelfCount.value} suppressed=${rows.size - shelves.size} pending=$pending auth=${serverCacheKey.substringAfter('|') != "anonymous"}")
     }
     private fun sourceFailed(browse: String, token: String, category: String = "response_or_transport") {
         val old = sourceFailures[browse]?.takeIf { it.token == token }
-        val attempts = (old?.attempts ?: 0) + 1
-        sourceFailures[browse] = ContinuationFailure(token, attempts, elapsedTime() + (15_000L shl (attempts - 1).coerceAtMost(2)))
+        val attempts = ((old?.attempts ?: 0) + 1).coerceAtMost(6)
+        val backoff = (15_000L shl (attempts - 1)).coerceAtMost(300_000L)
+        sourceFailures[browse] = ContinuationFailure(token, attempts, elapsedTime() + backoff)
         android.util.Log.d("NativeHome", "failure browse=$browse category=$category attempts=$attempts initial=${token == "initial"}")
     }
     private fun retryAllowed(browse: String, token: String): Boolean = sourceFailures[browse]?.takeIf { it.token == token }
-        ?.let { it.attempts < 3 && elapsedTime() >= it.retryAt } ?: true
+        ?.let { elapsedTime() >= it.retryAt } ?: true
 
-    private fun scheduleSupplements(force: Boolean) {
+    private fun scheduleSupplements(force: Boolean): List<Job> {
+        val requested = mutableListOf<Job>()
         supplementalBrowseIds.forEach { browse ->
-            if (sourceJobs[browse]?.isActive == true) return@forEach
+            sourceJobs[browse]?.takeIf { it.isActive }?.let { running ->
+                if (force) sourceUrgency[browse]?.value = true
+                requested.add(running)
+                return@forEach
+            }
             val state = sources[browse]
-            if (!force && state != null && fresh(state.succeeded, state.fetchedAt, state.shelves.isEmpty())) return@forEach
+            if (!force && state != null && sourceFailures[browse]?.token != "initial" && fresh(state.succeeded, state.fetchedAt, state.shelves.isEmpty())) return@forEach
             if (!force && !retryAllowed(browse, "initial")) return@forEach
             val key = homeKey; val generation = serverGeneration
             val sourceGeneration = (sourceGenerations[browse] ?: 0L) + 1
             sourceGenerations[browse] = sourceGeneration
-            sourceJobs[browse] = owner.launch {
+            val urgent = MutableStateFlow(force)
+            sourceUrgency[browse] = urgent
+            val job = owner.launch {
                 try {
                     restored.await()
-                    homeDrawAt.first { it != null }
                     if (!visible || key != homeKey || generation != serverGeneration) return@launch
-                    sources[browse]?.let { if (!force && fresh(it.succeeded, it.fetchedAt, it.shelves.isEmpty())) return@launch }
+                    combine(homeDrawAt, urgent) { drawn, requested -> drawn != null || requested }.first { it }
+                    sources[browse]?.let { if (!urgent.value && sourceFailures[browse]?.token != "initial" && fresh(it.succeeded, it.fetchedAt, it.shelves.isEmpty())) return@launch }
                     // Existing optional admission is interaction-aware and bounds
                     // native supplements separately from required Home/playback.
-                    val result = BackgroundWorkCoordinator.optionalProcessing {
+                    val result = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(urgent) {
                         BackgroundWorkCoordinator.awaitOptionalBatch()
                         withContext(AppDispatchers.HomeBookkeeping) { loadingSources.add(browse); publishSources() }
                         withContext(AppDispatchers.Io) { supplementalLoader(HomeCacheIdentity.region(_userProfile.value), browse,
@@ -505,11 +539,14 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) { if (key == homeKey && generation == serverGeneration) sourceFailed(browse, "initial") }
                 finally { if (sourceGenerations[browse] == sourceGeneration && generation == serverGeneration) {
-                    sourceJobs.remove(browse); loadingSources.remove(browse)
+                    sourceJobs.remove(browse); sourceUrgency.remove(browse); loadingSources.remove(browse)
                     withContext(NonCancellable) { publishSources() }
                 } }
             }
+            sourceJobs[browse] = job
+            requested.add(job)
         }
+        return requested
     }
     fun revealNextHomeSection() {
         owner.launch {
@@ -521,14 +558,19 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         }
     }
     private fun requestMoreHome() {
-        val browse = (listOf("FEmusic_home") + supplementalBrowseIds).firstOrNull { id ->
+        val selected = (paginationOrder.indices).firstOrNull { offset ->
+            val id = paginationOrder[(paginationTurn + offset) % paginationOrder.size]
             val state = sources[id]
             val token = state?.continuation
             state != null && token != null && state.emptyPages < 2 && token !in state.consumed &&
                 sourceJobs[id]?.isActive != true && (id != "FEmusic_home" || serverJob?.isActive != true) && retryAllowed(id, token)
         } ?: return
+        val index = (paginationTurn + selected) % paginationOrder.size
+        val browse = paginationOrder[index]
+        paginationTurn = (index + 1) % paginationOrder.size
         val sourceGeneration = (sourceGenerations[browse] ?: 0L) + 1
         sourceGenerations[browse] = sourceGeneration
+        sourceUrgency[browse] = MutableStateFlow(true)
         sourceJobs[browse] = owner.launch { loadContinuation(browse, sourceGeneration) }
     }
     private suspend fun loadContinuation(browse: String, sourceGeneration: Long) {
@@ -576,7 +618,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         } }
         finally {
             if (generation == serverGeneration && sourceGenerations[browse] == sourceGeneration) {
-                sourceJobs.remove(browse); loadingSources.remove(browse)
+                sourceJobs.remove(browse); sourceUrgency.remove(browse); loadingSources.remove(browse)
                 if (_continuationStatus.value == ShelfLoadStatus.LOADING) _continuationStatus.value = ShelfLoadStatus.EMPTY
                 withContext(NonCancellable) { publishSources() }
                 if (addedContent) _paginationRevision.update { it + 1 }
@@ -587,7 +629,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         val nextHome = currentHomeKey(profile); val nextProfile = currentProfileKey(profile)
         _userProfile.value = profile
         if (nextHome != homeKey) {
-            serverGeneration++; serverJob?.cancel(); sourceJobs.values.toList().forEach { it.cancel() }; sourceJobs.clear(); sourceFailures.clear(); sources.clear(); homeKey = nextHome
+            serverGeneration++; serverJob?.cancel(); sourceJobs.values.toList().forEach { it.cancel() }; sourceJobs.clear(); sourceUrgency.clear(); sourceFailures.clear(); sources.clear(); paginationTurn = 0; lastConnectivityRetryAt = null; homeKey = nextHome
             serverCacheKey = nextHome
             publishServer(emptyList(), ShelfLoadStatus.LOADING); homeContinuationToken = null; loadingSources.clear()
             serverFetchedAt = 0; serverSuccess = false; serverAttemptAt = null
@@ -618,7 +660,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             }
             else {
                 serverUrgent.value = false
-                sourceJobs.values.toList().forEach { it.cancel() }; sourceJobs.clear(); loadingSources.clear()
+                sourceJobs.values.toList().forEach { it.cancel() }; sourceJobs.clear(); sourceUrgency.clear(); loadingSources.clear()
                 artistSectionRelevant.value = false
                 profileGeneration++;  profileJob?.cancel(); profileAttemptAt = null
                 _profileStatus.value = if (_profileShelf.value == null) ShelfLoadStatus.EMPTY else ShelfLoadStatus.SUCCESS
@@ -645,8 +687,12 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             try {
                 if (historyUnavailable) historyRetry.update { it + 1 }
                 if (artistFailed) artistRequests.update { it + 1 }
-                scheduleSupplements(isExplicitPull)
-                if (loadServerHome(isExplicitPull) && isExplicitPull) requestMoreHome()
+                val supplements = scheduleSupplements(isExplicitPull)
+                val primaryLoaded = loadServerHome(isExplicitPull)
+                if (isExplicitPull) {
+                    supplements.joinAll()
+                    if (primaryLoaded) requestMoreHome()
+                }
             } finally { _isRefreshing.value = false }
         }
         refreshJob?.join()
