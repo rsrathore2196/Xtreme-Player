@@ -247,7 +247,9 @@ class ArtworkResolutionInterceptor : Interceptor {
                 if (cacheOnly || memoryOnly) networkCachePolicy(CachePolicy.DISABLED)
                 if (memoryOnly) diskCachePolicy(CachePolicy.DISABLED)
             }.build()
-            val result = if (memoryOnly || cacheOnly && metadata.visibleThumbnail) chain.proceed(candidate) else admittedArtwork(url, metadata.currentTrack, metadata.visibleThumbnail) {
+            // Memory hits never queue. Disk decoding shares the same bounded URL flight
+            // as fetching, including visible thumbnails repeated across Home shelves.
+            val result = if (memoryOnly) chain.proceed(candidate) else admittedArtwork(url, metadata.currentTrack, metadata.visibleThumbnail) {
                 if (cacheOnly) chain.proceed(candidate) else {
                     // Recheck after resource waits so duplicate cards share Coil's file.
                     val hit = chain.proceed(candidate.newBuilder().networkCachePolicy(CachePolicy.DISABLED).build())

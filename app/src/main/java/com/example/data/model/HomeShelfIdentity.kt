@@ -19,8 +19,14 @@ internal object HomeShelfIdentity {
         val destination = shelf.browseId.takeIf(String::isNotBlank)?.let { "$it|${shelf.browseParams}" }
         val native = shelf.providerId.takeIf(String::isNotBlank)
         val identity = destination ?: native ?: entries(shelf).map(::item).distinct().sorted().joinToString("|")
-        val hash = MessageDigest.getInstance("SHA-256").digest("${title(shelf.title)}|$identity".toByteArray(Charsets.UTF_8))
-            .take(12).joinToString("") { "%02x".format(it) }
+        val digest = MessageDigest.getInstance("SHA-256").digest("${title(shelf.title)}|$identity".toByteArray(Charsets.UTF_8))
+        val hash = buildString(24) {
+            repeat(12) { index ->
+                val byte = digest[index].toInt() and 0xff
+                append("0123456789abcdef"[byte ushr 4])
+                append("0123456789abcdef"[byte and 0x0f])
+            }
+        }
         return "server_shelf_$hash"
     }
     private data class Signature(val shelf: ServerHomeShelf, val title: String, val content: Set<String>)
@@ -58,18 +64,23 @@ internal object HomeShelfIdentity {
         for (raw in shelves) {
             if (raw.title.isBlank()) continue
             val seen = hashSetOf<String>()
-            val valid = entries(raw).filter { entry -> when (entry) {
+            val originalEntries = entries(raw)
+            val valid = originalEntries.filter { entry -> when (entry) {
                 is ServerHomeItem.Song -> entry.track.id.isNotBlank() && entry.track.title.isNotBlank()
                 is ServerHomeItem.Album -> entry.album.id.isNotBlank() && entry.album.title.isNotBlank()
                 is ServerHomeItem.Playlist -> entry.playlist.id.isNotBlank() && entry.playlist.title.isNotBlank()
             } && seen.add(item(entry)) }
             if (valid.isEmpty()) continue
-            val shelf = if (valid == entries(raw)) raw else raw.copy(
+            val shelf = if (valid.size == originalEntries.size) raw else raw.copy(
                 tracks = valid.filterIsInstance<ServerHomeItem.Song>().map { it.track }, items = if (raw.items.isEmpty()) emptyList() else valid)
-            val descriptor = signature(shelf)
+            // Validation already built the canonical identity set; reuse it.
+            val descriptor = Signature(shelf, title(shelf.title), seen)
             val index = result.indexOfFirst { same(it, descriptor) }
-            if (index >= 0) result[index] = signature(merge(result[index].shelf, shelf))
-            else result.add(descriptor)
+            if (index >= 0) {
+                val old = result[index]
+                val merged = merge(old.shelf, shelf)
+                if (merged !== old.shelf) result[index] = Signature(merged, old.title, old.content + descriptor.content)
+            } else result.add(descriptor)
         }
         val normalized = result.map { it.shelf }
         return if (normalized == shelves) shelves else normalized
@@ -81,7 +92,9 @@ internal object HomeShelfIdentity {
         val fresh = deduplicate(incoming).map { shelf ->
             val next = signature(shelf)
             prior.firstOrNull { it.shelf.id !in reused && same(it, next) }?.let { old ->
-                reused.add(old.shelf.id); shelf.copy(id = old.shelf.id)
+                reused.add(old.shelf.id)
+                val retained = if (shelf.id == old.shelf.id) shelf else shelf.copy(id = old.shelf.id)
+                if (retained == old.shelf) old.shelf else retained
             } ?: shelf
         }
         // A successful source refresh replaces that source's old generation.

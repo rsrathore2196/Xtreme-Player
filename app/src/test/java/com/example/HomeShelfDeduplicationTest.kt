@@ -99,4 +99,16 @@ class HomeShelfDeduplicationTest {
         assertEquals(2, split.map { it.id }.distinct().size)
     }
 
+    @Test fun unchangedRefreshReusesShelvesAndPreservesTheExistingHashFormat() {
+        val old = shelf("stable", 1, 2, 3).copy(browseId = "VLsample", browseParams = "page")
+        val identity = "${HomeShelfIdentity.title(old.title)}|VLsample|page"
+        val expected = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(identity.toByteArray(Charsets.UTF_8)).take(12).joinToString("") { "%02x".format(it) }
+        assertEquals("server_shelf_$expected", HomeShelfIdentity.stableId(old))
+        val result = refreshServerShelves(listOf(old), listOf(old.copy(id = "new-provider-id")))
+        assertSame(old, result.single())
+        val changed = old.copy(tracks = old.tracks.map { it.copy(title = "Updated ${it.title}") })
+        assertEquals(changed.tracks, refreshServerShelves(listOf(old), listOf(changed)).single().tracks)
+    }
+
 }
