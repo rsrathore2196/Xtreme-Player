@@ -69,7 +69,7 @@ data class SavedHomeCards(
     val serverFetchSucceeded: Boolean = false,
     val profileFetchSucceeded: Boolean = false,
     val consumedContinuations: Set<String> = emptySet(),
-    val artistDataVersion: Int = 2,
+    val artistDataVersion: Int = 3,
     val serverContentVersion: Int = SERVER_HOME_CONTENT_VERSION,
     val sourceBrowseId: String = "FEmusic_home",
     val completedBrowseIds: Set<String> = emptySet(),

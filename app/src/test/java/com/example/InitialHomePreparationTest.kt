@@ -2,6 +2,7 @@ package com.example
 
 import android.app.Application
 import androidx.lifecycle.*
+import androidx.room.withTransaction
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.cache.*
 import com.example.data.local.*
@@ -234,6 +235,7 @@ class InitialHomePreparationTest {
         db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track))
         db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
             eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        db.saveArtistTotal(track)
         val releaseIdle = CompletableDeferred<Unit>()
         val vm = viewModel({ _, _ -> page("native") }, idle = { releaseIdle.await() })
         assertTrue(vm.loadServerHome())
@@ -254,26 +256,31 @@ class InitialHomePreparationTest {
         val dao = db.listeningEventDao()
         repeat(301) { index -> dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
             timestamp = 1_000L + index, sessionId = "recent-$index", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000)) }
+        db.saveArtistTotal(track, 301 * 90_000L, 301)
         val vm = viewModel({ _, _ -> page("native") })
         vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { vm.mostListenedArtists.first { it.firstOrNull()?.playCount == 301 } }
         // Restoration can affect an artist outside the observable 300-row recent window.
         dao.insertListeningEvent(ListeningEventEntity(trackId = older.id, artistName = older.artist, timestamp = 1,
             sessionId = "restored", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        db.saveArtistTotal(older)
         withTimeout(5_000) { vm.mostListenedArtists.first { it.any { artist -> artist.name == "Older Artist" && artist.playCount == 1 } } }
         dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist, timestamp = 2_000,
             sessionId = "new-play", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        db.saveArtistTotal(track, 302 * 90_000L, 302)
         withTimeout(5_000) { vm.mostListenedArtists.first { it.firstOrNull()?.playCount == 302 } }
         dao.pruneOldEvents(Long.MAX_VALUE)
+        assertEquals("Stats retain lifetime rankings when raw history is pruned", 302, vm.mostListenedArtists.value.first().playCount)
+        db.withTransaction { db.openHelper.writableDatabase.execSQL("DELETE FROM listening_totals") }
         withTimeout(5_000) { vm.mostListenedArtists.first { it.isEmpty() } }
         assertFalse(vm.hasListenedArtists.value)
     }
     @Test fun databaseFailureCannotEraseAValidCachedArtistRanking() = runBlocking {
         HomeCardCache(app).saveLocal(SavedHomeCards(HomeCacheIdentity.home(preferences),
             artists = listOf(MostListenedArtist("Singer", 250, listOf(track))), inputRevision = "known-valid"))
-        db.openHelper.writableDatabase.execSQL("DROP TABLE listening_events")
+        db.openHelper.writableDatabase.execSQL("DROP TABLE listening_totals")
         val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true)
-        withTimeout(5_000) { vm.userMode.first { it == com.example.recommendation.HomeUserMode.UNAVAILABLE } }
+        withTimeout(5_000) { vm.artistStatus.first { it == ShelfLoadStatus.ERROR } }
         assertEquals(250, vm.mostListenedArtists.value.single().playCount)
     }
     @Test fun accountSwitchCannotPublishAnOldAccountsResponseOrRetainItsCards() = runBlocking {
@@ -352,6 +359,7 @@ class InitialHomePreparationTest {
         val dao = db.listeningEventDao()
         dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
             sessionId = "first", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        db.saveArtistTotal(track)
         val vm = viewModel({ _, _ -> page("native") })
         vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         @Suppress("UNCHECKED_CAST")
@@ -360,6 +368,7 @@ class InitialHomePreparationTest {
         vm.setHomeVisible(false); withTimeout(5_000) { shown.first { !it } }
         dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist,
             sessionId = "second", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        db.saveArtistTotal(track, 180_000, 2)
         assertEquals(2, dao.getActualTrackPlayCounts().single().playCount)
         assertNull(withTimeoutOrNull(200) { vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 2 } })
         vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
@@ -371,12 +380,14 @@ class InitialHomePreparationTest {
         val dao = db.listeningEventDao()
         dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist, timestamp = 100,
             sessionId = "one", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        db.saveArtistTotal(track)
         val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 1 } }
         val field = vm.javaClass.getDeclaredField("recentMetadata").apply { isAccessible = true }
         val before = field.get(vm)
         dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist, timestamp = 200,
             sessionId = "two", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        db.saveArtistTotal(track, 180_000, 2)
         withTimeout(5_000) { vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 2 } }
         assertSame("Another occurrence needs no repeated recent metadata read", before, field.get(vm))
         db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(track.copy(coverUrl = "new artwork", isLiked = true)))
@@ -407,12 +418,14 @@ class InitialHomePreparationTest {
             dao.insertListeningEvent(ListeningEventEntity(trackId = value.id, artistName = value.artist, timestamp = (100 + index).toLong(),
                 sessionId = "$index", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
         }
+        db.saveArtistTotal(track, 180_000, 2)
         val vm = viewModel({ _, _ -> page("native") }); vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { vm.pillsCardTracks.first { it.size == 2 }; vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 2 } }
         val field = vm.javaClass.getDeclaredField("recentMetadata").apply { isAccessible = true }
         val before = field.get(vm)
         dao.insertListeningEvent(ListeningEventEntity(trackId = track.id, artistName = track.artist, timestamp = 200,
             sessionId = "replay", eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+        db.saveArtistTotal(track, 270_000, 3)
         withTimeout(5_000) { vm.pillsCardTracks.first { it.firstOrNull()?.id == track.id }; vm.mostListenedArtists.first { it.singleOrNull()?.playCount == 3 } }
         assertSame(before, field.get(vm))
         assertEquals(listOf(track.id, other.id), vm.pillsCardTracks.value.map { it.id })

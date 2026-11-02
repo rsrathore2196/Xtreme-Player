@@ -2,6 +2,7 @@ package com.example.data.repository
 
 import com.example.data.local.MusicDatabase
 import com.example.data.local.ActualTrackPlayCount
+import com.example.data.local.ListeningTotal
 import com.example.data.model.MusicTrack
 import com.example.performance.AppDispatchers
 import com.example.recommendation.HomeRecommendationPolicy
@@ -14,6 +15,26 @@ import org.json.JSONArray
 /** Aggregate in SQLite, then normalize only distinct track credits, never the raw listening log. */
 internal object LocalArtistHistory {
     suspend fun read(database: MusicDatabase): List<MostListenedArtist> = Reader(database).read()
+
+    /** Home follows the same saved-duration ranking as Lifetime Stats, extended to fifteen.
+     * Reads aggregate rows only; it never rescans playback occurrences or starts a stats writer. */
+    class StatsReader(private val database: MusicDatabase) {
+        private val mutex = Mutex()
+        private var rows: List<ListeningTotal>? = null
+        private var identities = -1L
+        private var ranked = emptyList<MostListenedArtist>()
+        suspend fun read(totals: List<ListeningTotal>): List<MostListenedArtist> = mutex.withLock {
+            val aliases = ArtistPhotoRepository.identities.value
+            val next = if (rows == totals && identities == aliases) ranked else withContext(AppDispatchers.CpuBounded) {
+                ListeningSummary.from(emptyList(), totals, artistLimit = 15).artists.map { artist ->
+                    MostListenedArtist(artist.artist, artist.plays.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), listOf(artist.track()))
+                }
+            }
+            val resolved = loadRepresentatives(database, next, retainFallback = true)
+            rows = totals; identities = aliases; ranked = next
+            resolved
+        }
+    }
 
     /** Home-owned cache of distinct-track counts, not a second listening store. */
     class Reader(private val database: MusicDatabase) {
@@ -57,14 +78,14 @@ internal object LocalArtistHistory {
                 } }.getOrDefault(emptyList())) })
         }
     }
-    private suspend fun loadRepresentatives(database: MusicDatabase, ranked: List<MostListenedArtist>): List<MostListenedArtist> {
+    private suspend fun loadRepresentatives(database: MusicDatabase, ranked: List<MostListenedArtist>, retainFallback: Boolean = false): List<MostListenedArtist> {
         val ids = ranked.flatMap { it.tracks }.map { it.id }.distinct()
         val representatives = if (ids.isEmpty()) emptyList() else withContext(AppDispatchers.Database) {
             database.musicDao().getTracksByIds(ids)
         }
         return withContext(AppDispatchers.CpuBounded) {
             val byId = representatives.associate { it.id to it.toMusicTrack() }
-            ranked.map { artist -> artist.copy(tracks = artist.tracks.mapNotNull { byId[it.id] }) }
+            ranked.map { artist -> artist.copy(tracks = artist.tracks.mapNotNull { byId[it.id] ?: it.takeIf { retainFallback } }) }
         }
     }
 

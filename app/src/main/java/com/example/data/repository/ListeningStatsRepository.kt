@@ -410,7 +410,7 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
 data class ListeningSummary(val millis: Long, val plays: Long, val songs: List<ListeningTotal>, val artists: List<ListeningTotal>,
     val songCount: Int = songs.size, val artistCount: Int = artists.size) {
     companion object {
-        fun from(songs: List<ListeningTotal>, artists: List<ListeningTotal>): ListeningSummary {
+        fun from(songs: List<ListeningTotal>, artists: List<ListeningTotal>, artistLimit: Int = 5): ListeningSummary {
             val artistIds = artists.filter { it.artistId.startsWith("UC") }
                 .associate { CatalogNames.normalize(it.artist) to it.artistId }
             fun merge(rows: List<ListeningTotal>, artist: Boolean) = rows.groupBy {
@@ -427,7 +427,7 @@ data class ListeningSummary(val millis: Long, val plays: Long, val songs: List<L
                 mergedSongs.filter { it.plays > 0 }.sortedWith(compareByDescending<ListeningTotal> { it.plays }
                     .thenByDescending { it.listenedMs }.thenBy { it.identity }).take(5),
                 mergedArtists.sortedWith(compareByDescending<ListeningTotal> { it.listenedMs }
-                    .thenBy { it.identity }).take(5),
+                    .thenBy { it.identity }).take(artistLimit),
                 mergedSongs.count { it.listenedMs > 0 || it.plays > 0 }, mergedArtists.size)
         }
     }

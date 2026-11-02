@@ -533,6 +533,19 @@ fun HomeScreenContent(
             // Keep the initial native window first, then the two admitted local/profile stages.
             for (index in 0..cardsToShow.size) {
                 if (index == minOf(3, cardsToShow.size)) {
+                    // Independent shelf slots keep successful content and scroll anchors stable.
+                    if (resolvedProfile != null && resolvedProfile.tracks.isNotEmpty()) {
+                        artworkItem(state = listState, key = "profile_shelf", contentType = "server_song_shelf") {
+                            val section = remember(resolvedProfile) {
+                                SectionState(title = resolvedProfile?.title.orEmpty(), subtitle = resolvedProfile?.subtitle.orEmpty(),
+                                    tracks = resolvedProfile.tracks, isLoaded = true)
+                            }
+                            SectionCardLayout(state = section, tracksPrepared = true,
+                                currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
+                                textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
+                        }
+                    }
+
                     if (hasArtists) {
                         artworkItem(state = listState, key = "most_listened_artists", contentType = "artist_shelf") {
                             val artists = homeViewModel?.mostListenedArtists?.collectAsStateWithLifecycle()?.value ?: mostListenedArtists
@@ -586,19 +599,6 @@ fun HomeScreenContent(
                                     }
                                 }
                             }
-                        }
-                    }
-
-                    // Independent shelf slots keep successful content and scroll anchors stable.
-                    if (resolvedProfile != null && resolvedProfile.tracks.isNotEmpty()) {
-                        artworkItem(state = listState, key = "profile_shelf", contentType = "server_song_shelf") {
-                            val section = remember(resolvedProfile) {
-                                SectionState(title = resolvedProfile?.title.orEmpty(), subtitle = resolvedProfile?.subtitle.orEmpty(),
-                                    tracks = resolvedProfile.tracks, isLoaded = true)
-                            }
-                            SectionCardLayout(state = section, tracksPrepared = true,
-                                currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
-                                textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick)
                         }
                     }
                 }

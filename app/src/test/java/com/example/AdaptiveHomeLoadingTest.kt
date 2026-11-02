@@ -150,32 +150,28 @@ class AdaptiveHomeLoadingTest {
         vm.setHomeVisible(false); delay(100); idle(30_000)
         assertEquals(9, vm.revealedShelfCount.value); assertEquals(1, pages.get())
     }
-    @Test fun returningUsersWithOlderActualHistoryAdmitOptionalShelvesAfterSixSeconds() = runBlocking<Unit> {
+    @Test fun returningUsersWithOlderActualHistoryAdmitProfileThenArtistsBeforeNativeExpansion() = runBlocking<Unit> {
         db.withTransaction {
             db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song(1)))
             for (n in 0..300) db.listeningEventDao().insertListeningEvent(ListeningEventEntity(
                 trackId = song(1).id, eventType = "ACTUAL_PLAY", sessionId = "occurrence-$n", timestamp = n.toLong(),
                 playedDurationMs = if (n == 0) 5_000 else 0))
+            db.saveArtistTotal(song(1), 5_000, 0)
         }
         val vm = model(optional = true)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 8 }; vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
         stopClock()
-        assertEquals(3, vm.revealedShelfCount.value); assertFalse(vm.artistPortraitsReady.value)
+        idle(5_999); assertFalse(vm.profileShelfVisible.value); assertFalse(vm.artistPortraitsReady.value)
+        idle(1); settled(vm, "initialProfileSettledAt")
+        assertNotNull(vm.profileShelf.value); assertTrue(vm.profileShelfVisible.value)
+        assertTrue(vm.mostListenedArtists.value.isEmpty()); assertEquals(3, vm.revealedShelfCount.value)
+        assertEquals(1, profiles.get())
         idle(5_999); assertFalse(vm.artistPortraitsReady.value)
-        idle(1)
-        withTimeout(5_000) { vm.artistPortraitsReady.first { it }; vm.mostListenedArtists.first { it.isNotEmpty() } }
-        settled(vm, "initialArtistSettledAt")
-        assertEquals(1, vm.mostListenedArtists.value.single().playCount)
-        assertNull(vm.profileShelf.value); assertFalse(vm.profileShelfVisible.value)
-        assertEquals(3, vm.revealedShelfCount.value); assertEquals(0, profiles.get())
-        idle(5_999); assertEquals(0, profiles.get())
-        idle(1)
-        withTimeout(5_000) { vm.profileShelfVisible.first { it }; vm.profileShelf.first { it != null } }
-        settled(vm, "initialProfileSettledAt")
+        idle(1); settled(vm, "initialArtistSettledAt")
+        assertEquals(0, vm.mostListenedArtists.value.single().playCount)
         assertEquals(3, vm.revealedShelfCount.value)
         idle(5_999); assertEquals(3, vm.revealedShelfCount.value)
-        idle(1)
-        withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
+        idle(1); withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
         assertEquals(1, profiles.get()); assertEquals(0, pages.get())
     }
     @Test fun newUserOptionalShelvesRequireThreeDistinctMeaningfulSongsAndSixIdleSecondsButRecentlyPlayedDoesNot() = runBlocking<Unit> {
@@ -186,26 +182,28 @@ class AdaptiveHomeLoadingTest {
         val events = (1..3).map { n -> ListeningEventEntity(id = n.toLong(), trackId = song(n).id, artistName = song(n).artist, eventType = "ACTUAL_PLAY",
             sessionId = "play-$n", playedDurationMs = if (n == 3) 0 else 30_000) }
         events.forEach { db.listeningEventDao().insertListeningEvent(it) }
+        for (n in 1..2) db.saveArtistTotal(song(n))
         db.listeningEventDao().insertListeningEvent(events.first().copy(id = 4, sessionId = "repeat-one"))
         idle(12_000)
         withTimeout(5_000) { vm.pillsCardTracks.first { it.size == 2 } }
         assertFalse(vm.artistPortraitsReady.value); assertNull(vm.profileShelf.value); assertTrue(vm.mostListenedArtists.value.isEmpty())
         db.listeningEventDao().insertListeningEvent(events.last().copy(playedDurationMs = 30_000))
+        db.saveArtistTotal(song(3))
         @Suppress("UNCHECKED_CAST")
         val threshold = vm.javaClass.getDeclaredField("listeningUnlockAt").apply { isAccessible = true }.get(vm) as StateFlow<Long?>
         withTimeout(5_000) { threshold.first { it != null } }
         val audio = BackgroundWorkCoordinator.busy()
         try {
-            idle(5_999); assertFalse(vm.artistPortraitsReady.value)
-            BackgroundWorkCoordinator.interaction(); idle(5_999); assertFalse(vm.artistPortraitsReady.value)
+            idle(5_999); assertFalse(vm.profileShelfVisible.value)
+            BackgroundWorkCoordinator.interaction(); idle(5_999); assertFalse(vm.profileShelfVisible.value)
             idle(1)
             val nativeCount = vm.revealedShelfCount.value
-            withTimeout(5_000) { vm.artistPortraitsReady.first { it }; vm.mostListenedArtists.first { it.size == 3 } }
-            settled(vm, "initialArtistSettledAt")
-            assertNull(vm.profileShelf.value); assertEquals(nativeCount, vm.revealedShelfCount.value)
-            idle()
-            withTimeout(5_000) { vm.profileShelf.first { it != null } }
             settled(vm, "initialProfileSettledAt")
+            assertNotNull(vm.profileShelf.value); assertFalse(vm.artistPortraitsReady.value)
+            assertEquals(nativeCount, vm.revealedShelfCount.value)
+            idle(5_999); assertFalse(vm.artistPortraitsReady.value)
+            idle(1); settled(vm, "initialArtistSettledAt")
+            assertEquals(3, vm.mostListenedArtists.value.size)
             assertEquals(nativeCount, vm.revealedShelfCount.value)
             idle()
             withTimeout(5_000) { vm.revealedShelfCount.first { it == nativeCount + 1 } }
@@ -216,20 +214,20 @@ class AdaptiveHomeLoadingTest {
         db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song(1)))
         db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = song(1).id, artistName = song(1).artist,
             eventType = "ACTUAL_PLAY", playedDurationMs = 30_000, sessionId = "returning"))
+        db.saveArtistTotal(song(1))
     }
-    @Test fun returningActualPlaysThatCountForArtistsReserveTheOptionalStagesBeforeNativeExpansion() = runBlocking<Unit> {
+    @Test fun returningActualPlaysReserveProfileAndArtistStagesBeforeNativeExpansion() = runBlocking<Unit> {
         db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song(1)))
         db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = song(1).id, artistName = song(1).artist,
             eventType = "ACTUAL_PLAY", playedDurationMs = 5_000, sessionId = "returning-short"))
+        db.saveArtistTotal(song(1), 5_000, 0)
         val vm = model(optional = true)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 8 }; vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
-        stopClock(); idle()
-        assertEquals("Native expansion cannot take an eligible artist's slot", 3, vm.revealedShelfCount.value)
-        withTimeout(5_000) { vm.mostListenedArtists.first { it.isNotEmpty() } }
-        settled(vm, "initialArtistSettledAt")
-        assertEquals(0, profiles.get())
-        idle(); settled(vm, "initialProfileSettledAt")
-        assertNotNull(vm.profileShelf.value); assertEquals(3, vm.revealedShelfCount.value)
+        stopClock(); idle(); settled(vm, "initialProfileSettledAt")
+        assertEquals(3, vm.revealedShelfCount.value); assertFalse(vm.artistPortraitsReady.value)
+        assertEquals(1, profiles.get())
+        idle(); settled(vm, "initialArtistSettledAt")
+        assertTrue(vm.mostListenedArtists.value.isNotEmpty()); assertEquals(3, vm.revealedShelfCount.value)
         idle(); withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
     }
     @Test fun optionalIdleSequenceStartsAfterInitialNativeShelvesAreReady() = runBlocking<Unit> {
@@ -243,10 +241,10 @@ class AdaptiveHomeLoadingTest {
         first.complete(Unit)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 8 } }
         idle(5_999); assertFalse(vm.artistPortraitsReady.value)
-        idle(1); settled(vm, "initialArtistSettledAt")
-        assertTrue(vm.mostListenedArtists.value.isNotEmpty()); assertEquals(3, vm.revealedShelfCount.value)
-        idle(5_999); assertEquals(0, profiles.get())
         idle(1); settled(vm, "initialProfileSettledAt")
+        assertNotNull(vm.profileShelf.value); assertFalse(vm.artistPortraitsReady.value); assertEquals(3, vm.revealedShelfCount.value)
+        idle(5_999); assertFalse(vm.artistPortraitsReady.value)
+        idle(1); settled(vm, "initialArtistSettledAt")
         assertEquals(3, vm.revealedShelfCount.value)
         idle(5_999); assertEquals(3, vm.revealedShelfCount.value)
         idle(1); withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
@@ -261,9 +259,9 @@ class AdaptiveHomeLoadingTest {
         release.complete(Unit)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
         idle(5_999); assertFalse(vm.artistPortraitsReady.value)
-        idle(1); settled(vm, "initialArtistSettledAt")
-        assertTrue(vm.mostListenedArtists.value.isNotEmpty()); assertEquals(0, profiles.get())
-        idle(); settled(vm, "initialProfileSettledAt")
+        idle(1); settled(vm, "initialProfileSettledAt")
+        assertNotNull(vm.profileShelf.value); assertFalse(vm.artistPortraitsReady.value); assertEquals(1, profiles.get())
+        idle(); settled(vm, "initialArtistSettledAt")
         assertEquals(3, vm.revealedShelfCount.value)
     }
     @Test fun failedSupplementsDoNotPermanentlyBlockOptionalStagesWhenOnlyTwoNativeShelvesExist() = runBlocking<Unit> {
@@ -276,18 +274,17 @@ class AdaptiveHomeLoadingTest {
         }
         settled(vm, "initialNativeReadyAt")
         stopClock(); idle()
-        settled(vm, "initialArtistSettledAt")
-        assertTrue(vm.mostListenedArtists.value.isNotEmpty()); assertEquals(0, profiles.get())
-        idle(); settled(vm, "initialProfileSettledAt")
+        settled(vm, "initialProfileSettledAt")
+        assertNotNull(vm.profileShelf.value); assertFalse(vm.artistPortraitsReady.value); assertEquals(1, profiles.get())
+        idle(); settled(vm, "initialArtistSettledAt")
         assertNotNull(vm.profileShelf.value); assertEquals(2, vm.revealedShelfCount.value)
     }
-    @Test fun cachedOptionalCardsUseTheirSeparateSlotsWithoutProfileNetworkWork() = runBlocking<Unit> {
+    @Test fun cachedOptionalCardsUseProfileThenArtistSlotsWithoutProfileNetworkWork() = runBlocking<Unit> {
         returningHistory()
         val profile = UserProfilePreferences.peekUserProfile() ?: UserProfile()
         val homeKey = HomeCacheIdentity.home(profile)
         val cache = HomeCardCache(app)
-        cache.saveLocal(SavedHomeCards(homeKey, artists = listOf(MostListenedArtist(song(1).artist, 1, listOf(song(1)))),
-            inputRevision = db.listeningEventDao().getArtistInputRevision()))
+        cache.saveLocal(SavedHomeCards(homeKey, artists = listOf(MostListenedArtist(song(1).artist, 1, listOf(song(1))))))
         cache.saveProfile(SavedHomeCards(homeKey, profileShelfKey = HomeCacheIdentity.profile(profile), profileShelf = shelf(20),
             profileFetchedAt = System.currentTimeMillis(), profileFetchSucceeded = true))
         val vm = model(optional = true)
@@ -297,47 +294,40 @@ class AdaptiveHomeLoadingTest {
         }
         stopClock()
         assertFalse(vm.artistPortraitsReady.value); assertFalse(vm.profileShelfVisible.value)
-        idle()
-        withTimeout(5_000) { vm.artistPortraitsReady.first { it } }
-        settled(vm, "initialArtistSettledAt")
-        assertFalse(vm.profileShelfVisible.value); assertEquals(3, vm.revealedShelfCount.value)
-        idle()
-        withTimeout(5_000) { vm.profileShelfVisible.first { it } }
-        settled(vm, "initialProfileSettledAt")
-        assertEquals(0, profiles.get()); assertEquals(3, vm.revealedShelfCount.value)
-        idle()
-        withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
+        idle(); settled(vm, "initialProfileSettledAt")
+        assertTrue(vm.profileShelfVisible.value); assertFalse(vm.artistPortraitsReady.value)
+        assertEquals(3, vm.revealedShelfCount.value)
+        idle(); settled(vm, "initialArtistSettledAt")
+        assertTrue(vm.artistPortraitsReady.value); assertEquals(0, profiles.get()); assertEquals(3, vm.revealedShelfCount.value)
+        idle(); withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
     }
-    @Test fun profileFailureFinishesItsSlotWithoutBlockingNativeCardsOrCreatingRetryLoops() = runBlocking<Unit> {
+    @Test fun profileFailureStillAdmitsArtistsBeforeNativeCardsWithoutRetryLoops() = runBlocking<Unit> {
         returningHistory()
         val vm = model(optional = true, failProfile = true)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 8 }; vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
-        stopClock(); idle()
-        settled(vm, "initialArtistSettledAt")
-        assertEquals(0, profiles.get()); assertEquals(3, vm.revealedShelfCount.value)
-        idle()
-        settled(vm, "initialProfileSettledAt")
+        stopClock(); idle(); settled(vm, "initialProfileSettledAt")
         assertNull(vm.profileShelf.value); assertEquals(1, profiles.get()); assertEquals(3, vm.revealedShelfCount.value)
-        idle()
-        withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
-        idle()
-        withTimeout(5_000) { vm.revealedShelfCount.first { it == 5 } }
+        assertFalse(vm.artistPortraitsReady.value)
+        idle(); settled(vm, "initialArtistSettledAt")
+        assertTrue(vm.mostListenedArtists.value.isNotEmpty()); assertEquals(3, vm.revealedShelfCount.value)
+        idle(); withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
+        idle(); withTimeout(5_000) { vm.revealedShelfCount.first { it == 5 } }
         assertEquals(1, profiles.get())
     }
-    @Test fun leavingHomeDuringProfileWaitPreservesArtistsAndResetsAdmissionOnReturn() = runBlocking<Unit> {
+    @Test fun leavingHomeAfterProfilePreservesItAndResetsArtistAdmissionOnReturn() = runBlocking<Unit> {
         returningHistory()
         val vm = model(optional = true)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 8 }; vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
-        stopClock(); idle(); settled(vm, "initialArtistSettledAt")
-        vm.setHomeVisible(false)
-        withTimeout(5_000) { vm.optionalWorkReady.first { !it } }
+        stopClock(); idle(); settled(vm, "initialProfileSettledAt")
+        vm.setHomeVisible(false); delay(100)
         idle(30_000)
-        assertEquals(0, profiles.get()); assertEquals(3, vm.revealedShelfCount.value)
+        assertEquals(1, profiles.get()); assertEquals(3, vm.revealedShelfCount.value)
+        assertFalse(vm.artistPortraitsReady.value); assertNotNull(vm.profileShelf.value)
         val input = BackgroundWorkCoordinator.interactions.value
         vm.setHomeVisible(true)
         withTimeout(5_000) { BackgroundWorkCoordinator.interactions.first { it > input } }
-        idle(5_999); assertEquals(0, profiles.get())
-        idle(1); settled(vm, "initialProfileSettledAt")
+        idle(5_999); assertFalse(vm.artistPortraitsReady.value)
+        idle(1); settled(vm, "initialArtistSettledAt")
         assertEquals(1, profiles.get()); assertTrue(vm.mostListenedArtists.value.isNotEmpty())
         assertEquals(3, vm.revealedShelfCount.value)
     }

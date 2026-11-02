@@ -40,7 +40,7 @@ class HomeDeferredWorkTest {
             .addCallback(object : androidx.room.RoomDatabase.Callback() {
                 override fun onOpen(database: androidx.sqlite.db.SupportSQLiteDatabase) { HomeInputRevisionTriggers.install(database) }
             })
-            .setQueryCallback({ sql, _ -> if (sql.contains("COUNT(DISTINCT CASE WHEN sessionId")) {
+            .setQueryCallback({ sql, _ -> if (sql.contains("FROM listening_totals") && sql.contains("GROUP BY identity")) {
                 queries.incrementAndGet()
                 if (Thread.currentThread() == android.os.Looper.getMainLooper().thread) heavyWorkOnMain.set(true)
             } }, Executor { it.run() }).build()
@@ -51,6 +51,7 @@ class HomeDeferredWorkTest {
             db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song))
             db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = song.id, artistName = song.artist,
                 eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
+            db.saveArtistTotal(song)
             val factory = object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T = HomeViewModel(repo, player, app, db,
                     homeLoader = { _, _, _ -> YouTubeHomeParser.ParsedHomeFeed(listOf(ServerHomeShelf("native", "Native music", tracks = listOf(song))), null) },
@@ -75,17 +76,18 @@ class HomeDeferredWorkTest {
             ShadowSystemClock.advanceBy(Duration.ofMillis(5_999)); delay(300)
             assertEquals(0, searches.get()); assertEquals(0, queries.get())
             ShadowSystemClock.advanceBy(Duration.ofMillis(1))
-            withTimeout(5_000) { vm.mostListenedArtists.first { it.isNotEmpty() } }
-            @Suppress("UNCHECKED_CAST")
-            val artistSettled = vm.javaClass.getDeclaredField("initialArtistSettledAt").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.StateFlow<Long?>
-            withTimeout(5_000) { artistSettled.first { it != null } }
-            assertEquals(0, searches.get()); assertEquals(1, queries.get())
-            assertEquals("Singer", vm.mostListenedArtists.value.single().name)
-            ShadowSystemClock.advanceBy(Duration.ofMillis(5_999)); delay(300)
-            assertEquals(0, searches.get()); assertFalse(vm.profileShelfVisible.value)
-            ShadowSystemClock.advanceBy(Duration.ofMillis(1))
             withTimeout(5_000) { vm.profileShelf.first { it != null } }
-            assertEquals(1, searches.get()); assertFalse(heavyWorkOnMain.get())
+            @Suppress("UNCHECKED_CAST")
+            val profileSettled = vm.javaClass.getDeclaredField("initialProfileSettledAt").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.StateFlow<Long?>
+            withTimeout(5_000) { profileSettled.first { it != null } }
+            assertEquals(1, searches.get()); assertEquals(0, queries.get())
+            assertFalse(vm.artistPortraitsReady.value)
+            ShadowSystemClock.advanceBy(Duration.ofMillis(5_999)); delay(300)
+            assertEquals(0, queries.get()); assertFalse(vm.artistPortraitsReady.value)
+            ShadowSystemClock.advanceBy(Duration.ofMillis(1))
+            withTimeout(5_000) { vm.mostListenedArtists.first { it.isNotEmpty() } }
+            assertEquals(1, queries.get()); assertFalse(heavyWorkOnMain.get())
+            assertEquals("Singer", vm.mostListenedArtists.value.single().name)
             vm.setHomeVisible(false)
             withTimeout(5_000) { vm.optionalWorkReady.first { !it } }
             assertEquals("Singer", vm.mostListenedArtists.value.single().name)
@@ -94,7 +96,7 @@ class HomeDeferredWorkTest {
             withTimeout(5_000) { coordinator.interactions.first { it > resumeInteraction } }
             ShadowSystemClock.advanceBy(Duration.ofSeconds(6)); delay(300)
             withTimeout(5_000) { vm.optionalWorkReady.first { it } }
-            assertEquals("Fresh retained artist inputs do not reaggregate", 1, queries.get())
+            assertEquals("Returning Home renews one small aggregate subscription", 2, queries.get())
             assertEquals("Fresh retained profile results do not refetch", 1, searches.get())
         } finally { store.clear(); player.release(); db.close(); coordinator.foreground(false); Dispatchers.resetMain() }
     }

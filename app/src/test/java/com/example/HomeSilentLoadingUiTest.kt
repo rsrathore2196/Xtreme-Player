@@ -66,7 +66,7 @@ class HomeSilentLoadingUiTest {
         val expected = listOf(
             recent to if (landscape) "hero_infinite_radio_card" else "card_1_recently_played_grid",
             recent + 1 to "server_shelf_s1", recent + 2 to "server_shelf_s2", recent + 3 to "server_shelf_s3",
-            recent + 4 to "most_listened_artists", recent + 5 to "profile_shelf")
+            recent + 4 to "profile_shelf", recent + 5 to "most_listened_artists")
         for ((index, key) in expected) {
             compose.runOnIdle { scope.launch { list.scrollToItem(index) } }
             compose.waitForIdle()

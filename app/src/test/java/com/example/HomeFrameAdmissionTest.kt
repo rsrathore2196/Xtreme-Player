@@ -81,6 +81,7 @@ class HomeFrameAdmissionTest {
             db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song(1)))
             db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = song(1).id, artistName = song(1).artist,
                 eventType = "ACTUAL_PLAY", playedDurationMs = 30_000, sessionId = "returning"))
+            db.saveArtistTotal(song(1))
             coordinator.frame(20_000_000, 8_000_000)
             noise = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
                 while (isActive) {

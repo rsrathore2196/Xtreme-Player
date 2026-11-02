@@ -3,6 +3,7 @@ package com.example.data.local
 import androidx.room.*
 import com.example.data.model.MusicTrack
 import com.example.data.repository.RecordingIdentity
+import kotlinx.coroutines.flow.Flow
 import java.time.*
 import java.time.temporal.TemporalAdjusters
 import java.util.UUID
@@ -30,6 +31,10 @@ data class ListeningIdentityMigration(val origin: String, val bucket: String, va
 interface ListeningStatsDao {
     @Query("SELECT '' AS origin, '' AS bucket, kind, identity, trackId, title, artist, artistId, coverUrl, durationMs, isrc, SUM(listenedMs) AS listenedMs, SUM(plays) AS plays FROM listening_totals WHERE kind = :kind AND length(bucket) = :length AND bucket >= :start AND bucket < :end GROUP BY identity")
     suspend fun range(kind: String, length: Int, start: String, end: String): List<ListeningTotal>
+    @Query("SELECT '' AS origin, '' AS bucket, kind, identity, trackId, title, artist, artistId, coverUrl, durationMs, isrc, SUM(listenedMs) AS listenedMs, SUM(plays) AS plays FROM listening_totals WHERE kind = 'artist' AND length(bucket) = 7 AND bucket >= '0000-01' AND bucket < '9999-12' GROUP BY identity")
+    fun observeLifetimeArtists(): Flow<List<ListeningTotal>>
+    @Query("SELECT EXISTS(SELECT 1 FROM listening_totals WHERE kind = 'artist' AND length(bucket) = 7 AND bucket >= '0000-01' AND bucket < '9999-12' AND listenedMs > 0) AND NOT EXISTS(SELECT 1 FROM listening_events WHERE eventType = 'ACTUAL_PLAY' AND playedDurationMs > 0)")
+    fun observeRestoredArtistListening(): Flow<Boolean>
     @Query("SELECT * FROM listening_totals") suspend fun all(): List<ListeningTotal>
     @Query("SELECT COUNT(*) FROM listening_totals") suspend fun count(): Int
     @Query("SELECT * FROM listening_totals WHERE kind='song' AND identity=:identity")
