@@ -16,6 +16,11 @@ import coil.ImageLoader
 import coil.imageLoader
 import coil.size.Precision
 import com.example.data.model.MusicTrack
+import com.example.data.remote.resolveYouTubePlayerCover
+import com.example.data.remote.playerCoverIdentity
+import com.example.playback.PlayerUiState
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import com.example.performance.AppDispatchers
 import com.example.performance.BackgroundWorkCoordinator
 import com.example.ui.theme.AppThemeColors
@@ -30,6 +35,18 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 
+/** Presentation-only cover; playback/catalog identity and the native shelf image stay intact. */
+internal data class ResolvedPlayerCover(val identity: String, val url: String)
+// Remember only selected, verified song-cover identities. Image bytes remain owned by Coil.
+private val selectedSongCovers = android.util.LruCache<String, String>(64)
+internal fun isSelectedSongCover(trackId: String?, url: String): Boolean =
+    trackId != null && selectedSongCovers.get(trackId) == url
+internal fun playerCoverState(state: PlayerUiState, cover: ResolvedPlayerCover?): PlayerUiState {
+    val track = state.currentTrack ?: return state
+    if (cover == null || cover.identity != playerCoverIdentity(track) || cover.url == track.coverUrl) return state
+    return state.copy(currentTrack = track.copy(coverUrl = cover.url))
+}
+
 /** Use the original provider's highest suitable cover, including full-screen art. */
 private fun playerArtworkDecodeSize(context: Context): IntSize {
     val pixels = minOf(context.resources.displayMetrics.widthPixels, context.resources.displayMetrics.heightPixels)
@@ -38,20 +55,37 @@ private fun playerArtworkDecodeSize(context: Context): IntSize {
 }
 private val neutralPlayerBackground = Brush.verticalGradient(listOf(Color(0xff101010), Color(0xff101010)))
 
-/** Only the selected recording is prefetched; no catalog-wide lookups or extra cache. */
+/** Only the selected recording is prefetched; no catalog-wide artwork lookups. */
 internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTrack?>, foreground: Flow<Boolean>,
-    scope: CoroutineScope, loaderFor: (Context) -> ImageLoader = { it.imageLoader }
+    scope: CoroutineScope,
+    onCoverResolved: (ResolvedPlayerCover) -> Unit = {},
+    resolveCover: suspend (MusicTrack) -> String? = ::resolveYouTubePlayerCover,
+    loaderFor: (Context) -> ImageLoader = { it.imageLoader }
 ): Job = scope.launch(AppDispatchers.Io) {
     combine(tracks.distinctUntilChanged { a, b -> a?.id == b?.id && a?.coverUrl == b?.coverUrl },
         foreground.distinctUntilChanged()) { track, visible -> track to visible }
         .collectLatest { (track, visible) ->
             if (track == null || !visible) return@collectLatest
             try {
-                val request = buildOptimizedImageRequest(context, track.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE,
-                    track, decodeSize = playerArtworkDecodeSize(context), currentTrack = true)
+                val cover = resolveCover(track)
+                currentCoroutineContext().ensureActive()
+                val artworkTrack = cover?.let { track.copy(coverUrl = it) } ?: track
+                if (cover != null) selectedSongCovers.put(track.id, cover)
+                val request = buildOptimizedImageRequest(context, artworkTrack.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE,
+                    artworkTrack, decodeSize = playerArtworkDecodeSize(context), currentTrack = true)
                 val loader = loaderFor(context)
                 val result = loader.execute(request) as? SuccessResult ?: return@collectLatest
-                val key = playerPaletteKey(track, true, Color.White, Color.Black, request.data.toString())
+                if (cover != null) {
+                    // Publish only usable square art, already in Coil's cache. A failed
+                    // cover download never blanks the player's current artwork.
+                    val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
+                    val width = bitmap?.width ?: result.drawable.intrinsicWidth
+                    val height = bitmap?.height ?: result.drawable.intrinsicHeight
+                    if (width <= 0 || width != height) return@collectLatest
+                    currentCoroutineContext().ensureActive()
+                    onCoverResolved(ResolvedPlayerCover(playerCoverIdentity(track), cover))
+                }
+                val key = playerPaletteKey(artworkTrack, true, Color.White, Color.Black, request.data.toString())
                 if (TrackPaletteCache.get(key) == null) {
                     // Network and decoding started at selection; optional color analysis
                     // still yields during navigation and shares the existing CPU budget.
@@ -62,7 +96,7 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
                     val colors = withContext(AppDispatchers.CpuBounded) { extractPlayerArtworkColors(bitmap, true) }
                         ?: return@collectLatest
                     TrackPaletteCache.put(key, colors)
-                    TrackPaletteCache.put(playerPaletteKey(track, true, Color.White, Color.Black,
+                    TrackPaletteCache.put(playerPaletteKey(artworkTrack, true, Color.White, Color.Black,
                         result.request.data.toString()), colors)
                     TrackPaletteCache.put(track.id, colors)
                 }

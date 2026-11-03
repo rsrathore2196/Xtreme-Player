@@ -139,4 +139,20 @@ class ArtworkResolutionDecodeTest {
             assertEquals(listOf(source), fetched)
         }
     }
+    @Test fun verifiedSongCoverIsNeverReplacedByALargerMusicVideoFrame() = runBlocking {
+        val original = "https://lh3.googleusercontent.com/original-album=w600-h600-l90-rj"
+        val source = providerArtworkUrl(original, 2000)
+        val frame = "https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg"
+        fixture(mapOf(source to 600, frame to 2000)) { loader, fetched ->
+            val request = ImageRequest.Builder(context).data(source).size(1600, 1600).allowHardware(false)
+                .precision(Precision.INEXACT)
+                .setParameter(ARTWORK_METADATA_PARAMETER, ArtworkRequestMetadata(original, 2000,
+                    trackId = "yt_abcdefghijk", currentTrack = true, allowVideoFallback = false), null).build()
+            val result = loader.execute(request) as SuccessResult
+            assertEquals(source, result.request.data)
+            assertEquals(600, (result.drawable as BitmapDrawable).bitmap.width)
+            assertEquals(listOf(source), fetched)
+        }
+    }
+
 }

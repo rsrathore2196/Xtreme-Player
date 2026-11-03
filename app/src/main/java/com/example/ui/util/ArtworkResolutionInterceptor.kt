@@ -48,7 +48,8 @@ data class ArtworkRequestMetadata(
     val visibleContent: Boolean = true,
     val visibility: ArtworkVisibility? = null,
     val currentTrack: Boolean = false,
-    val visibleThumbnail: Boolean = false
+    val visibleThumbnail: Boolean = false,
+    val allowVideoFallback: Boolean = true
 )
 
 /** Small visible Home cards need a native thumbnail, not a full-player rendition. */
@@ -220,7 +221,8 @@ class ArtworkResolutionInterceptor : Interceptor {
         else maxOf(metadata.sourceDimension, width, height)
         val originals = listOf(metadata.providerUrl).filter(String::isNotBlank)
         val urls = (originals.map { if (metadata.visibleThumbnail) providerThumbnailUrl(it, sourceDimension) else providerArtworkUrl(it, sourceDimension) } +
-            (if (metadata.visibleThumbnail) originals else emptyList()) + youtubeArtworkAlternatives(metadata.trackId, originals) + originals).distinct()
+            (if (metadata.visibleThumbnail) originals else emptyList()) +
+            (if (metadata.allowVideoFallback) youtubeArtworkAlternatives(metadata.trackId, originals) else emptyList()) + originals).distinct()
         // A smaller view can reuse a larger rendition already fetched by Home or
         // the player. These alternatives are cache probes, never extra downloads.
         val cacheUrls = (urls.take(1) + originals.flatMap { source ->

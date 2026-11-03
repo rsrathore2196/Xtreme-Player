@@ -52,4 +52,17 @@ class NativeHomeLayoutPolicyTest {
         assertEquals(shelf.items.map { (it as ServerHomeItem.Song).copy(track = it.track.copy(audioUrl = "", recommendationOnly = true)) }, restored.items)
         assertEquals(NativeShelfKind.MUSIC_VIDEOS, restored.nativeKind())
     }
+    @Test fun videoShelfKeepsLandscapeThumbnailsWhilePlaybackPrefersTheNativeSquareCover() {
+        val video = video()
+        val thumbs = video.getJSONObject("musicResponsiveListItemRenderer").getJSONObject("thumbnail")
+            .getJSONObject("musicThumbnailRenderer").getJSONObject("thumbnail").getJSONArray("thumbnails")
+        thumbs.put(JSONObject().put("url", "https://lh3.googleusercontent.com/album=w600-h600-l90-rj")
+            .put("width", 600).put("height", 600))
+        val shelf = parse("Music Videos", video)
+        val entry = shelf.items.single() as ServerHomeItem.Song
+        assertEquals(NativeShelfKind.MUSIC_VIDEOS, shelf.nativeKind())
+        assertTrue(entry.landscapeThumbnail.endsWith("hq720.jpg"))
+        assertEquals("https://lh3.googleusercontent.com/album=w600-h600-l90-rj", entry.track.coverUrl)
+    }
+
 }

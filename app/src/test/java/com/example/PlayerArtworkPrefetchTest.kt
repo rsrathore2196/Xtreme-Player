@@ -47,7 +47,10 @@ class PlayerArtworkPrefetchTest {
     }
     @After fun cleanup() { BackgroundWorkCoordinator.foreground(false); TrackPaletteCache.clear(); Dispatchers.resetMain() }
 
-    @Test fun selectedCoverAndColorsArePreparedBeforeOpeningAndReusedByVisibleRequests() = runBlocking {
+    @Test fun selectedCoverAndColorsArePreparedBeforeOpeningAndReusedByVisibleRequests() = preparedCover(false)
+    @Test fun selectedVideoUsesTheResolvedSongCoverForPrefetchPaletteAndPlayerWithoutChangingPlayback() = preparedCover(true)
+
+    private fun preparedCover(videoThumbnail: Boolean) = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val calls = AtomicInteger()
         val events = java.util.concurrent.CopyOnWriteArrayList<String>()
@@ -77,21 +80,32 @@ class PlayerArtworkPrefetchTest {
             .okHttpClient(client).networkObserverEnabled(false).respectCacheHeaders(false)
             .memoryCache { MemoryCache.Builder(context).maxSizeBytes(16 * 1024 * 1024).build() }
             .diskCache { DiskCache.Builder().directory(directory).maxSizeBytes(4L * 1024 * 1024).build() }.build()
+        val originalCover = "https://lh3.googleusercontent.com/catalog=w60-h60-l90-rj"
         val track = MusicTrack("yt_abcdefghijk", "Track", "Artist", "Album", 180_000,
-            "https://lh3.googleusercontent.com/catalog=w60-h60-l90-rj", "audio")
+            if (videoThumbnail) "https://i.ytimg.com/vi/abcdefghijk/hq720.jpg" else originalCover, "audio")
+        val resolvedCover = java.util.concurrent.atomic.AtomicReference<ResolvedPlayerCover?>()
         val tracks = MutableStateFlow<MusicTrack?>(track)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         try {
-            prepareCurrentPlayerArtwork(context, tracks, MutableStateFlow(true), scope) { loader }
+            prepareCurrentPlayerArtwork(context, tracks, MutableStateFlow(true), scope,
+                onCoverResolved = resolvedCover::set,
+                resolveCover = { song -> if (videoThumbnail) originalCover else com.example.data.remote.resolveYouTubePlayerCover(song) }
+            ) { loader }
             val ready = withTimeoutOrNull(5000) { while (TrackPaletteCache.get(track.id) == null) delay(10); true }
             assertTrue("Prefetch must finish: $events", ready == true)
             val metrics = context.resources.displayMetrics
             val pixels = minOf(metrics.widthPixels, metrics.heightPixels).coerceIn(1, 3000)
             val source = mapTargetSizeToArtworkDimension(ImageConfig.PLAYER_SCREEN_SIZE, IntSize(pixels, pixels))
-            val key = playerPaletteKey(track, true, Color.White, Color.Black, providerArtworkUrl(track.coverUrl, source))
+            val artworkTrack = playerCoverState(com.example.playback.PlayerUiState(currentTrack = track), resolvedCover.get()).currentTrack!!
+            assertEquals(originalCover, artworkTrack.coverUrl)
+            assertEquals(track.copy(coverUrl = originalCover), artworkTrack)
+            assertFalse("Song-cover requests must not download video frames: $events",
+                events.any { it.startsWith("https://i.ytimg.com") && it.endsWith("cacheOnly=false") })
+            val key = playerPaletteKey(artworkTrack, true, Color.White, Color.Black, providerArtworkUrl(artworkTrack.coverUrl, source))
             assertNotNull("Opening can initialize the backdrop from its prepared palette", TrackPaletteCache.get(key))
-            val request = buildOptimizedImageRequest(context, track.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE, track,
+            val request = buildOptimizedImageRequest(context, artworkTrack.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE, artworkTrack,
                 decodeSize = IntSize(300, 300), currentTrack = true)
+            if (videoThumbnail) assertFalse(request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.allowVideoFallback)
             val visible = loader.execute(request) as SuccessResult
             assertTrue(visible.dataSource == DataSource.MEMORY_CACHE || visible.dataSource == DataSource.DISK)
             assertEquals("The high-resolution cover, palette and visible target share one source download: $events", 1, calls.get())
@@ -100,4 +114,28 @@ class PlayerArtworkPrefetchTest {
             assertEquals("Audio-source changes must not repeat image downloads", 1, calls.get())
         } finally { scope.coroutineContext[Job]!!.cancelAndJoin(); loader.shutdown(); directory.deleteRecursively() }
     }
+    @Test fun failedSongCoverDownloadDoesNotReplaceTheCurrentArtwork() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val finished = CompletableDeferred<coil.request.ImageResult>()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(404)
+                .message("Missing artwork").body(byteArrayOf().toResponseBody("image/png".toMediaType())).build()
+        }.build()
+        val loader = ImageLoader.Builder(context).components {
+            add(coil.intercept.Interceptor { chain -> chain.proceed(chain.request).also { finished.complete(it) } })
+        }.okHttpClient(client).networkObserverEnabled(false).build()
+        val track = MusicTrack("yt_abcdefghijk", "Track", "Artist", "Album", 180000,
+            "https://i.ytimg.com/vi/abcdefghijk/hq720.jpg", "audio")
+        val published = AtomicInteger()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            prepareCurrentPlayerArtwork(context, MutableStateFlow(track), MutableStateFlow(true), scope,
+                onCoverResolved = { published.incrementAndGet() },
+                resolveCover = { "https://lh3.googleusercontent.com/missing=w600-h600-l90-rj" }
+            ) { loader }
+            assertTrue(withTimeout(5_000) { finished.await() } is coil.request.ErrorResult)
+            assertEquals(0, published.get())
+        } finally { scope.coroutineContext[Job]!!.cancelAndJoin(); loader.shutdown() }
+    }
+
 }

@@ -104,7 +104,8 @@ object YouTubeHomeParser {
                 .takeWhile { it != '•' && it != '·' }.trim()
                 .ifBlank { "YouTube Music" }
 
-            val thumbUrl = YouTubeExploreParser.thumbnail(twoRow)
+            val thumbUrl = YouTubeExploreParser.thumbnail(twoRow, squareOnly = true)
+                .ifBlank { YouTubeExploreParser.thumbnail(twoRow) }
                 .ifBlank { "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg" }
 
             return MusicTrack(

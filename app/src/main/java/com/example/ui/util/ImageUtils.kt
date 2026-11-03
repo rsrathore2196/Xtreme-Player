@@ -261,7 +261,9 @@ internal fun buildOptimizedImageRequest(
         visibleContent = visibleContent,
         visibility = visibility,
         currentTrack = currentTrack,
-        visibleThumbnail = visibleThumbnail
+        visibleThumbnail = visibleThumbnail,
+        // A verified song cover must not be replaced by a larger frame of its music video.
+        allowVideoFallback = !isSelectedSongCover(track?.id, url)
     )
     // Direct provider URL: no Room lookup or search before the image can load.
     val initialUrl = (if (visibleThumbnail) providerThumbnailUrl(url, metadata.sourceDimension) else providerArtworkUrl(url, metadata.sourceDimension)).ifBlank {

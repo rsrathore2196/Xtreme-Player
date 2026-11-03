@@ -723,7 +723,7 @@ object YouTubeMusicApiService {
             if (!YouTubeAudioStreamService.isVideoId(videoId)) return null
 
             // Thumbnail
-            var thumbUrl = YouTubeExploreParser.thumbnail(r)
+            var thumbUrl = YouTubeExploreParser.thumbnail(r, squareOnly = true).ifBlank { YouTubeExploreParser.thumbnail(r) }
             if (thumbUrl.isBlank()) {
                 thumbUrl = "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
             }
