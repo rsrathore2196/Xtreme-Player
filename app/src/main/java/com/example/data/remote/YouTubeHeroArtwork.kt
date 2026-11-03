@@ -28,16 +28,17 @@ internal class YouTubeHeroArtworkResolver(
         locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             cache.get(key)?.takeIf { android.os.SystemClock.elapsedRealtime() < it.first }
                 ?.let { return@withLock it.second }
-            // A supplied video frame already belongs to this recording; no matching request.
             val supplied = frameId(track.coverUrl)
-            if (!track.id.startsWith("yt_") && supplied != null) return@withLock frameUrl(supplied)
             val id = YouTubeAudioStreamService.videoIdFromReference(track.id, track.audioUrl)
                 ?: supplied ?: attempt { seed(track) }?.takeIf(YouTubeAudioStreamService::isVideoId)
             val image = id?.let { video ->
                 attempt {
                     val body = next(video)
-                    withContext(AppDispatchers.CpuBounded) { landscapeCover(JSONObject(body), video) }
-                } ?: frameUrl(video)
+                    withContext(AppDispatchers.CpuBounded) {
+                        val root = JSONObject(body)
+                        landscapeCover(root, video) ?: YouTubePlayerArtworkResolver.counterpartCover(root, video)
+                    }
+                }
             }
             currentCoroutineContext().ensureActive()
             cache.put(key, (android.os.SystemClock.elapsedRealtime() + if (image == null) 60_000L else 24 * 60 * 60_000L) to image)
@@ -51,16 +52,16 @@ internal class YouTubeHeroArtworkResolver(
     catch (_: Exception) { null }
 
     companion object {
-        fun frameUrl(id: String): String? = id.takeIf(YouTubeAudioStreamService::isVideoId)
-            ?.let { "https://i.ytimg.com/vi/$it/maxresdefault.jpg" }
         private fun frameId(url: String): String? {
             val uri = try { URI(url) } catch (_: Exception) { return null }
             val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
             if (host != "img.youtube.com" && !host.endsWith(".ytimg.com")) return null
             return Regex("/(?:vi|vi_webp)/([A-Za-z0-9_-]{11})/").find(uri.path.orEmpty())?.groupValues?.get(1)
         }
-        fun initial(track: MusicTrack): String? = YouTubeAudioStreamService.videoIdFromReference(track.id, track.audioUrl)
-            ?.let(::frameUrl) ?: frameId(track.coverUrl)?.let(::frameUrl)
+        // Audio-only uploads have video IDs too. Their generated widescreen frames
+        // often contain a square cover with baked-in blurred sides. Use the supplied
+        // cover until native metadata supplies a real landscape music-video image.
+        fun initial(track: MusicTrack): String? = track.coverUrl.takeIf(String::isNotBlank)
 
         /** A linked native music video may illustrate an audio track; unrelated queue items cannot. */
         fun landscapeCover(root: JSONObject, videoId: String): String? {
@@ -68,7 +69,8 @@ internal class YouTubeHeroArtworkResolver(
                 val type = renderer.optJSONObject("navigationEndpoint")?.optJSONObject("watchEndpoint")
                     ?.optJSONObject("watchEndpointMusicSupportedConfigs")?.optJSONObject("watchEndpointMusicConfig")
                     ?.optString("musicVideoType").orEmpty()
-                if (renderer.has("unplayableText") || type == "MUSIC_VIDEO_TYPE_ATV" ||
+                if (renderer.has("unplayableText") ||
+                    type !in setOf("MUSIC_VIDEO_TYPE_OMV", "MUSIC_VIDEO_TYPE_UGC") ||
                     !YouTubeAudioStreamService.isVideoId(renderer.optString("videoId"))) return null
                 return YouTubeExploreParser.thumbnail(renderer, landscapeOnly = true).takeIf(String::isNotBlank)
             }

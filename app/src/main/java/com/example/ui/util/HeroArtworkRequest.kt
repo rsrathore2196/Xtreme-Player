@@ -22,9 +22,10 @@ internal fun rememberHeroArtworkRequest(track: MusicTrack, size: IntSize,
     val context = LocalContext.current
     val active = LocalArtworkRequestsActive.current
     val identity = heroArtworkIdentity(track)
-    var source by remember(identity) { mutableStateOf(YouTubeHeroArtworkResolver.initial(track) ?: track.coverUrl) }
+    val fallback = track.coverUrl
+    var source by remember(identity, fallback) { mutableStateOf(YouTubeHeroArtworkResolver.initial(track) ?: fallback) }
     val currentResolver by rememberUpdatedState(resolve)
-    LaunchedEffect(identity, active) {
+    LaunchedEffect(identity, fallback, active) {
         if (active) {
             val image = try { loadVisibleHeroArtwork { currentResolver(track) } }
             catch (cancelled: CancellationException) { throw cancelled }
@@ -34,7 +35,15 @@ internal fun rememberHeroArtworkRequest(track: MusicTrack, size: IntSize,
     }
     val visibility = remember(identity, source) { ArtworkVisibility(active) }
     SideEffect { visibility.active.value = active }
-    return remember(context, source, size, visibility) { buildHeroArtworkRequest(context, source, size, visibility) }
+    return remember(context, source, fallback, size, visibility) {
+        val requestedSource = source
+        buildHeroArtworkRequest(context, requestedSource, size, visibility).newBuilder()
+            .listener(onError = { _, _ ->
+                // A removed/unavailable video image must leave the supplied cover
+                // filling the card, rather than a failed image or a fabricated frame.
+                if (source == requestedSource && fallback.isNotBlank() && requestedSource != fallback) source = fallback
+            }).build()
+    }
 }
 
 /** Optional Hero metadata shares discovery admission; audio resolution keeps priority.
@@ -70,7 +79,10 @@ internal fun buildHeroArtworkRequest(context: Context, source: String, size: Int
     val metadata = base.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!
     return base.newBuilder()
         .data(nativeSource)
-        .setParameter(ARTWORK_METADATA_PARAMETER, metadata.copy(providerUrl = source, landscapeArtwork = true), null)
+        .setParameter(ARTWORK_METADATA_PARAMETER, metadata.copy(providerUrl = source, landscapeArtwork = true,
+            // Use only the native source selected above. Generic video-frame
+            // alternatives can reintroduce an audio upload's blurred side panels.
+            allowVideoFallback = false), null)
         .memoryCacheKey("hero-landscape:$nativeSource")
         .diskCacheKey(nativeSource)
         .placeholderMemoryCacheKey(null as String?)

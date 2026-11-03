@@ -45,7 +45,16 @@ import javax.imageio.ImageIO
 class HeroArtworkFillUiTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun squarePlayerCoverNeverFlashesBeforeTheSeparateHeroFrameIsReady() {
+    @org.junit.Before fun idleArtworkAdmission() {
+        com.example.performance.BackgroundWorkCoordinator.foreground(false)
+        com.example.performance.BackgroundWorkCoordinator.scrolling(false)
+        com.example.recommendation.DiscoveryRequestCoordinator.homeScrolling(false)
+        // Model a quiet UI interval in Robolectric's paused system clock. Cover
+        // lookup deliberately waits for input quiet, independently of image hits.
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(1))
+    }
+
+    @Test fun squareCoverFillsTheHeroUntilGenuineLandscapeArtworkIsReady() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val previous = Coil.imageLoader(context)
         val release = CompletableDeferred<Unit>()
@@ -57,13 +66,6 @@ class HeroArtworkFillUiTest {
             }
         }
         val loader = ImageLoader.Builder(context).components {
-            add(Interceptor { chain ->
-                if (chain.request.data.toString().contains("i.ytimg.com")) {
-                    loading.set(true)
-                    release.await()
-                }
-                chain.proceed(chain.request)
-            })
             add(object : Fetcher.Factory<Any> {
                 override fun create(data: Any, options: Options, imageLoader: ImageLoader): Fetcher = Fetcher {
                     val bitmap = if (data.toString().contains("googleusercontent"))
@@ -86,8 +88,17 @@ class HeroArtworkFillUiTest {
             compose.waitUntil(5_000) { org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); preload.isDone }
             assertTrue(preload.get() is SuccessResult)
             assertNotNull(loader.memoryCache?.get(coil.memory.MemoryCache.Key(track.coverUrl)))
-            compose.setContent { MaterialTheme { InfiniteRadioHeroCard(track, null, false, onPlayInfiniteRadio = {}, artworkResolver = { videoUrl }) } }
+            compose.setContent { MaterialTheme { InfiniteRadioHeroCard(track, null, false, onPlayInfiniteRadio = {}, artworkResolver = {
+                loading.set(true)
+                release.await()
+                videoUrl
+            }) } }
             compose.waitUntil(5_000) { org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); loading.get() }
+            compose.waitUntil(5_000) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                loader.memoryCache?.keys?.any { it.key == "hero-landscape:${track.coverUrl}" } == true
+            }
+            compose.mainClock.advanceTimeBy(250); compose.waitForIdle()
             val node = compose.onNodeWithTag("infinite_radio_hero_card")
             fun colors(label: String): List<java.awt.Color> {
                 val file = File("/tmp/hero-first-frame-$label.png")
@@ -97,12 +108,12 @@ class HeroArtworkFillUiTest {
             }
             val bounds = node.fetchSemanticsNode().boundsInRoot
             for (color in colors("pending"))
-                assertFalse("A square player cover must never flash in the Hero: $color", color.red > color.green + 30)
+                assertTrue("The square fallback must fill both Hero edges: $color", color.red > color.green + 30)
             release.complete(Unit)
             // Wait for the independent native frame, then verify it keeps its landscape content.
             compose.waitUntil(5_000) {
                 org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
-                loader.memoryCache?.keys?.any { it.key.startsWith("hero-landscape:") } == true
+                loader.memoryCache?.keys?.any { it.key == "hero-landscape:$videoUrl" } == true
             }
             compose.mainClock.advanceTimeBy(250); compose.waitForIdle()
             for (color in colors("ready")) assertTrue("The native frame's sides must remain visible: $color", color.green > color.red)
@@ -150,7 +161,7 @@ class HeroArtworkFillUiTest {
             assertTrue(cached.get() is SuccessResult)
             assertEquals(fetches, requests.get())
             complete.set(false)
-            compose.setContent { MaterialTheme { InfiniteRadioHeroCard(track, null, false, onPlayInfiniteRadio = {}) } }
+            compose.setContent { MaterialTheme { InfiniteRadioHeroCard(track, null, false, onPlayInfiniteRadio = {}, artworkResolver = { null }) } }
             compose.waitForIdle()
             compose.waitUntil(5_000) { org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); complete.get() }
             assertNull(failure.get()?.stackTraceToString(), failure.get())
@@ -170,5 +181,59 @@ class HeroArtworkFillUiTest {
             assertEquals(before, node.fetchSemanticsNode().boundsInRoot)
             assertEquals("Returning to the same artwork must reuse Coil's Hero cache", displayedFetches, requests.get())
         } finally { Coil.setImageLoader(previous); loader.shutdown() }
+    }
+
+    @Test fun unavailableVideoImageFallsBackToACroppedSquareCoverAcrossTheWholeHero() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val previous = Coil.imageLoader(context)
+        val release = CompletableDeferred<Unit>()
+        val resolving = AtomicBoolean()
+        val requested = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val square = Bitmap.createBitmap(900, 900, Bitmap.Config.ARGB_8888).also {
+            Canvas(it).apply {
+                drawColor(android.graphics.Color.GREEN)
+                // A correct full-cover crop removes top/bottom, not the left/right.
+                drawRect(0f, 200f, 900f, 700f, Paint().apply { color = android.graphics.Color.MAGENTA })
+            }
+        }
+        val loader = ImageLoader.Builder(context).components {
+            add(object : Fetcher.Factory<Any> {
+                override fun create(data: Any, options: Options, imageLoader: ImageLoader): Fetcher = Fetcher {
+                    requested.add(data.toString())
+                    if (data.toString().contains("native-video")) throw java.io.IOException("Video cover unavailable")
+                    DrawableResult(BitmapDrawable(context.resources, square), false, DataSource.MEMORY_CACHE)
+                }
+            })
+        }.build()
+        Coil.setImageLoader(loader)
+        val cover = "https://lh3.googleusercontent.com/square-cover=w900-h900-l90-rj"
+        val video = "https://lh3.googleusercontent.com/native-video=w1280-h720-l90-rj"
+        val track = MusicTrack("yt_abcdefghijk", "Song", "Artist", "Album", 180_000, cover, "audio")
+        try {
+            compose.setContent { MaterialTheme { InfiniteRadioHeroCard(track, null, false, onPlayInfiniteRadio = {}, artworkResolver = {
+                resolving.set(true); release.await(); video
+            }) } }
+            compose.waitUntil(5_000) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                resolving.get() && loader.memoryCache?.keys?.any { it.key == "hero-landscape:$cover" } == true
+            }
+            val node = compose.onNodeWithTag("infinite_radio_hero_card")
+            val bounds = node.fetchSemanticsNode().boundsInRoot
+            release.complete(Unit)
+            compose.waitUntil(5_000) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                requested.any { it.contains("native-video") }
+            }
+            compose.mainClock.advanceTimeBy(500); compose.waitForIdle()
+            val file = File("/tmp/hero-square-fallback.png")
+            node.captureRoboImage(file.absolutePath, RoborazziOptions(taskType = RoborazziTaskType.Record))
+            val rendered = ImageIO.read(file)
+            for (x in listOf(8, 50, 92)) {
+                val color = java.awt.Color(rendered.getRGB(rendered.width * x / 100, rendered.height * 22 / 100))
+                assertTrue("The cropped square artwork must cover the card, including both sides: $color", color.red > color.green + 30)
+            }
+            assertTrue("Do not fabricate a YouTube thumbnail after a native image fails", requested.none { it.contains("ytimg.com") })
+            assertEquals(bounds, node.fetchSemanticsNode().boundsInRoot)
+        } finally { release.complete(Unit); Coil.setImageLoader(previous); loader.shutdown() }
     }
 }

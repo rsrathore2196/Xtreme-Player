@@ -45,6 +45,11 @@ class HeroArtworkSourceTest {
         assertEquals(landscape, YouTubeHeroArtworkResolver.landscapeCover(related(), "abcdefghijk"))
         assertNull(YouTubeHeroArtworkResolver.landscapeCover(related(primaryId = "00000000001"), "abcdefghijk"))
         assertNull(YouTubeHeroArtworkResolver.landscapeCover(related(square = true), "abcdefghijk"))
+        for (type in listOf("MUSIC_VIDEO_TYPE_ATV", "")) {
+            val padded = JSONObject().put("contents", JSONObject().put("playlistPanelVideoRenderer",
+                panel("abcdefghijk", "https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg", 1280, 720, type)))
+            assertNull("Landscape dimensions alone do not identify a music video", YouTubeHeroArtworkResolver.landscapeCover(padded, "abcdefghijk"))
+        }
     }
     @Test fun heroKeepsTheRectangleWhenRequestingLargerArtworkAndPlayerKeepsItsSquare() {
         val source = "https://lh3.googleusercontent.com/music-video=w544-h306-l90-rj"
@@ -62,9 +67,42 @@ class HeroArtworkSourceTest {
         assertTrue(player.data.toString().contains("album="))
         assertEquals("https://lh3.googleusercontent.com/album=w600-h600-l90-rj", track.coverUrl)
     }
-    @Test fun aKnownVideoFrameCanBeShownImmediatelyWithoutUsingTheAlbumCover() {
-        assertEquals("https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg", YouTubeHeroArtworkResolver.initial(track))
-        assertNull(YouTubeHeroArtworkResolver.initial(track.copy(id = "online_song")))
+    @Test fun aSongIdDoesNotInventAPaddedWidescreenFrameForTheInitialCover() {
+        assertEquals(track.coverUrl, YouTubeHeroArtworkResolver.initial(track))
+        assertEquals(track.coverUrl, YouTubeHeroArtworkResolver.initial(track.copy(id = "online_song")))
+        assertNull(YouTubeHeroArtworkResolver.initial(track.copy(coverUrl = "")))
+    }
+    @Test fun anAudioOnlyResponseUsesItsSquareCoverInsteadOfItsGeneratedVideoFrame() = runBlocking {
+        val calls = AtomicInteger()
+        val audio = JSONObject().put("contents", JSONObject().put("playlistPanelVideoRenderer",
+            panel("abcdefghijk", track.coverUrl, 600, 600, "MUSIC_VIDEO_TYPE_ATV")))
+        val resolver = YouTubeHeroArtworkResolver({ calls.incrementAndGet(); audio.toString() }, { error("No seed lookup needed") })
+        val suppliedFrame = track.copy(coverUrl = "https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg")
+        assertEquals(track.coverUrl, resolver.resolve(suppliedFrame))
+        assertEquals(1, calls.get())
+        assertTrue("Presentation lookup leaves playback artwork intact", suppliedFrame.coverUrl.contains("ytimg.com"))
+    }
+    @Test fun absentVideoOrFailedDiscoveryLeavesTheExistingCoverWithoutFabricatingAFrame() = runBlocking {
+        val missing = YouTubeHeroArtworkResolver({ "{}" }, { null })
+        assertNull(missing.resolve(track))
+        val calls = AtomicInteger()
+        val failed = YouTubeHeroArtworkResolver({ calls.incrementAndGet(); throw java.io.IOException("Unavailable") }, { null })
+        assertNull(failed.resolve(track))
+        assertNull(failed.resolve(track))
+        assertEquals("A transient failure must not repeat a request during recomposition", 1, calls.get())
+    }
+    @Test fun suppliedCatalogVideoFramesStillUseNativePairingBeforeKeepingAnAudioUploadFrame() = runBlocking {
+        val calls = AtomicInteger()
+        val resolver = YouTubeHeroArtworkResolver({ calls.incrementAndGet(); related().toString() }, { error("Frame supplies its native ID") })
+        assertEquals(landscape, resolver.resolve(track.copy(id = "catalog_track",
+            coverUrl = "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg")))
+        assertEquals(1, calls.get())
+    }
+    @Test fun squareFallbackRequestsStaySquareAndDoNotTryGenericVideoFrames() {
+        val request = buildHeroArtworkRequest(ApplicationProvider.getApplicationContext<Application>(), track.coverUrl, IntSize(1000, 720))
+        assertTrue(request.data.toString().contains("album=w1000-h1000"))
+        assertFalse(request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.allowVideoFallback)
+        assertEquals(coil.size.Scale.FILL, request.scale)
     }
     @Test fun heroDiscoveryIsCachedAndDoesNotChangeTheSongOrItsAudio() = runBlocking {
         val calls = AtomicInteger()
