@@ -18,6 +18,7 @@ import coil.size.Precision
 import com.example.data.model.MusicTrack
 import com.example.data.remote.resolveYouTubePlayerCover
 import com.example.data.remote.playerCoverIdentity
+import com.example.data.remote.playerCoverLookupIdentity
 import com.example.playback.PlayerUiState
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -70,7 +71,7 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
     resolveCover: suspend (MusicTrack) -> String? = ::resolveYouTubePlayerCover,
     loaderFor: (Context) -> ImageLoader = { it.imageLoader }
 ): Job = scope.launch(AppDispatchers.Io) {
-    combine(tracks.distinctUntilChanged { a, b -> a?.id == b?.id && a?.coverUrl == b?.coverUrl },
+    combine(tracks.distinctUntilChanged { a, b -> a === b || a != null && b != null && playerCoverLookupIdentity(a) == playerCoverLookupIdentity(b) },
         foreground.distinctUntilChanged()) { track, visible -> track to visible }
         .collectLatest { (track, visible) ->
             if (track == null || !visible) return@collectLatest

@@ -295,6 +295,7 @@ fun ExpandedPlayerScreen(
     val track = uiState.currentTrack ?: return
     val playerMorph = LocalPlayerExpansionMotion.current
     var morphArtworkReady by remember(track.id, track.coverUrl) { mutableStateOf(false) }
+    var rectangularArtwork by remember(track.id, track.coverUrl) { mutableStateOf(false) }
     val morphAnimating by remember(playerMorph) { derivedStateOf { playerMorph?.transitioning == true } }
     val playerMarqueeMode = if (playerMorph?.covered != false) androidx.compose.foundation.MarqueeAnimationMode.Immediately
         else androidx.compose.foundation.MarqueeAnimationMode.WhileFocused
@@ -720,7 +721,7 @@ fun ExpandedPlayerScreen(
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
                                             }
-                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp), appColors.dynamicAlbumGlow, showArtworkFront)
+                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp), appColors.dynamicAlbumGlow, showArtworkFront && !rectangularArtwork)
                                             .clip(RoundedCornerShape(22.dp))
                                             .clickable {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -730,11 +731,9 @@ fun ExpandedPlayerScreen(
                                     ) {
                                         if (showArtworkFront) {
                                             // One untinted provider cover; never substitute unrelated artwork or video.
-                                            AsyncImage(
-                                                model = highResImageRequest,
-                                                onSuccess = { morphArtworkReady = true },
-                                                contentScale = ContentScale.Crop,
-                                                contentDescription = "Cover Art - Tap to flip",
+                                            PlayerCoverArtwork(
+                                                request = highResImageRequest,
+                                                onReady = { rectangularArtwork = it; morphArtworkReady = true },
                                                 modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(22.dp))
                                             )
                                         } else {
@@ -1674,7 +1673,7 @@ fun ExpandedPlayerScreen(
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
                                             }
-                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp), appColors.dynamicAlbumGlow, showArtworkFront)
+                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp), appColors.dynamicAlbumGlow, showArtworkFront && !rectangularArtwork)
                                             .clip(RoundedCornerShape(24.dp))
                                             .clickable {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1686,13 +1685,11 @@ fun ExpandedPlayerScreen(
                                     if (showArtworkFront) {
                                         // Keep the cover untinted; full-screen edges dissolve into
                                         // the existing album backdrop instead of ending at a hard seam.
-                                        AsyncImage(
-                                            model = highResImageRequest,
-                                            onSuccess = { morphArtworkReady = true },
-                                            contentScale = ContentScale.Crop,
-                                            contentDescription = "Cover Art - Tap to flip",
+                                        PlayerCoverArtwork(
+                                            request = highResImageRequest,
+                                            fullScreen = isFullScreenArt,
+                                            onReady = { rectangularArtwork = it; morphArtworkReady = true },
                                             modifier = Modifier.fillMaxSize()
-                                                .playerArtworkEdgeBlend(isFullScreenArt)
                                                 .clip(if (isFullScreenArt) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp))
                                         )
                                     } else {
@@ -2558,7 +2555,26 @@ private fun Modifier.playerBackdropBlur(radius: Dp): Modifier {
     }
 }
 
-internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean): Modifier = if (!enabled) this else
+/** Square covers retain their presentation. A rectangular fallback fits in full,
+ * revealing the existing blurred player backdrop above/below, with soft image edges.
+ * It reuses the same Coil request; there is no second blur or image decode. */
+@Composable
+internal fun PlayerCoverArtwork(request: ImageRequest, modifier: Modifier = Modifier,
+    fullScreen: Boolean = false, onReady: (Boolean) -> Unit = {}) {
+    var aspect by remember(request.data) { mutableFloatStateOf(0f) }
+    val rectangular = aspect > 1.05f
+    AsyncImage(model = request, contentDescription = "Cover Art - Tap to flip",
+        contentScale = if (rectangular || !fullScreen || aspect == 0f) ContentScale.Fit else ContentScale.Crop,
+        onSuccess = { result ->
+            val bitmap = (result.result.drawable as? BitmapDrawable)?.bitmap
+            val width = bitmap?.width ?: result.result.drawable.intrinsicWidth
+            val height = bitmap?.height ?: result.result.drawable.intrinsicHeight
+            aspect = if (width > 0 && height > 0) width.toFloat() / height else 1f
+            onReady(aspect > 1.05f)
+        }, modifier = modifier.playerArtworkEdgeBlend(fullScreen || rectangular, aspect.takeIf { rectangular }))
+}
+
+internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean, imageAspectRatio: Float? = null): Modifier = if (!enabled) this else
     graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
         .drawWithCache {
             // Alpha only: preserve the center's original pixels, without a black,
@@ -2567,17 +2583,24 @@ internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean): Modifier = if (!
             // use a smooth ramp with zero slope at both ends. Linear fades ended
             // abruptly against contrasting artwork and exposed a horizontal seam.
             val stops = ArrayList<Pair<Float, Color>>(52)
+            val rectangular = imageAspectRatio != null
+            val fade = if (rectangular) 0.06f else 0.22f
+            val margin = if (rectangular) 0f else 0.02f
             for (i in 0..24) {
                 val t = i / 24f
                 val alpha = t * t * (3f - 2f * t)
-                stops += (0.02f + t * 0.22f) to Color.White.copy(alpha = alpha)
+                stops += (margin + t * fade) to Color.White.copy(alpha = alpha)
             }
             for (i in 0..24) {
                 val t = i / 24f
                 val alpha = 1f - t * t * (3f - 2f * t)
-                stops += (0.76f + t * 0.22f) to Color.White.copy(alpha = alpha)
+                stops += (1f - margin - fade + t * fade) to Color.White.copy(alpha = alpha)
             }
-            val edges = Brush.verticalGradient(*stops.toTypedArray())
+            // Fit bounds can be much shorter than the square/fullscreen host.
+            // Apply the fade at the actual rectangle, not at the host's margins.
+            val imageHeight = imageAspectRatio?.let { minOf(size.height, size.width / it) } ?: size.height
+            val top = (size.height - imageHeight) / 2f
+            val edges = Brush.verticalGradient(*stops.toTypedArray(), startY = top, endY = top + imageHeight)
             onDrawWithContent {
                 drawContent()
                 drawRect(edges, blendMode = BlendMode.DstIn)

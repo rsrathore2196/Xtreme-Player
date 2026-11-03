@@ -223,7 +223,8 @@ class ArtworkResolutionInterceptor : Interceptor {
         val originals = listOf(metadata.providerUrl).filter(String::isNotBlank)
         val urls = (originals.map {
             when {
-                metadata.landscapeArtwork -> heroLandscapeSourceUrl(it, androidx.compose.ui.unit.IntSize(width, height))
+                metadata.landscapeArtwork -> aspectPreservingArtworkUrl(it, androidx.compose.ui.unit.IntSize(width, height))
+                metadata.currentTrack -> aspectPreservingArtworkUrl(it, androidx.compose.ui.unit.IntSize(sourceDimension, sourceDimension))
                 metadata.visibleThumbnail -> providerThumbnailUrl(it, sourceDimension)
                 else -> providerArtworkUrl(it, sourceDimension)
             }
@@ -233,7 +234,10 @@ class ArtworkResolutionInterceptor : Interceptor {
         // A smaller view can reuse a larger rendition already fetched by Home or
         // the player. These alternatives are cache probes, never extra downloads.
         val cacheUrls = if (metadata.landscapeArtwork) urls else (urls.take(1) + originals.flatMap { source ->
-            listOf(600, 1200, 2000, 3000, 200).map { providerArtworkUrl(source, it) }
+            listOf(600, 1200, 2000, 3000, 200).map {
+                if (metadata.currentTrack) aspectPreservingArtworkUrl(source, androidx.compose.ui.unit.IntSize(it, it))
+                else providerArtworkUrl(source, it)
+            }
         } + urls.drop(1)).distinct()
         val attempted = mutableSetOf<String>()
         val cachedImages = mutableMapOf<String, SuccessResult?>()

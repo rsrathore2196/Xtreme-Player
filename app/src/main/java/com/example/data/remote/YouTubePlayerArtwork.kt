@@ -27,11 +27,11 @@ internal class YouTubePlayerArtworkResolver(
 
     suspend fun resolve(track: MusicTrack): String? = withContext(AppDispatchers.Io) {
         if (!needsSongCover(track)) return@withContext null
-        val key = playerCoverIdentity(track)
+        val key = playerCoverLookupIdentity(track)
         locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
             cache.get(key)?.takeIf { android.os.SystemClock.elapsedRealtime() < it.first }
                 ?.let { return@withLock it.second }
-            val videoId = track.id.removePrefix("yt_")
+            val videoId = YouTubeAudioStreamService.videoIdFromReference(track.id, track.audioUrl) ?: return@withLock null
             val linked = attempt {
                 val body = next(videoId)
                 withContext(AppDispatchers.CpuBounded) { counterpartCover(JSONObject(body), videoId) }
@@ -60,7 +60,8 @@ internal class YouTubePlayerArtworkResolver(
 
     companion object {
         fun needsSongCover(track: MusicTrack): Boolean {
-            if (!track.id.startsWith("yt_") || !YouTubeAudioStreamService.isVideoId(track.id.removePrefix("yt_"))) return false
+            if (YouTubeAudioStreamService.videoIdFromReference(track.id, track.audioUrl) == null) return false
+            if (track.coverUrl.isBlank()) return true
             val uri = try { URI(track.coverUrl) } catch (_: Exception) { return false }
             val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
             if (host == "img.youtube.com" || host.endsWith(".ytimg.com")) return true
@@ -69,8 +70,22 @@ internal class YouTubePlayerArtworkResolver(
             return host.endsWith(".googleusercontent.com") || host.endsWith(".ggpht.com")
         }
 
-        private fun square(value: JSONObject): String? = YouTubeExploreParser.thumbnail(value, squareOnly = true)
-            .takeIf { it.isNotBlank() && !isVideoImage(it) }
+        private fun square(value: JSONObject): String? {
+            val declared = YouTubeExploreParser.thumbnail(value, squareOnly = true)
+                .takeIf { it.isNotBlank() && !isVideoImage(it) }
+            if (declared != null) return declared
+            // Some native song thumbnails omit dimensions but retain an explicit
+            // square Google rendition. Never infer square art from a video URL.
+            return first(value.optJSONObject("thumbnailRenderer") ?: value.optJSONObject("thumbnail") ?: value.optJSONObject("image")) { node ->
+                val url = node.optString("url")
+                val host = try { URI(url).host.orEmpty().lowercase(java.util.Locale.ROOT) } catch (_: Exception) { "" }
+                if (!(host.endsWith(".googleusercontent.com") || host.endsWith(".ggpht.com")) ||
+                    !url.startsWith("https://") || node.optInt("width") > 0 || node.optInt("height") > 0) return@first null
+                val w = Regex("(?:=|-)w(\\d+)").find(url)?.groupValues?.get(1)?.toIntOrNull()
+                val h = Regex("(?:=|-)h(\\d+)").find(url)?.groupValues?.get(1)?.toIntOrNull()
+                url.takeIf { w != null && w > 0 && w == h || Regex("=s[1-9][0-9]*(?:-|$)").containsMatchIn(url) }
+            }
+        }
         private fun isVideoImage(url: String): Boolean {
             val host = try { URI(url).host.orEmpty() } catch (_: Exception) { return true }
             return host == "img.youtube.com" || host.endsWith(".ytimg.com")
@@ -112,7 +127,16 @@ internal class YouTubePlayerArtworkResolver(
                 ?.optString("musicVideoType").orEmpty()
             if (type.isNotBlank() && type != "MUSIC_VIDEO_TYPE_ATV") return@first null
             val candidate = YouTubeMusicApiService.parseAnyRenderer(node) ?: return@first null
-            if (RecordingIdentity.providerConfidence(track, candidate) != null) cover else null
+            // Official videos can include an intro/outro absent from the audio
+            // recording. For artwork only, retain exact title/artist/version/ISRC
+            // checks without requiring the two edits to have the same duration.
+            val videoFrame = isVideoImage(track.coverUrl) || run {
+                val w = Regex("(?:=|-)w(\\d+)").find(track.coverUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                val h = Regex("(?:=|-)h(\\d+)").find(track.coverUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                h > 0 && w > h
+            }
+            if (RecordingIdentity.providerConfidence(track, candidate) != null || videoFrame &&
+                RecordingIdentity.providerConfidence(track.copy(durationMs = 0), candidate.copy(durationMs = 0)) != null) cover else null
         }
 
         private fun first(root: Any?, read: (JSONObject) -> String?): String? {
@@ -131,6 +155,7 @@ internal class YouTubePlayerArtworkResolver(
 }
 
 internal fun playerCoverIdentity(track: MusicTrack) = "${track.id}|${track.title}|${track.artist}|${track.album}|${track.coverUrl}"
+internal fun playerCoverLookupIdentity(track: MusicTrack) = "${playerCoverIdentity(track)}|${track.durationMs}|${track.primaryArtists.joinToString()}"
 
 private val playerCoverResolver = YouTubePlayerArtworkResolver(
     next = { id -> YouTubeAudioStreamService.discoveryResponse("related", id,

@@ -6,6 +6,10 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.drawable.BitmapDrawable
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -22,6 +26,7 @@ import coil.request.SuccessResult
 import coil.request.ErrorResult
 import coil.intercept.Interceptor
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import com.example.data.model.MusicTrack
 import com.example.ui.components.InfiniteRadioHeroCard
 import com.github.takahirom.roborazzi.*
@@ -52,6 +57,73 @@ class HeroArtworkFillUiTest {
         // Model a quiet UI interval in Robolectric's paused system clock. Cover
         // lookup deliberately waits for input quiet, independently of image hits.
         org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(1))
+    }
+
+    @Test fun lazyScrollReentryKeepsTheChosenHeroImageWithoutRepeatingDiscoveryOrFetch() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val previous = Coil.imageLoader(context)
+        val fetches = AtomicInteger()
+        val lookups = AtomicInteger()
+        val mounted = AtomicInteger()
+        val image = Bitmap.createBitmap(320, 180, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.GREEN) }
+        val loader = ImageLoader.Builder(context).components {
+            add(object : Fetcher.Factory<Any> {
+                override fun create(data: Any, options: Options, imageLoader: ImageLoader) = Fetcher {
+                    fetches.incrementAndGet()
+                    DrawableResult(BitmapDrawable(context.resources, image), false, DataSource.MEMORY_CACHE)
+                }
+            })
+        }.build()
+        Coil.setImageLoader(loader)
+        lateinit var list: androidx.compose.foundation.lazy.LazyListState
+        lateinit var scope: kotlinx.coroutines.CoroutineScope
+        var track by mutableStateOf(MusicTrack("yt_abcdefghijk", "Song", "Artist", "Album", 180000,
+            "https://lh3.googleusercontent.com/square=w600-h600-l90-rj", "audio"))
+        fun native(song: MusicTrack) = "https://lh3.googleusercontent.com/native-${song.id}=w800-h450-l90-rj"
+        try {
+            compose.setContent { MaterialTheme {
+                list = androidx.compose.foundation.lazy.rememberLazyListState()
+                scope = rememberCoroutineScope()
+                androidx.compose.foundation.lazy.LazyColumn(Modifier.size(360.dp, 300.dp), state = list) {
+                    item("hero") {
+                        DisposableEffect(Unit) { mounted.incrementAndGet(); onDispose { mounted.decrementAndGet() } }
+                        InfiniteRadioHeroCard(track, null, false, onPlayInfiniteRadio = {}, artworkResolver = {
+                            lookups.incrementAndGet(); native(it)
+                        })
+                    }
+                    items(30) { androidx.compose.foundation.layout.Spacer(Modifier.height(100.dp)) }
+                }
+            } }
+            fun waitForImage() = compose.waitUntil(5_000) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                loader.memoryCache?.keys?.any { it.key == "hero-landscape:${native(track)}" } == true
+            }
+            waitForImage()
+            val before = fetches.get()
+            fun waitForMounts(expected: Int) = try { compose.waitUntil(5_000) {
+                org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
+                compose.mainClock.advanceTimeBy(64)
+                compose.waitForIdle()
+                mounted.get() == expected
+            } } catch (failure: androidx.compose.ui.test.ComposeTimeoutException) {
+                throw AssertionError("mounted=${mounted.get()} expected=$expected first=${list.firstVisibleItemIndex} visible=${list.layoutInfo.visibleItemsInfo.map { it.key }}", failure)
+            }
+            repeat(2) {
+                compose.runOnIdle { scope.launch { list.scrollToItem(25) } }
+                waitForMounts(0)
+                compose.runOnIdle { scope.launch { list.scrollToItem(0) } }
+                waitForMounts(1)
+                compose.waitForIdle()
+                assertEquals("The chosen image survives LazyColumn disposal", 1, lookups.get())
+                assertEquals("Coil reuses the original Hero source immediately", before, fetches.get())
+            }
+            compose.runOnIdle { scope.launch { list.scrollToItem(25) } }
+            waitForMounts(0)
+            compose.runOnIdle { track = track.copy(id = "yt_zyxwvutsrqp", title = "Next song") }
+            compose.runOnIdle { scope.launch { list.scrollToItem(0) } }
+            waitForImage()
+            assertEquals("A changed seed gets its own illustration", 2, lookups.get())
+        } finally { Coil.setImageLoader(previous); loader.shutdown() }
     }
 
     @Test fun squareCoverFillsTheHeroUntilGenuineLandscapeArtworkIsReady() {

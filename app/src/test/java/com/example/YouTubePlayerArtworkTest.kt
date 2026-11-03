@@ -129,4 +129,33 @@ class YouTubePlayerArtworkTest {
         assertEquals(square, resolver.resolve(video))
     }
 
+    @Test fun nativeSquareRenditionWithoutDimensionFieldsIsNotMissed() {
+        val root = linked()
+        val photo = root.getJSONObject("contents").getJSONObject("playlistPanelVideoWrapperRenderer")
+            .getJSONArray("counterpart").getJSONObject(0).getJSONObject("counterpartRenderer")
+            .getJSONObject("playlistPanelVideoRenderer").getJSONObject("thumbnail")
+            .getJSONArray("thumbnails").getJSONObject(0)
+        photo.remove("width"); photo.remove("height")
+        assertEquals(square, YouTubePlayerArtworkResolver.counterpartCover(root, videoId))
+        photo.put("url", "https://lh3.googleusercontent.com/album=s600-l90-rj")
+        assertEquals(photo.getString("url"), YouTubePlayerArtworkResolver.counterpartCover(root, videoId))
+        photo.put("url", "https://lh3.googleusercontent.com/unknown")
+        assertNull(YouTubePlayerArtworkResolver.counterpartCover(root, videoId))
+    }
+
+    @Test fun videoIntrosDoNotHideAnExactSongCoverButWrongArtistsAndVersionsStillFail() {
+        val extendedVideo = video.copy(durationMs = 230_000)
+        assertEquals(square, YouTubePlayerArtworkResolver.matchingSongCover(search(song()), extendedVideo))
+        assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song(artist = "Other Singer")), extendedVideo))
+        assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song(title = "Song 1 (Live)")), extendedVideo))
+        assertNull("Normal audio matches retain duration checks", YouTubePlayerArtworkResolver.matchingSongCover(
+            search(song()), extendedVideo.copy(coverUrl = square)))
+    }
+
+    @Test fun missingThumbnailAndImportedYoutubeReferencesStillFindTheNativeSquare() = runBlocking {
+        val resolver = YouTubePlayerArtworkResolver({ assertEquals(videoId, it); linked().toString() }, { error("No search") })
+        assertEquals(square, resolver.resolve(video.copy(coverUrl = "")))
+        assertEquals(square, resolver.resolve(video.copy(id = "imported-song", audioUrl = "https://music.youtube.com/watch?v=$videoId")))
+    }
+
 }

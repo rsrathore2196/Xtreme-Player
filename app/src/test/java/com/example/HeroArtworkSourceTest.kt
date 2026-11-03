@@ -55,7 +55,7 @@ class HeroArtworkSourceTest {
         val source = "https://lh3.googleusercontent.com/music-video=w544-h306-l90-rj"
         val context = ApplicationProvider.getApplicationContext<Application>()
         val size = IntSize(1000, 720)
-        assertEquals(landscape, heroLandscapeSourceUrl(source, size))
+        assertEquals(landscape, aspectPreservingArtworkUrl(source, size))
         val hero = buildHeroArtworkRequest(context, source, size)
         val player = buildOptimizedImageRequest(context, track.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE, track)
         assertEquals(landscape, hero.data)

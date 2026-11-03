@@ -267,14 +267,19 @@ internal fun buildOptimizedImageRequest(
             !((currentTrack || targetSize == ImageConfig.MINI_PLAYER_SIZE) && hasNativeSquareCover(url))
     )
     // Direct provider URL: no Room lookup or search before the image can load.
-    val initialUrl = (if (visibleThumbnail) providerThumbnailUrl(url, metadata.sourceDimension) else providerArtworkUrl(url, metadata.sourceDimension)).ifBlank {
+    val initialUrl = (when {
+        currentTrack -> aspectPreservingArtworkUrl(url, IntSize(metadata.sourceDimension, metadata.sourceDimension))
+        visibleThumbnail -> providerThumbnailUrl(url, metadata.sourceDimension)
+        else -> providerArtworkUrl(url, metadata.sourceDimension)
+    }).ifBlank {
         youtubeArtworkAlternatives(track?.id, emptyList()).firstOrNull().orEmpty()
     }
     val placeholder = if (currentTrack) {
         // Reuse the same catalog cover already shown on Home/Search while its
         // full-player rendition downloads. These are RAM peeks, never image lookups.
-        val candidates = listOf(initialUrl, providerArtworkUrl(url, 3000), providerArtworkUrl(url, 1200), providerArtworkUrl(url, 600),
-            providerArtworkUrl(url, 200), url).filter(String::isNotBlank).distinct()
+        val candidates = (listOf(initialUrl) + listOf(3000, 1200, 600, 200).map {
+            aspectPreservingArtworkUrl(url, IntSize(it, it))
+        } + url).filter(String::isNotBlank).distinct()
         val memory = context.imageLoader.memoryCache
         candidates.firstOrNull { memory?.get(MemoryCache.Key(it)) != null } ?: initialUrl
     } else initialUrl

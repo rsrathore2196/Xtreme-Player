@@ -55,6 +55,18 @@ class PlayerArtworkSourceTest {
         }
     }
 
+    @Test fun rectangularPlayerFallbackRequestsKeepTheirProviderAspectRatio() {
+        lateinit var request: ImageRequest
+        val rectangle = track.copy(coverUrl = "https://lh3.googleusercontent.com/video=w640-h360-l90-rj")
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(rectangle, true); SideEffect { request = prepared } }
+        compose.runOnIdle {
+            val sized = request.data.toString()
+            val width = Regex("=w(\\d+)").find(sized)!!.groupValues[1].toInt()
+            val height = Regex("-h(\\d+)").find(sized)!!.groupValues[1].toInt()
+            assertEquals(16f / 9f, width.toFloat() / height, .01f)
+        }
+    }
+
     @Test fun actualAudioProviderAndSignedUrlChangesDoNotRestartCatalogArtwork() {
         var song by mutableStateOf(track)
         lateinit var request: ImageRequest

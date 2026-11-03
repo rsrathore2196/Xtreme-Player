@@ -138,4 +138,39 @@ class PlayerArtworkPrefetchTest {
         } finally { scope.coroutineContext[Job]!!.cancelAndJoin(); loader.shutdown() }
     }
 
+    @Test fun enrichedRecordingMetadataRetriesCoverSelectionWithoutChangingTheSelectedSong() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val image = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        val loader = ImageLoader.Builder(context).components {
+            add(object : coil.fetch.Fetcher.Factory<Any> {
+                override fun create(data: Any, options: coil.request.Options, imageLoader: ImageLoader) = coil.fetch.Fetcher {
+                    coil.fetch.DrawableResult(android.graphics.drawable.BitmapDrawable(context.resources, image), false, DataSource.MEMORY_CACHE)
+                }
+            })
+        }.build()
+        val unknown = MusicTrack("yt_abcdefghijk", "Track", "Unknown", "Album", 0,
+            "https://i.ytimg.com/vi/abcdefghijk/hq720.jpg", "audio")
+        val tracks = MutableStateFlow<MusicTrack?>(unknown)
+        val firstLookup = CompletableDeferred<Unit>()
+        val published = CompletableDeferred<ResolvedPlayerCover>()
+        val calls = AtomicInteger()
+        val square = "https://lh3.googleusercontent.com/actual-album=w600-h600-l90-rj"
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        try {
+            prepareCurrentPlayerArtwork(context, tracks, MutableStateFlow(true), scope,
+                onCoverResolved = { published.complete(it) }, resolveCover = { song ->
+                    calls.incrementAndGet()
+                    if (song.artist == "Unknown") { firstLookup.complete(Unit); null } else square
+                }, loaderFor = { loader })
+            withTimeout(5_000) { firstLookup.await() }
+            val enriched = unknown.copy(artist = "Verified Artist", durationMs = 180_000, primaryArtists = listOf("Verified Artist"))
+            tracks.value = enriched
+            val cover = withTimeout(5_000) { published.await() }
+            assertEquals(square, cover.url)
+            assertEquals(com.example.data.remote.playerCoverIdentity(enriched), cover.identity)
+            assertEquals(2, calls.get())
+            assertEquals("The source track and audio stay untouched", unknown.id, tracks.value!!.id)
+        } finally { scope.coroutineContext[Job]!!.cancelAndJoin(); loader.shutdown() }
+    }
+
 }
