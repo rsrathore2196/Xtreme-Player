@@ -36,6 +36,10 @@ class NativeHomeFirstPublicationTest {
         val db = MusicDatabase.createInMemoryDatabase(app)
         val repo = MusicRepository(db.musicDao(), app); val player = PlaybackManager(app, repo)
         try {
+            val listened = MusicTrack("yt_abcdefghijk", "Song", "Singer", "Album", 180_000, "", "")
+            db.musicDao().insertOrUpdateTrack(com.example.data.local.TrackEntity.fromMusicTrack(listened))
+            db.listeningEventDao().insertListeningEvent(com.example.data.local.ListeningEventEntity(
+                trackId = listened.id, artistName = listened.artist, eventType = "ACTUAL_PLAY", playedDurationMs = 30_000))
             val factory = object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T = HomeViewModel(repo, player, app, db,
                     homeLoader = { _, token, _ ->
@@ -45,7 +49,8 @@ class NativeHomeFirstPublicationTest {
                             MusicTrack("yt_abcdefghijk", "Song", "Singer", "Album", 180_000, "", "")))), "later")
                     }, profileLoader = { _, _, _ ->
                         profileEntered.complete(Unit); profileRelease.await(); YouTubeMusicApiService.ProfileShelfResult(null)
-                    }, idleAdmission = { idle.await() }) as T
+                    }, idleAdmission = { idle.await() },
+                    supplementalLoader = { _, _, _ -> YouTubeHomeParser.ParsedHomeFeed(emptyList(), null) }) as T
             }
             val vm = ViewModelProvider(store, factory)[HomeViewModel::class.java]
             assertTrue(vm.serverCards.value.all { it.status == ShelfLoadStatus.LOADING })

@@ -80,9 +80,10 @@ object YouTubeAudioStreamService {
         val qualityBadge: String get() = displayQuality(codec, bitrateKbps)
         override fun toString() = "AudioStream(codec=" + codec + ", bitrateKbps=" + bitrateKbps + ", hls=" + isHls + ")"
     }
-    private val http = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(10, TimeUnit.SECONDS).callTimeout(12, TimeUnit.SECONDS).build()
-    private val mediaHttp = http.newBuilder().followRedirects(false).build()
+    // Home reads account identity on construction; TLS belongs to actual IO use.
+    private val http by lazy { OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS).callTimeout(12, TimeUnit.SECONDS).build() }
+    private val mediaHttp by lazy { http.newBuilder().followRedirects(false).build() }
     private val cache = android.util.LruCache<String, AudioStream>(128)
     private val locks = Array(16) { Mutex() }
     private val slots = Semaphore(2)

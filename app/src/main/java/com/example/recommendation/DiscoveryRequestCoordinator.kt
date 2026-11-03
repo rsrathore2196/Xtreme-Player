@@ -49,16 +49,20 @@ internal object DiscoveryRequestCoordinator {
         return permit(urgent, awaitFrameQuiet = priority?.awaitFrameQuiet != false) {
             // Finish this bounded transport/parse batch and release its permit.
             // Catalog processing after the response remains interaction-preemptible.
-            BackgroundWorkCoordinator.finishBoundedBatch {
+            BackgroundWorkCoordinator.traceWork(if (urgent.value) "Discovery urgent network" else "Discovery optional network") {
+              BackgroundWorkCoordinator.finishBoundedBatch {
                 withTimeoutOrNull(12_000L) { Result.success(block()) }?.getOrThrow()
                     ?: throw java.io.IOException("Discovery request timed out")
+              }
             }
         }
     }
 
     suspend fun <T> playback(block: suspend () -> T): T {
         resolving.update { it + 1 }
-        try { return BackgroundWorkCoordinator.finishBoundedBatch(block) }
+        try { return BackgroundWorkCoordinator.traceWork("Playback source resolution") {
+            BackgroundWorkCoordinator.finishBoundedBatch(block)
+        } }
         finally { resolving.update { (it - 1).coerceAtLeast(0) } }
     }
 
@@ -70,7 +74,9 @@ internal object DiscoveryRequestCoordinator {
                 Flight(urgent, scope.async(SharedPriority(urgent), start = CoroutineStart.LAZY) {
                     suspend fun work(): List<MusicTrack> {
                         return if (network) permit(urgent) {
-                            BackgroundWorkCoordinator.finishBoundedBatch { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
+                            BackgroundWorkCoordinator.traceWork(if (urgent.value) "Discovery urgent shared request" else "Discovery optional shared request") {
+                                BackgroundWorkCoordinator.finishBoundedBatch { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
+                            }
                         }
                         else block()
                     }

@@ -97,6 +97,9 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     val artistPortraitsReady = _artistPortraitsReady.asStateFlow()
     private val initialArtistSettledAt = MutableStateFlow<Long?>(null)
     private val initialProfileSettledAt = MutableStateFlow<Long?>(null)
+    // Sequence admission, never completion of unrelated network/Room work.
+    private val initialProfileAdmittedAt = MutableStateFlow<Long?>(null)
+    private val initialArtistAdmittedAt = MutableStateFlow<Long?>(null)
     private val profileWorkReady = MutableStateFlow(false)
     private val _profileShelfVisible = MutableStateFlow(false)
     val profileShelfVisible = _profileShelfVisible.asStateFlow()
@@ -113,8 +116,12 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private val nativeRevealAt = MutableStateFlow<Long?>(null)
     private var nativePageJob: Job? = null
     private var supplementalDemand = false
+    private var nativeEndDemand = false
     private val primarySettled = MutableStateFlow(false)
-    fun onHomeFrameDrawn() { if (homeDrawAt.value == null) homeDrawAt.value = elapsedTime() }
+    fun onHomeFrameDrawn() { if (homeDrawAt.value == null) {
+        homeDrawAt.value = elapsedTime()
+        android.util.Log.d("HomeWork", "first-draw at=${homeDrawAt.value}")
+    } }
     private val artistSectionRelevant = MutableStateFlow(false)
     fun setArtistSectionRelevant(active: Boolean) {
         artistSectionRelevant.value = active
@@ -179,7 +186,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             }
             val available = combine(_serverShelves, _serverCards, _revealedShelfCount, _isRefreshing,
                 _paginationRevision) { _, _, _, refreshing, _ -> !refreshing && hasAutomaticNativeWork() }
-            val priority = combine(_userMode, listeningUnlockAt, initialArtistSettledAt, initialNativeReadyAt) { _, _, _, _ -> nativePriorityAt() }
+            val priority = combine(listeningUnlockAt, initialArtistAdmittedAt, initialNativeReadyAt) { _, _, _ -> nativePriorityAt() }
             combine(foreground, available, priority) { start, work, priorityAt ->
                 if (start != null && work && priorityAt != null) maxOf(start, priorityAt) else null
             }.collectLatest { start ->
@@ -223,11 +230,13 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     idleAdmission(drawn)
                     profileWorkReady.value = true
                     _profileShelfVisible.value = true
+                    initialProfileAdmittedAt.compareAndSet(null, elapsedTime())
+                    android.util.Log.d("HomeWork", "profile-admitted at=${elapsedTime()}")
                 }
             }
         }
         owner.launch {
-            combine(homeVisible, initialPresentation, initialProfileSettledAt, BackgroundWorkCoordinator.uiForeground,
+            combine(homeVisible, initialPresentation, initialProfileAdmittedAt, BackgroundWorkCoordinator.uiForeground,
                 BackgroundWorkCoordinator.interactions) { active, drawn, profileReady, foreground, _ ->
                 if (active && foreground && drawn != null && profileReady != null) maxOf(drawn, profileReady) else null
             }.collectLatest { start ->
@@ -236,29 +245,32 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     idleAdmission(start)
                     _optionalWorkReady.value = true
                     _artistPortraitsReady.value = true
+                    initialArtistAdmittedAt.compareAndSet(null, elapsedTime())
+                    android.util.Log.d("HomeWork", "artists-admitted at=${elapsedTime()}")
                 }
             }
         }
         owner.launch {
-            combine(profileWorkReady, profileRequests) { ready, request -> request.takeIf { ready } }
+            combine(homeVisible, profileRequests) { active, request -> request.takeIf { active } }
                 .collectLatest { request ->
                     if (request == null) return@collectLatest
                     try {
+                        profileWorkReady.first { it }
                         val key = profileKey; val generation = profileGeneration
                         if (loadProfileShelf(profileForcePending)) profileForcePending = false
                         if (key == profileKey && generation == profileGeneration)
                             initialProfileSettledAt.compareAndSet(null, elapsedTime())
-                    } finally { if (!profileWorkReady.value) profileJob?.cancelAndJoin() }
+                    } finally { if (!homeVisible.value) profileJob?.cancelAndJoin() }
                 }
         }
         owner.launch {
-            try { restoreCachedHome() }
+            try { BackgroundWorkCoordinator.traceWork("Home native cache restore") { restoreCachedHome() } }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* A missing cache never blocks the native request. */ }
             finally { restored.complete(Unit) }
         }
         owner.launch {
-            try { cache.readProfile(profileKey)?.let(::restoreProfile) }
+            try { BackgroundWorkCoordinator.traceWork("Home profile cache restore") { cache.readProfile(profileKey)?.let(::restoreProfile) } }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* Profile discovery remains independent. */ }
             finally { profileRestored.complete(Unit) }
@@ -390,7 +402,9 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     }
             }.collectLatest { totals ->
                 try {
-                    var artists = BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { artistHistory.read(totals) }
+                    var artists = BackgroundWorkCoordinator.traceWork("Home artist summaries") {
+                        BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { artistHistory.read(totals) }
+                    }
                     val identityBeforeRestore = ArtistPhotoRepository.identities.value
                     ArtistPhotoRepository.restoreSaved(getApplication(), artists.take(4).map { ArtistPhotoRepository.cachedArtist(it.name) })
                     if (identityBeforeRestore != ArtistPhotoRepository.identities.value)
@@ -522,7 +536,9 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         val job = owner.async {
             try {
                 val response = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(urgent, awaitFrameQuiet = false) {
-                    withContext(AppDispatchers.Io) { homeLoader(region, null, key.substringAfter('|') != "anonymous") }
+                    BackgroundWorkCoordinator.traceWork("Native Home response") {
+                        withContext(AppDispatchers.Io) { homeLoader(region, null, key.substringAfter('|') != "anonymous") }
+                    }
                 }
                 if (generation != serverGeneration || key != homeKey || key != currentHomeKey(_userProfile.value)) return@async false
                 if (response.isError) {
@@ -584,7 +600,13 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             try {
                 val result = com.example.recommendation.DiscoveryRequestCoordinator.withPriority(MutableStateFlow(false), awaitFrameQuiet = false) {
                     BackgroundWorkCoordinator.awaitOptionalBatch()
-                    withContext(AppDispatchers.Io) { profileLoader(profile, rotation, force) }
+                    val response = BackgroundWorkCoordinator.traceWork("Home profile discovery") {
+                        withContext(AppDispatchers.Io) { profileLoader(profile, rotation, force) }
+                    }
+                    // Finish transport without restarting it on input; publish after
+                    // the interaction fence, with no network/database permit held.
+                    BackgroundWorkCoordinator.awaitOptionalBatch()
+                    response
                 }
                 if (generation != profileGeneration || key != profileKey || key != currentProfileKey(_userProfile.value)) return@async false
                 if (result.isError) { if (_profileShelf.value == null) _profileStatus.value = ShelfLoadStatus.ERROR; return@async false }
@@ -617,7 +639,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         if (snapshot != sources.toMap()) { publishSources(); return }
         if (!reuse) {
             projectedKey = key; projectedGeneration = generation; projectedInputs = inputs; projectedShelves = shelves
-            android.util.Log.d("NativeHome", "project shelves=${shelves.size}")
+            android.util.Log.d("NativeHome", "project shelves=${shelves.size} at=${elapsedTime()}")
         }
         if (_serverShelves.value.isEmpty() && shelves.isNotEmpty()) nativeRevealAt.value = elapsedTime()
         var count = maxOf(3, _revealedShelfCount.value).coerceAtMost(shelves.size)
@@ -635,7 +657,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             if (pending) ShelfLoadStatus.LOADING else ShelfLoadStatus.SUCCESS)
         _serverShelves.value = shelves
         markInitialNativeReady()
-        android.util.Log.d("NativeHome", "publish shelves=${shelves.size} revealed=${_revealedShelfCount.value} suppressed=${inputs.sumOf { it.size } - shelves.size} pending=$pending auth=${serverCacheKey.substringAfter('|') != "anonymous"}")
+        android.util.Log.d("NativeHome", "publish shelves=${shelves.size} revealed=${_revealedShelfCount.value} suppressed=${inputs.sumOf { it.size } - shelves.size} pending=$pending auth=${serverCacheKey.substringAfter('|') != "anonymous"} at=${elapsedTime()}")
     }
     private fun sourceFailed(browse: String, token: String, category: String = "response_or_transport") {
         val old = sourceFailures[browse]?.takeIf { it.token == token }
@@ -711,24 +733,30 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     }
     fun revealNextHomeSection() {
         // A gesture can wake a retryable source, but never bypass idle admission.
-        owner.launch { _paginationRevision.update { it + 1 } }
+        owner.launch { nativeEndDemand = true; _paginationRevision.update { it + 1 } }
     }
     /** HomeBookkeeping-confined advance after the caller has obtained idle admission. */
     internal suspend fun revealAdmittedNativeShelf() {
         restored.await()
         supplementalDemand = true
         if (_revealedShelfCount.value < _serverShelves.value.size) {
-            _revealedShelfCount.value = (_revealedShelfCount.value + 1).coerceAtMost(_serverShelves.value.size)
+            nativeEndDemand = false // Cached content satisfies this viewport demand.
+            BackgroundWorkCoordinator.traceWork("Home cached shelf reveal") {
+                _revealedShelfCount.value = (_revealedShelfCount.value + 1).coerceAtMost(_serverShelves.value.size)
+                android.util.Log.d("HomeWork", "cached-reveal count=${_revealedShelfCount.value} at=${elapsedTime()}")
+            }
             pendingNativeReveal = false
             nativeRevealAt.value = elapsedTime()
             _paginationRevision.update { it + 1 }
         } else {
+            nativeEndDemand = false
             pendingNativeReveal = true; automaticRevealPending = true
             if (!requestMoreHome(urgent = false)) scheduleSupplements(false)
         }
     }
     private fun hasAutomaticNativeWork(): Boolean {
         if (_revealedShelfCount.value < _serverShelves.value.size) return true
+        if (!nativeEndDemand) return false
         if (_serverShelves.value.isEmpty() && !serverSuccess || serverJob?.isActive == true || nativePageJob?.isActive == true || sourceJobs.values.any { it.isActive }) return false
         return sources.any { (browse, state) ->
             state.continuation?.let { state.emptyPages < 2 && it !in state.consumed && retryAllowed(browse, it) } == true
@@ -739,8 +767,8 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     }
     /** Ineligible local cards never block anonymous/new-user Home expansion. */
     private fun nativePriorityAt(): Long? = when {
-        _userMode.value == HomeUserMode.LOADING || initialNativeReadyAt.value == null -> null
-        listeningUnlockAt.value != null -> initialArtistSettledAt.value
+        initialNativeReadyAt.value == null -> null
+        listeningUnlockAt.value != null -> initialArtistAdmittedAt.value
         else -> initialNativeReadyAt.value
     }
     private fun requestMoreHome(urgent: Boolean = true): Boolean {
@@ -827,7 +855,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         if (nextHome != homeKey) {
             val restoring = CompletableDeferred<Unit>().also { homeCacheRestore = it }
             try {
-            serverGeneration++; serverJob?.cancel(); sourceJobs.values.toList().forEach { it.cancel() }; sourceJobs.clear(); sourceUrgency.clear(); sourceFailures.clear(); sources.clear(); paginationTurn = 0; lastConnectivityRetryAt = null; pendingNativeReveal = false; primarySettled.value = false; homeKey = nextHome
+            serverGeneration++; serverJob?.cancel(); sourceJobs.values.toList().forEach { it.cancel() }; sourceJobs.clear(); sourceUrgency.clear(); sourceFailures.clear(); sources.clear(); paginationTurn = 0; lastConnectivityRetryAt = null; pendingNativeReveal = false; nativeEndDemand = false; primarySettled.value = false; homeKey = nextHome
             projectedInputs = null; projectedShelves = emptyList(); projectedKey = null
             serverCacheKey = nextHome
             publishServer(emptyList(), ShelfLoadStatus.LOADING); homeContinuationToken = null; loadingSources.clear()
@@ -876,7 +904,6 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     }
     fun refreshHome(isExplicitPull: Boolean = true): Job = owner.launch {
         restored.await()
-        requestProfileShelf(isExplicitPull)
         if (isExplicitPull) { _additionalShelvesUnlocked.value = true; supplementalDemand = true; pendingNativeReveal = true; automaticRevealPending = false }
         while (true) {
             val running = refreshJob?.takeIf { it.isActive } ?: break
@@ -905,7 +932,10 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         profileForcePending = profileForcePending || force
         profileRequests.update { it + 1 }
     }
-    fun refreshAll() = refreshHome(true)
+    fun refreshAll() = owner.launch {
+        requestProfileShelf(true)
+        refreshHome(true).join()
+    }
     fun clearRefreshError() { _refreshErrorMessage.value = null }
     fun updateUserProfile(profile: UserProfile) { owner.launch {
         withContext(AppDispatchers.Io) { UserProfilePreferences.saveUserProfile(getApplication(), profile) }; applyUserProfile(profile)

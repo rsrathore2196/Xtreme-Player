@@ -307,12 +307,17 @@ class PlayerViewModel(
     val isDynamicGlassEnabled: StateFlow<Boolean> = _isDynamicGlassEnabled.asStateFlow()
 
     private var searchDataStarted = false
+    private var libraryUiSeen = false
     private var catalogFavoritesStarted = false
     private val catalogUiVisible = MutableStateFlow(false)
     private var textSupportRequested = false
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     fun prepareCatalogUi(searchVisible: Boolean, detailVisible: Boolean, libraryVisible: Boolean = false) {
         catalogUiVisible.value = searchVisible || detailVisible
+        if (libraryVisible && !libraryUiSeen) {
+            libraryUiSeen = true
+            com.example.performance.BackgroundWorkCoordinator.trace("Library first access").close()
+        }
         if ((searchVisible || detailVisible || libraryVisible) && !textSupportRequested) {
             textSupportRequested = true
             viewModelScope.launch(AppDispatchers.Io) {
@@ -321,6 +326,7 @@ class PlayerViewModel(
         }
         if (searchVisible && !searchDataStarted) {
             searchDataStarted = true
+            com.example.performance.BackgroundWorkCoordinator.trace("Search first access").close()
             viewModelScope.launch(recentSearchDispatcher) {
                 com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
                 val revision = recentSearchRevision.get()

@@ -56,7 +56,8 @@ class AdaptiveHomeLoadingTest {
     @After fun close() = runBlocking<Unit> { stores.forEach { it.clear() }; player.release(); db.close(); clockPump?.cancelAndJoin(); BackgroundWorkCoordinator.foreground(false); Dispatchers.resetMain() }
     private suspend fun model(initial: Int = 8, first: CompletableDeferred<Unit>? = null, optional: Boolean = false,
         refreshTracks: Boolean = false, failProfile: Boolean = false,
-        supplementWait: CompletableDeferred<Unit>? = null, failSupplements: Boolean = false): HomeViewModel {
+        supplementWait: CompletableDeferred<Unit>? = null, failSupplements: Boolean = false,
+        profileWait: CompletableDeferred<Unit>? = null): HomeViewModel {
         val store = ViewModelStore().also(stores::add)
         val factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST") override fun <T : ViewModel> create(modelClass: Class<T>): T = HomeViewModel(
@@ -72,6 +73,7 @@ class AdaptiveHomeLoadingTest {
                     else { pages.incrementAndGet(); YouTubeHomeParser.ParsedHomeFeed((9..11).map(::shelf), null) }
                 }, profileLoader = { _, _, _ ->
                     profiles.incrementAndGet()
+                    profileWait?.await()
                     if (failProfile) throw java.io.IOException("Temporary profile failure")
                     YouTubeMusicApiService.ProfileShelfResult(shelf(20).copy(title = "Music for You")) },
                 idleAdmission = { start -> if (optional) BackgroundWorkCoordinator.awaitContinuousForegroundIdle(start, 6_000L) else awaitCancellation() },
@@ -103,7 +105,12 @@ class AdaptiveHomeLoadingTest {
     }
     @Test fun newcomersStartWithThreeAndAutomaticallyRevealOnlyOneAfterEachSixSecondIdlePeriod() = runBlocking<Unit> {
         val vm = model()
-        withTimeout(5_000) { vm.serverShelves.first { it.size == 8 }; vm.userMode.first { it == com.example.recommendation.HomeUserMode.NEW_USER } }
+        try {
+            withTimeout(5_000) { vm.serverShelves.first { it.size == 8 }; vm.userMode.first { it == com.example.recommendation.HomeUserMode.NEW_USER } }
+        } catch (error: TimeoutCancellationException) {
+            throw AssertionError("Initial fixture: shelves=${vm.serverShelves.value.size} mode=${vm.userMode.value} " +
+                "error=${vm.refreshErrorMessage.value} refreshing=${vm.isRefreshing.value}", error)
+        }
         stopClock()
         assertEquals(3, vm.revealedShelfCount.value)
         vm.revealNextHomeSection(); idle(5_999)
@@ -144,7 +151,9 @@ class AdaptiveHomeLoadingTest {
         withTimeout(5_000) { vm.serverShelves.first { it.size == 8 } }
         stopClock()
         for (count in 4..8) { idle(); withTimeout(5_000) { vm.revealedShelfCount.first { it == count } }; assertEquals(0, pages.get()) }
-        idle()
+        idle(30_000)
+        assertEquals("Idle alone must not fetch pages beyond the cached feed", 0, pages.get())
+        vm.revealNextHomeSection(); idle()
         withTimeout(5_000) { vm.revealedShelfCount.first { it == 9 }; vm.serverShelves.first { it.size == 11 } }
         assertEquals(1, pages.get())
         vm.setHomeVisible(false); delay(100); idle(30_000)
@@ -215,6 +224,47 @@ class AdaptiveHomeLoadingTest {
         db.listeningEventDao().insertListeningEvent(ListeningEventEntity(trackId = song(1).id, artistName = song(1).artist,
             eventType = "ACTUAL_PLAY", playedDurationMs = 30_000, sessionId = "returning"))
         db.saveArtistTotal(song(1))
+    }
+    @Test fun pendingProfileDoesNotBlockArtistsOrCachedNativeRevealOrRestartOnTouch() = runBlocking<Unit> {
+        returningHistory()
+        val release = CompletableDeferred<Unit>()
+        val vm = model(optional = true, profileWait = release)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 8 }; vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
+        stopClock(); idle()
+        withTimeout(5_000) { while (profiles.get() != 1) delay(10) }
+        val profileAdmittedAt = SystemClock.elapsedRealtime()
+        assertNull(vm.profileShelf.value)
+        idle(); settled(vm, "initialArtistSettledAt")
+        val artistsReadyAt = SystemClock.elapsedRealtime()
+        assertTrue(vm.mostListenedArtists.value.isNotEmpty())
+        assertNull(vm.profileShelf.value)
+        idle(); withTimeout(5_000) { vm.revealedShelfCount.first { it == 4 } }
+        val cachedRevealAt = SystemClock.elapsedRealtime()
+        assertEquals(0, pages.get()); assertEquals(0, supplements.get())
+        BackgroundWorkCoordinator.touch(true); delay(100)
+        release.complete(Unit)
+        delay(200)
+        assertNull("Optional publication waits for input without cancelling transport", vm.profileShelf.value)
+        BackgroundWorkCoordinator.touch(false); idle(300)
+        withTimeout(5_000) { vm.profileShelf.first { it != null } }
+        assertEquals("Interaction must not restart an admitted profile request", 1, profiles.get())
+        println("Home independence (fixture clock): profileAdmittedAt=$profileAdmittedAt artistsReadyAt=$artistsReadyAt " +
+            "cachedRevealAt=$cachedRevealAt profileReadyAt=${SystemClock.elapsedRealtime()} " +
+            "artists=${vm.mostListenedArtists.value.size}, revealed=${vm.revealedShelfCount.value}, profileRequests=${profiles.get()}, pages=${pages.get()}")
+    }
+    @Test fun nativeRefreshKeepsFreshProfileWhileExplicitFullRefreshCanRenewIt() = runBlocking<Unit> {
+        returningHistory()
+        val vm = model(optional = true)
+        withTimeout(5_000) { vm.serverShelves.first { it.size == 8 }; vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
+        stopClock(); idle(); settled(vm, "initialProfileSettledAt")
+        assertEquals(1, profiles.get())
+        vm.refreshHome(true).join()
+        idle(); delay(100)
+        assertEquals("A native refresh does not invalidate the fresh profile shelf", 1, profiles.get())
+        assertNotNull(vm.profileShelf.value)
+        vm.refreshAll().join()
+        withTimeout(5_000) { while (profiles.get() != 2) delay(10) }
+        assertNotNull(vm.profileShelf.value)
     }
     @Test fun returningActualPlaysReserveProfileAndArtistStagesBeforeNativeExpansion() = runBlocking<Unit> {
         db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song(1)))
