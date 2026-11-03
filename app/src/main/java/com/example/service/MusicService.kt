@@ -869,6 +869,7 @@ class MusicService : MediaLibraryService() {
         } finally { playerInitialization.close() }
 
         exoPlayer = player
+        com.example.playback.CrossfadeController.enableQueueReadAhead(player)
         crossfade = com.example.playback.CrossfadeController(player, serviceScope,
             canMix = { !com.example.playback.AudioSignalPath.state.value.directApproved },
             sourcePolicy = { networkQuality.sourcePolicy.value.key },
@@ -881,8 +882,7 @@ class MusicService : MediaLibraryService() {
                     .setAudioAttributes(audioAttributes, false)
                     .setHandleAudioBecomingNoisy(false)
                     .setPauseAtEndOfMediaItems(true)
-                    .setLoadControl(androidx.media3.exoplayer.DefaultLoadControl.Builder()
-                        .setBufferDurationsMs(1_000, 8_000, 500, 500).build())
+                    .setLoadControl(com.example.playback.CrossfadeController.tailLoadControl())
                     .setWakeMode(C.WAKE_MODE_NETWORK)
                     .build().apply {
                         skipSilenceEnabled = player.skipSilenceEnabled

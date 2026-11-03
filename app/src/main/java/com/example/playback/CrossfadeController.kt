@@ -5,6 +5,8 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -35,6 +37,21 @@ internal class CrossfadeController(
     companion object {
         internal const val FADE_MS = 3_000L
         private const val WARM_MS = 8_000L
+        /** Media3 preloads only the next period, after current audio has its buffer.
+         * Reusing that period avoids another queue replacement/resolution owner. */
+        @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+        internal fun enableQueueReadAhead(player: ExoPlayer) {
+            player.setPreloadConfiguration(ExoPlayer.PreloadConfiguration(FADE_MS * 1_000L))
+        }
+
+        /** The buffer must hold the entire outgoing warm window PLUS the overlap.
+         * A 1s/8s hysteresis could stop with <3s of the next track, then never
+         * resume loading before the fade window passed. */
+        @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+        internal fun tailLoadControl(): DefaultLoadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs((WARM_MS + FADE_MS).toInt(), (WARM_MS + 2 * FADE_MS).toInt(), 500, 500)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
         internal fun gains(progress: Float): Pair<Float, Float> {
             val angle = progress.coerceIn(0f, 1f) * PI / 2.0
             return cos(angle).toFloat() to sin(angle).toFloat()

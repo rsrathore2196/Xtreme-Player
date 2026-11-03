@@ -18,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -109,6 +110,11 @@ fun WavyScrubberBar(
 ) {
     val haptic = LocalHapticFeedback.current
     val glassEnabled = LocalDynamicGlassEnabled.current
+    // Gesture detectors live across recompositions. Duration, track identity and
+    // seek ownership can change while a detector is still waiting for input.
+    val seekStarted by rememberUpdatedState(onSeekStarted)
+    val seekProgress by rememberUpdatedState(onSeekProgress)
+    val seekFinished by rememberUpdatedState(onSeekFinished)
 
     var isDragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(progress) }
@@ -167,15 +173,15 @@ fun WavyScrubberBar(
                 detectTapGestures(
                     onPress = { offset ->
                         isDragging = true
-                        onSeekStarted()
+                        seekStarted()
                         val fraction = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
                         dragFraction = fraction
-                        onSeekProgress(fraction)
+                        seekProgress(fraction)
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
 
                         val released = tryAwaitRelease()
                         if (released) {
-                            onSeekFinished(dragFraction)
+                            seekFinished(dragFraction)
                         }
                         isDragging = false
                     }
@@ -185,14 +191,14 @@ fun WavyScrubberBar(
                 detectDragGestures(
                     onDragStart = { offset ->
                         isDragging = true
-                        onSeekStarted()
+                        seekStarted()
                         val fraction = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
                         dragFraction = fraction
-                        onSeekProgress(fraction)
+                        seekProgress(fraction)
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     },
                     onDragEnd = {
-                        onSeekFinished(dragFraction)
+                        seekFinished(dragFraction)
                         isDragging = false
                     },
                     onDragCancel = {
@@ -202,7 +208,7 @@ fun WavyScrubberBar(
                         change.consume()
                         val fraction = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
                         dragFraction = fraction
-                        onSeekProgress(fraction)
+                        seekProgress(fraction)
                     }
                 )
             }
