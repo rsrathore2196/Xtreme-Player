@@ -88,7 +88,7 @@ fun InfiniteRadioHeroCard(
             AsyncImage(
                 model = fullQualityArtwork,
                 contentDescription = null,
-                contentScale = ContentScale.Crop,
+                contentScale = ContentScale.FillBounds,
                 modifier = Modifier.fillMaxSize()
             )
         }

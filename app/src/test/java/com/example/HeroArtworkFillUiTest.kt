@@ -183,7 +183,7 @@ class HeroArtworkFillUiTest {
         } finally { Coil.setImageLoader(previous); loader.shutdown() }
     }
 
-    @Test fun unavailableVideoImageFallsBackToACroppedSquareCoverAcrossTheWholeHero() {
+    @Test fun unavailableVideoImageFallsBackToTheFullSquareCoverStretchedAcrossTheHero() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val previous = Coil.imageLoader(context)
         val release = CompletableDeferred<Unit>()
@@ -192,7 +192,7 @@ class HeroArtworkFillUiTest {
         val square = Bitmap.createBitmap(900, 900, Bitmap.Config.ARGB_8888).also {
             Canvas(it).apply {
                 drawColor(android.graphics.Color.GREEN)
-                // A correct full-cover crop removes top/bottom, not the left/right.
+                // Both the top band and middle must remain visible when stretched.
                 drawRect(0f, 200f, 900f, 700f, Paint().apply { color = android.graphics.Color.MAGENTA })
             }
         }
@@ -229,8 +229,10 @@ class HeroArtworkFillUiTest {
             node.captureRoboImage(file.absolutePath, RoborazziOptions(taskType = RoborazziTaskType.Record))
             val rendered = ImageIO.read(file)
             for (x in listOf(8, 50, 92)) {
-                val color = java.awt.Color(rendered.getRGB(rendered.width * x / 100, rendered.height * 22 / 100))
-                assertTrue("The cropped square artwork must cover the card, including both sides: $color", color.red > color.green + 30)
+                val top = java.awt.Color(rendered.getRGB(rendered.width * x / 100, rendered.height * 12 / 100))
+                assertTrue("Stretch must retain the square cover's top band across the card: $top", top.green > top.red + 30)
+                val middle = java.awt.Color(rendered.getRGB(rendered.width * x / 100, rendered.height * 30 / 100))
+                assertTrue("The full square artwork must reach both sides of the Hero: $middle", middle.red > middle.green + 30)
             }
             assertTrue("Do not fabricate a YouTube thumbnail after a native image fails", requested.none { it.contains("ytimg.com") })
             assertEquals(bounds, node.fetchSemanticsNode().boundsInRoot)
