@@ -64,11 +64,39 @@ class SharedLibrarySnapshotsTest {
             withTimeout(7_000) { while (active.get() != 0) delay(20) }
             assertEquals(snapshot, repo.retainedFavoriteTracks)
             assertEquals(1, starts.get())
+            // Room emits new entity instances on reentry even when data is unchanged.
+            source.value = listOf(row.copy())
+            val reopened = withTimeout(5_000) { repo.getFavoriteTracks().first() }
+            assertSame("Reopening reuses the converted snapshot, not just equal rows", snapshot, reopened)
+            assertEquals(2, starts.get())
             source.value = listOf(row.copy(title = "Updated while hidden"))
             val updated = withTimeout(5_000) { repo.getFavoriteTracks().first { it.single().title == "Updated while hidden" } }
             assertEquals("Updated while hidden", updated.single().title)
             assertEquals(2, starts.get())
             assertEquals(1, active.get())
+        } finally {
+            (MusicRepository::class.java.getDeclaredField("initialCatalogScope").apply { isAccessible = true }
+                .get(repo) as CoroutineScope).coroutineContext[Job]!!.cancelAndJoin()
+            db.close()
+        }
+    }
+
+    @Test fun aSingleMetadataEditDoesNotReconvertEveryFavorite() = runBlocking {
+        val db = MusicDatabase.createInMemoryDatabase(ApplicationProvider.getApplicationContext())
+        val rows = List(128) { index -> TrackEntity("track-$index", "Song $index", "Artist", "Album",
+            180_000, "cover", "url", isLiked = true, primaryArtists = "[\"Artist\"]") }
+        val source = MutableStateFlow(rows)
+        val dao = object : MusicDao by db.musicDao() { override fun getFavoriteTracks() = source }
+        val repo = MusicRepository(dao)
+        try {
+            val original = withTimeout(5_000) { repo.getFavoriteTracks().first() }
+            source.value = rows.mapIndexed { index, row -> if (index == 73) row.copy(coverUrl = "updated-cover") else row.copy() }
+            val updated = withTimeout(5_000) { repo.getFavoriteTracks().first { it[73].coverUrl == "updated-cover" } }
+            original.indices.filter { it != 73 }.forEach { assertSame(original[it], updated[it]) }
+            assertEquals(listOf("Artist"), updated[73].primaryArtists)
+            source.value = source.value.reversed()
+            val reordered = withTimeout(5_000) { repo.getFavoriteTracks().first { it.first().id == "track-127" } }
+            updated.indices.forEach { assertSame(updated[it], reordered[127 - it]) }
         } finally {
             (MusicRepository::class.java.getDeclaredField("initialCatalogScope").apply { isAccessible = true }
                 .get(repo) as CoroutineScope).coroutineContext[Job]!!.cancelAndJoin()

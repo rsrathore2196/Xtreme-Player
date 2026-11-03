@@ -329,9 +329,27 @@ class MusicRepository private constructor(
     private val recentSnapshots by lazy {
         sharedTrackSnapshots("recents", flow { emitAll(musicDao.getRecentlyPlayedTracks()) }) { retainedRecentlyPlayed = it }
     }
-    private fun sharedTrackSnapshots(name: String, rows: Flow<List<TrackEntity>>, retain: (List<MusicTrack>) -> Unit) =
-        sharedLibrarySnapshots(name, rows.flowOn(AppDispatchers.Database).distinctUntilChanged()
-            .map { list -> list.map { it.toMusicTrack() } }.distinctUntilChanged().flowOn(AppDispatchers.CpuBounded), retain)
+    private fun sharedTrackSnapshots(name: String, rows: Flow<List<TrackEntity>>, retain: (List<MusicTrack>) -> Unit): Flow<List<MusicTrack>> {
+        // Keep only the current snapshot across WhileSubscribed restarts. Room still
+        // checks for edits on reentry, but unchanged rows need no JSON/track conversion.
+        // The shared upstream is the sole owner of this CPU-side memoization.
+        var previousRows = emptyList<TrackEntity>()
+        var previousTracks = emptyList<MusicTrack>()
+        val prepared = rows.flowOn(AppDispatchers.Database).distinctUntilChanged().map { list ->
+            if (list != previousRows) {
+                val previous = previousRows.indices.associate { index ->
+                    previousRows[index].id to (previousRows[index] to previousTracks[index])
+                }
+                val tracks = list.map { row ->
+                    previous[row.id]?.takeIf { it.first == row }?.second ?: row.toMusicTrack()
+                }
+                previousRows = list
+                previousTracks = tracks
+            }
+            previousTracks
+        }.distinctUntilChanged().flowOn(AppDispatchers.CpuBounded)
+        return sharedLibrarySnapshots(name, prepared, retain)
+    }
 
     fun getFavoriteTracks(): Flow<List<MusicTrack>> = favoriteSnapshots
     /** Optional ranking must not wait indefinitely for unavailable local storage. */

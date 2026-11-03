@@ -10,7 +10,8 @@ import com.example.data.model.MusicTrack
 import com.example.data.remote.YouTubeHeroArtworkResolver
 import com.example.data.remote.heroArtworkIdentity
 import com.example.performance.AppDispatchers
-import com.example.performance.BackgroundWorkCoordinator
+import com.example.recommendation.DiscoveryRequestCoordinator
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 
@@ -25,12 +26,8 @@ internal fun rememberHeroArtworkRequest(track: MusicTrack, size: IntSize,
     val currentResolver by rememberUpdatedState(resolve)
     LaunchedEffect(identity, active) {
         if (active) {
-            val image = try { withContext(AppDispatchers.Io) {
-                BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) {
-                    BackgroundWorkCoordinator.yieldToInteraction(awaitFrameQuiet = false)
-                    currentResolver(track)
-                }
-            } } catch (cancelled: CancellationException) { throw cancelled }
+            val image = try { loadVisibleHeroArtwork { currentResolver(track) } }
+            catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { null }
             if (!image.isNullOrBlank()) source = image
         }
@@ -38,6 +35,15 @@ internal fun rememberHeroArtworkRequest(track: MusicTrack, size: IntSize,
     val visibility = remember(identity, source) { ArtworkVisibility(active) }
     SideEffect { visibility.active.value = active }
     return remember(context, source, size, visibility) { buildHeroArtworkRequest(context, source, size, visibility) }
+}
+
+/** Optional Hero metadata shares discovery admission; audio resolution keeps priority.
+ * Admission precedes the resolver's timeout, so waiting for input/playback is not
+ * cached as a missing cover. The visible composition owns cancellation. */
+internal suspend fun loadVisibleHeroArtwork(resolve: suspend () -> String?): String? = withContext(AppDispatchers.Io) {
+    DiscoveryRequestCoordinator.withPriority(MutableStateFlow(false), awaitFrameQuiet = false) {
+        DiscoveryRequestCoordinator.network { resolve() }
+    }
 }
 
 /** Keep the native frame's aspect ratio when requesting a larger Google thumbnail. */

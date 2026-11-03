@@ -43,6 +43,18 @@ class PlayerArtworkSourceTest {
         }
     }
 
+    @Test fun miniPlayerKeepsTheNativeSquareBeforeMetadataVerificationFinishes() {
+        lateinit var request: ImageRequest
+        compose.setContent { val prepared = rememberOptimizedImageRequest(track, ImageConfig.MINI_PLAYER_SIZE)
+            SideEffect { request = prepared } }
+        compose.runOnIdle {
+            val metadata = request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!
+            assertFalse(metadata.allowVideoFallback)
+            assertFalse("Keep the dock's existing bounded artwork scheduling", metadata.currentTrack)
+            assertTrue(request.data.toString().contains("recording="))
+        }
+    }
+
     @Test fun actualAudioProviderAndSignedUrlChangesDoNotRestartCatalogArtwork() {
         var song by mutableStateOf(track)
         lateinit var request: ImageRequest

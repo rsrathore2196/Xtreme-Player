@@ -30,6 +30,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.collectLatest
@@ -107,6 +108,24 @@ data class SearchUiState(
 internal fun navigationPlayerSnapshot(state: PlayerUiState) = PlayerUiState(
     currentTrack = state.currentTrack, isPlaying = state.isPlaying, isLoading = state.isLoading,
     isAutoplayEnabled = state.isAutoplayEnabled, isInfiniteRadio = state.isInfiniteRadio)
+
+/** Catalog annotations observe local favorites only while a foreground destination uses them. */
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+internal fun visibleCatalogFavoriteIds(
+    visible: kotlinx.coroutines.flow.Flow<Boolean>,
+    foreground: kotlinx.coroutines.flow.Flow<Boolean>,
+    source: () -> kotlinx.coroutines.flow.Flow<List<MusicTrack>>,
+    awaitNavigation: suspend () -> Unit = {
+        com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+    }
+): kotlinx.coroutines.flow.Flow<Set<String>> = combine(visible, foreground) { shown, active -> shown && active }
+    .distinctUntilChanged().flatMapLatest { active ->
+        if (active) kotlinx.coroutines.flow.flow {
+            awaitNavigation()
+            emitAll(source())
+        } else emptyFlow()
+    }.map { tracks -> tracks.mapTo(hashSetOf()) { it.id } }.distinctUntilChanged()
+    .flowOn(AppDispatchers.CpuBounded)
 
 data class OnboardingRestoreState(
     val restoring: Boolean = false,
@@ -234,7 +253,9 @@ class PlayerViewModel(
                     android.util.Log.w("PlayerViewModel", "Local library snapshot unavailable", error)
                 }
             } else emptyFlow()
-        }.stateIn(libraryDataScope, SharingStarted.WhileSubscribed(5_000), initial)
+        // The repository already owns the five-second stop grace. Do not stack
+        // another grace period on top while a retained tab is hidden.
+        }.stateIn(libraryDataScope, SharingStarted.WhileSubscribed(0), initial)
 
     private val _libraryMessages = kotlinx.coroutines.flow.MutableSharedFlow<String>(extraBufferCapacity = 8)
     val libraryMessages = _libraryMessages.asSharedFlow()
@@ -312,12 +333,9 @@ class PlayerViewModel(
         if ((searchVisible || detailVisible) && !catalogFavoritesStarted) {
             catalogFavoritesStarted = true
             derivedStateScope.launch {
-                com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-                // Observe shared local favorites only while Search/details use them.
-                catalogUiVisible.flatMapLatest { active ->
-                    if (active) repository.getFavoriteTracks() else emptyFlow()
-                }.map { tracks -> tracks.mapTo(hashSetOf()) { it.id } }
-                    .distinctUntilChanged().collect { catalogBrowser.updateFavorites(it) }
+                visibleCatalogFavoriteIds(catalogUiVisible,
+                    com.example.performance.BackgroundWorkCoordinator.uiForeground,
+                    repository::getFavoriteTracks).collect { catalogBrowser.updateFavorites(it) }
             }
         }
     }
