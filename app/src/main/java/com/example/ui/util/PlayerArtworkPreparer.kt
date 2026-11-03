@@ -41,6 +41,14 @@ internal data class ResolvedPlayerCover(val identity: String, val url: String)
 private val selectedSongCovers = android.util.LruCache<String, String>(64)
 internal fun isSelectedSongCover(trackId: String?, url: String): Boolean =
     trackId != null && selectedSongCovers.get(trackId) == url
+internal fun hasNativeSquareCover(url: String): Boolean {
+    val uri = try { java.net.URI(url) } catch (_: Exception) { return false }
+    val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
+    if (!host.endsWith(".googleusercontent.com") && !host.endsWith(".ggpht.com")) return false
+    val width = Regex("(?:=|-)w(\\d+)").find(url)?.groupValues?.get(1)?.toIntOrNull()
+    val height = Regex("(?:=|-)h(\\d+)").find(url)?.groupValues?.get(1)?.toIntOrNull()
+    return width != null && width > 0 && width == height || Regex("=s[1-9][0-9]*(?:-|$)").containsMatchIn(url)
+}
 internal fun playerCoverState(state: PlayerUiState, cover: ResolvedPlayerCover?): PlayerUiState {
     val track = state.currentTrack ?: return state
     if (cover == null || cover.identity != playerCoverIdentity(track) || cover.url == track.coverUrl) return state

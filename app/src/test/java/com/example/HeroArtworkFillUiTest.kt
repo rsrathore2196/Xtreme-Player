@@ -45,11 +45,11 @@ import javax.imageio.ImageIO
 class HeroArtworkFillUiTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun genericCachedCoverNeverFlashesBeforeTheHeroCropIsReady() {
+    @Test fun squarePlayerCoverNeverFlashesBeforeTheSeparateHeroFrameIsReady() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val previous = Coil.imageLoader(context)
         val release = CompletableDeferred<Unit>()
-        val cropping = AtomicBoolean()
+        val loading = AtomicBoolean()
         val image = Bitmap.createBitmap(1600, 900, Bitmap.Config.ARGB_8888).also {
             Canvas(it).apply {
                 drawColor(android.graphics.Color.GREEN)
@@ -58,21 +58,26 @@ class HeroArtworkFillUiTest {
         }
         val loader = ImageLoader.Builder(context).components {
             add(Interceptor { chain ->
-                if (chain.request.transformations.isNotEmpty()) {
-                    cropping.set(true)
+                if (chain.request.data.toString().contains("i.ytimg.com")) {
+                    loading.set(true)
                     release.await()
                 }
                 chain.proceed(chain.request)
             })
             add(object : Fetcher.Factory<Any> {
                 override fun create(data: Any, options: Options, imageLoader: ImageLoader): Fetcher = Fetcher {
-                    DrawableResult(BitmapDrawable(context.resources, image), false, DataSource.MEMORY_CACHE)
+                    val bitmap = if (data.toString().contains("googleusercontent"))
+                        Bitmap.createBitmap(900, 900, Bitmap.Config.ARGB_8888).apply { eraseColor(android.graphics.Color.MAGENTA) }
+                        else image
+                    DrawableResult(BitmapDrawable(context.resources, bitmap), false, DataSource.MEMORY_CACHE)
                 }
             })
         }.build()
         Coil.setImageLoader(loader)
         val track = MusicTrack("online_playlist", "Song", "Artist", "Album", 180_000L,
-            "https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg", "")
+            "https://lh3.googleusercontent.com/album=w900-h900-l90-rj", "")
+            .copy(id = "yt_abcdefghijk")
+        val videoUrl = "https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg"
         try {
             // Reproduce the ordinary shared thumbnail already cached by playback/playlist UI.
             val preload = java.util.concurrent.CompletableFuture.supplyAsync { kotlinx.coroutines.runBlocking {
@@ -81,8 +86,8 @@ class HeroArtworkFillUiTest {
             compose.waitUntil(5_000) { org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); preload.isDone }
             assertTrue(preload.get() is SuccessResult)
             assertNotNull(loader.memoryCache?.get(coil.memory.MemoryCache.Key(track.coverUrl)))
-            compose.setContent { MaterialTheme { InfiniteRadioHeroCard(track, null, false, onPlayInfiniteRadio = {}) } }
-            compose.waitUntil(5_000) { org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); cropping.get() }
+            compose.setContent { MaterialTheme { InfiniteRadioHeroCard(track, null, false, onPlayInfiniteRadio = {}, artworkResolver = { videoUrl }) } }
+            compose.waitUntil(5_000) { org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); loading.get() }
             val node = compose.onNodeWithTag("infinite_radio_hero_card")
             fun colors(label: String): List<java.awt.Color> {
                 val file = File("/tmp/hero-first-frame-$label.png")
@@ -92,15 +97,15 @@ class HeroArtworkFillUiTest {
             }
             val bounds = node.fetchSemanticsNode().boundsInRoot
             for (color in colors("pending"))
-                assertFalse("An uncropped cached cover must never flash inset inside the Hero: $color", color.green > color.red + 30)
+                assertFalse("A square player cover must never flash in the Hero: $color", color.red > color.green + 30)
             release.complete(Unit)
-            // Wait for the transformed result, then verify the very first displayed rendition fills the Hero.
+            // Wait for the independent native frame, then verify it keeps its landscape content.
             compose.waitUntil(5_000) {
                 org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
-                loader.memoryCache?.keys?.any { it.extras.values.contains(com.example.ui.util.HeroArtworkCropTransformation.cacheKey) } == true
+                loader.memoryCache?.keys?.any { it.key.startsWith("hero-landscape:") } == true
             }
             compose.mainClock.advanceTimeBy(250); compose.waitForIdle()
-            for (color in colors("ready")) assertTrue("The first cover must already fill the Hero: $color", color.red > color.green)
+            for (color in colors("ready")) assertTrue("The native frame's sides must remain visible: $color", color.green > color.red)
             assertEquals(bounds, node.fetchSemanticsNode().boundsInRoot)
         } finally { release.complete(Unit); Coil.setImageLoader(previous); loader.shutdown() }
     }
@@ -133,8 +138,8 @@ class HeroArtworkFillUiTest {
             "https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg", ""))
         try {
             // Exercise the real Coil engine/cache before the UI requests its viewport.
-            val prepared = ImageRequest.Builder(context).data(track.coverUrl).size(1600, 900)
-                .allowHardware(false).transformations(com.example.ui.util.HeroArtworkCropTransformation).build()
+            val prepared = com.example.ui.util.buildHeroArtworkRequest(context, track.coverUrl,
+                androidx.compose.ui.unit.IntSize(1600, 900)).newBuilder().allowHardware(false).build()
             val load = java.util.concurrent.CompletableFuture.supplyAsync { kotlinx.coroutines.runBlocking { loader.execute(prepared) } }
             compose.waitUntil(5_000) { org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); load.isDone }
             val decoded = load.get()
@@ -158,12 +163,12 @@ class HeroArtworkFillUiTest {
             val rendered = ImageIO.read(file)
             for (x in listOf(rendered.width * 8 / 100, rendered.width * 92 / 100)) {
                 val color = java.awt.Color(rendered.getRGB(x, rendered.height * 22 / 100))
-                assertTrue("The cover must fill both sides of the existing card: $color", color.red > color.green)
+                assertTrue("The Hero must retain the native rectangle instead of cutting out its square center: $color", color.green > color.red)
             }
             compose.runOnIdle { track = track.copy(id = "online_second_playlist_occurrence", title = "Same album") }
             compose.mainClock.advanceTimeBy(1_000); compose.waitForIdle()
             assertEquals(before, node.fetchSemanticsNode().boundsInRoot)
-            assertEquals("Returning to the same artwork must reuse Coil's transformed cache", displayedFetches, requests.get())
+            assertEquals("Returning to the same artwork must reuse Coil's Hero cache", displayedFetches, requests.get())
         } finally { Coil.setImageLoader(previous); loader.shutdown() }
     }
 }

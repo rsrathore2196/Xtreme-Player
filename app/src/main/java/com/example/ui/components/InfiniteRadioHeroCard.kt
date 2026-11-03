@@ -34,11 +34,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import coil.size.Precision
 import com.example.data.model.MusicTrack
+import com.example.data.remote.resolveYouTubeHeroArtwork
 import com.example.ui.theme.LocalAppColors
-import com.example.ui.util.ImageConfig
-import com.example.ui.util.rememberOptimizedImageRequest
 
 /** Artwork-led radio entry point. Playback controls remain in the player. */
 @Composable
@@ -51,7 +49,8 @@ fun InfiniteRadioHeroCard(
     modifier: Modifier = Modifier,
     isRadioSession: Boolean = false,
     contentPadding: PaddingValues = PaddingValues(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 12.dp),
-    compactLayout: Boolean = false
+    compactLayout: Boolean = false,
+    artworkResolver: suspend (MusicTrack) -> String? = ::resolveYouTubeHeroArtwork
 ) {
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
@@ -85,20 +84,7 @@ fun InfiniteRadioHeroCard(
             .testTag("infinite_radio_hero_card")
     ) {
         if (seedTrack != null && artworkSize.width > 0 && artworkSize.height > 0) {
-            // Resolve a high-quality source, but decode only the measured pixel rectangle.
-            // Coil's FILL scaling keeps enough pixels for the existing center crop.
-            val artworkRequest = rememberOptimizedImageRequest(
-                track = seedTrack, targetSize = ImageConfig.HERO_BANNER_SIZE, decodeSize = artworkSize
-            )
-            val fullQualityArtwork = remember(artworkRequest, artworkSize) {
-                artworkRequest.newBuilder().size(artworkSize.width, artworkSize.height)
-                    .transformations(com.example.ui.util.HeroArtworkCropTransformation)
-                    // A generic cached thumbnail has not received the Hero crop.
-                    // Draw only transformed results, including engine memory/disk hits.
-                    .placeholderMemoryCacheKey(null as String?)
-                    .allowHardware(false)
-                    .precision(Precision.INEXACT).allowRgb565(false).build()
-            }
+            val fullQualityArtwork = com.example.ui.util.rememberHeroArtworkRequest(seedTrack, artworkSize, artworkResolver)
             AsyncImage(
                 model = fullQualityArtwork,
                 contentDescription = null,

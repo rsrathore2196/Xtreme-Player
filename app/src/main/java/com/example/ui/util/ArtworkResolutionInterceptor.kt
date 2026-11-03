@@ -49,7 +49,8 @@ data class ArtworkRequestMetadata(
     val visibility: ArtworkVisibility? = null,
     val currentTrack: Boolean = false,
     val visibleThumbnail: Boolean = false,
-    val allowVideoFallback: Boolean = true
+    val allowVideoFallback: Boolean = true,
+    val landscapeArtwork: Boolean = false
 )
 
 /** Small visible Home cards need a native thumbnail, not a full-player rendition. */
@@ -220,12 +221,18 @@ class ArtworkResolutionInterceptor : Interceptor {
         } else if (metadata.visibleThumbnail) maxOf(width, height).takeIf { it > 0 } ?: metadata.sourceDimension
         else maxOf(metadata.sourceDimension, width, height)
         val originals = listOf(metadata.providerUrl).filter(String::isNotBlank)
-        val urls = (originals.map { if (metadata.visibleThumbnail) providerThumbnailUrl(it, sourceDimension) else providerArtworkUrl(it, sourceDimension) } +
+        val urls = (originals.map {
+            when {
+                metadata.landscapeArtwork -> heroLandscapeSourceUrl(it, androidx.compose.ui.unit.IntSize(width, height))
+                metadata.visibleThumbnail -> providerThumbnailUrl(it, sourceDimension)
+                else -> providerArtworkUrl(it, sourceDimension)
+            }
+        } +
             (if (metadata.visibleThumbnail) originals else emptyList()) +
             (if (metadata.allowVideoFallback) youtubeArtworkAlternatives(metadata.trackId, originals) else emptyList()) + originals).distinct()
         // A smaller view can reuse a larger rendition already fetched by Home or
         // the player. These alternatives are cache probes, never extra downloads.
-        val cacheUrls = (urls.take(1) + originals.flatMap { source ->
+        val cacheUrls = if (metadata.landscapeArtwork) urls else (urls.take(1) + originals.flatMap { source ->
             listOf(600, 1200, 2000, 3000, 200).map { providerArtworkUrl(source, it) }
         } + urls.drop(1)).distinct()
         val attempted = mutableSetOf<String>()
@@ -246,6 +253,7 @@ class ArtworkResolutionInterceptor : Interceptor {
             if (url.isBlank()) return null
             if (cacheOnly && !memoryOnly && cachedImages.containsKey(url)) return cachedImages[url]
             val candidate = request.newBuilder().data(url).apply {
+                if (metadata.landscapeArtwork) { memoryCacheKey("hero-landscape:$url"); diskCacheKey(url) }
                 if (cacheOnly || memoryOnly) networkCachePolicy(CachePolicy.DISABLED)
                 if (memoryOnly) diskCachePolicy(CachePolicy.DISABLED)
             }.build()
@@ -270,7 +278,14 @@ class ArtworkResolutionInterceptor : Interceptor {
                     }
                 }
             }
-            val loaded = (result as? SuccessResult).also { if (it == null && !cacheOnly && !memoryOnly) lastError = result }
+            val loaded = (result as? SuccessResult)?.let { success ->
+                // Probe restrictions are internal to this attempt. The selected
+                // source feeds header/palette requests, which need the caller's
+                // real cache policy rather than a memory-only probe's flags.
+                success.copy(request = success.request.newBuilder()
+                    .networkCachePolicy(request.networkCachePolicy)
+                    .diskCachePolicy(request.diskCachePolicy).build())
+            }.also { if (it == null && !cacheOnly && !memoryOnly) lastError = result }
             if (cacheOnly && !memoryOnly) cachedImages[url] = loaded
             return loaded
         }

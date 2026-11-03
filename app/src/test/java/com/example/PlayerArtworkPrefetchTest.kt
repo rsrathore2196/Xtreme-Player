@@ -89,7 +89,7 @@ class PlayerArtworkPrefetchTest {
         try {
             prepareCurrentPlayerArtwork(context, tracks, MutableStateFlow(true), scope,
                 onCoverResolved = resolvedCover::set,
-                resolveCover = { song -> if (videoThumbnail) originalCover else com.example.data.remote.resolveYouTubePlayerCover(song) }
+                resolveCover = { if (videoThumbnail) originalCover else null }
             ) { loader }
             val ready = withTimeoutOrNull(5000) { while (TrackPaletteCache.get(track.id) == null) delay(10); true }
             assertTrue("Prefetch must finish: $events", ready == true)

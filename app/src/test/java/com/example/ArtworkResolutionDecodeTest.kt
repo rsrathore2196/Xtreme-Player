@@ -75,7 +75,7 @@ class ArtworkResolutionDecodeTest {
         finally { loader.shutdown(); directory.deleteRecursively() }
     }
 
-    @Test fun cachedNative480pxIsOnlyAPreviewAndTheSharpResultSurvivesHeaderAndPaletteRequests() = runBlocking {
+    @Test fun nativeSquareAlbumCoverSurvivesHeaderAndPaletteRequestsWithoutASeparateVideoFrame() = runBlocking {
         val original = "https://lh3.googleusercontent.com/album=w60-h60-l90-rj"
         val primary = providerArtworkUrl(original, 2000)
         val sharper = youtubeArtworkAlternatives("yt_abcdefghijk", emptyList()).first()
@@ -89,21 +89,23 @@ class ArtworkResolutionDecodeTest {
                 decodeSize = IntSize(1600, 1600), currentTrack = true).newBuilder().allowHardware(false)
                 .target(onStart = { drawable -> (drawable as? BitmapDrawable)?.bitmap?.width?.let(previews::add) }).build()
             val full = loader.execute(request) as SuccessResult
-            assertTrue("Cached cover should be shown during the upgrade: $previews", 480 in previews)
-            assertEquals(sharper, full.request.data)
+            assertEquals(primary, full.request.data)
             val fullBitmap = (full.drawable as BitmapDrawable).bitmap
-            assertEquals(1600, fullBitmap.width)
-            assertEquals(1600, fullBitmap.height)
-            assertEquals(listOf(primary, sharper), fetched)
+            assertEquals(480, fullBitmap.width)
+            assertEquals(480, fullBitmap.height)
+            assertEquals(listOf(primary), fetched)
+            assertEquals(request.networkCachePolicy, full.request.networkCachePolicy)
+            assertEquals(request.diskCachePolicy, full.request.diskCachePolicy)
             val header = playerHeaderArtworkRequest(full.request)
             val palette = playerPaletteRequest(full.request)
-            assertEquals(sharper, header.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.providerUrl)
-            assertEquals(sharper, palette.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.providerUrl)
+            assertEquals(primary, header.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.providerUrl)
+            assertEquals(primary, palette.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.providerUrl)
             assertTrue(loader.execute(header) is SuccessResult)
-            assertTrue(loader.execute(palette) is SuccessResult)
+            val paletteResult = loader.execute(palette)
+            assertTrue((paletteResult as? coil.request.ErrorResult)?.throwable?.stackTraceToString(), paletteResult is SuccessResult)
             val again = loader.execute(request) as SuccessResult
-            assertEquals(1600, (again.drawable as BitmapDrawable).bitmap.width)
-            assertEquals("Small derivatives must not cause downloads or downgrade the final cover", listOf(primary, sharper), fetched)
+            assertEquals(480, (again.drawable as BitmapDrawable).bitmap.width)
+            assertEquals("Small derivatives must not cause downloads or downgrade the final cover", listOf(primary), fetched)
         }
     }
 

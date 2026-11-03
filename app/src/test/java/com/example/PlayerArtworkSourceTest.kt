@@ -39,6 +39,7 @@ class PlayerArtworkSourceTest {
             assertEquals(providerArtworkUrl(original, 1200), request.data)
             assertEquals(request.data, request.placeholderMemoryCacheKey?.key)
             assertTrue(request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.currentTrack)
+            assertFalse(request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.allowVideoFallback)
         }
     }
 

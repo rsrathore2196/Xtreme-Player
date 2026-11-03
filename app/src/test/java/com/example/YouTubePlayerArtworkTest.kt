@@ -44,14 +44,17 @@ class YouTubePlayerArtworkTest {
     }
     private fun search(vararg songs: JSONObject) = JSONObject().put("contents", JSONArray(songs.toList()))
 
-    @Test fun normalSquareArtworkAndNonYoutubeTracksNeverStartMetadataRequests() = runBlocking {
-        val resolver = YouTubePlayerArtworkResolver({ error("No next request") }, { error("No search") })
-        assertNull(resolver.resolve(video.copy(coverUrl = square)))
+    @Test fun croppedSquareVideoRenditionsAlsoCheckNativeSongMetadataButNonYoutubeTracksDoNot() = runBlocking {
+        val calls = AtomicInteger()
+        val resolver = YouTubePlayerArtworkResolver({ calls.incrementAndGet(); linked().toString() }, { error("No search") })
         assertNull(resolver.resolve(video.copy(id = "online_song")))
+        assertEquals(0, calls.get())
+        assertEquals(square, resolver.resolve(video.copy(coverUrl = square)))
+        assertEquals(1, calls.get())
         assertTrue(YouTubePlayerArtworkResolver.needsSongCover(video.copy(
             coverUrl = "https://lh3.googleusercontent.com/video=w544-h306-l90-rj")))
-        assertFalse(YouTubePlayerArtworkResolver.needsSongCover(video.copy(
-            coverUrl = "https://lh3.googleusercontent.com/album=w544-h544-l90-rj")))
+        assertTrue(YouTubePlayerArtworkResolver.needsSongCover(video.copy(
+            coverUrl = "https://lh3.googleusercontent.com/video-crop=w544-h544-l90-rj")))
     }
     @Test fun nativeCounterpartNeedsTheRequestedPrimaryAndAGenuineSquareSongImage() {
         assertEquals(square, YouTubePlayerArtworkResolver.counterpartCover(linked(), videoId))
@@ -105,4 +108,25 @@ class YouTubePlayerArtworkTest {
         val empty = state.copy(currentTrack = null)
         assertSame(empty, playerCoverState(empty, cover))
     }
+    @Test fun squareSongPrimaryIsFoundWhenTheRequestedVideoIsItsCounterpart() {
+        val root = linked(primary = NativeFeedFixtures.id(2))
+        val wrapper = root.getJSONObject("contents").getJSONObject("playlistPanelVideoWrapperRenderer")
+        wrapper.getJSONObject("primaryRenderer").getJSONObject("playlistPanelVideoRenderer")
+            .put("thumbnail", thumbnail(square))
+        wrapper.getJSONArray("counterpart").getJSONObject(0).getJSONObject("counterpartRenderer")
+            .getJSONObject("playlistPanelVideoRenderer").put("videoId", videoId)
+            .put("thumbnail", thumbnail(video.coverUrl, 1280, 720))
+        assertEquals(square, YouTubePlayerArtworkResolver.counterpartCover(root, videoId))
+    }
+
+    @Test fun twoUntypedSquareRenditionsUseSongMatchingInsteadOfGuessingTheVideoCrop() = runBlocking {
+        val root = linked()
+        root.getJSONObject("contents").getJSONObject("playlistPanelVideoWrapperRenderer")
+            .getJSONObject("primaryRenderer").getJSONObject("playlistPanelVideoRenderer")
+            .put("thumbnail", thumbnail("https://lh3.googleusercontent.com/video-crop=w600-h600-l90-rj"))
+        assertNull(YouTubePlayerArtworkResolver.counterpartCover(root, videoId))
+        val resolver = YouTubePlayerArtworkResolver({ root.toString() }, { search(song()).toString() })
+        assertEquals(square, resolver.resolve(video))
+    }
+
 }
