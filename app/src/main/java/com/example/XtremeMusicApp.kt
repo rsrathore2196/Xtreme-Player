@@ -74,6 +74,10 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
         com.example.performance.MaintenanceScheduler.onCacheUsed(this)
         return ImageLoader.Builder(this)
             .components { add(com.example.ui.util.ArtworkResolutionInterceptor()) }
+            .eventListenerFactory {
+                if (androidx.tracing.Trace.isEnabled()) com.example.ui.util.ArtworkTraceEventListener()
+                else coil.EventListener.NONE
+            }
             // Bound actual decode work, without putting instant memory-cache hits
             // behind slow network requests in the artwork interceptor.
             .decoderDispatcher(AppDispatchers.CpuBounded)

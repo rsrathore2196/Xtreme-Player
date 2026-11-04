@@ -716,7 +716,9 @@ private fun androidx.compose.foundation.lazy.LazyListScope.artworkItem(
     itemContent: @Composable androidx.compose.foundation.lazy.LazyItemScope.() -> Unit
 ) {
     item(key = key, contentType = contentType) {
-        VisibleItemArtwork(state, key) { itemContent() }
+        VisibleItemArtwork(state, key) {
+            com.example.performance.BackgroundWorkCoordinator.traceSection("Home row composition") { itemContent() }
+        }
     }
 }
 

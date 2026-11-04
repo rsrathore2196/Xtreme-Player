@@ -30,63 +30,72 @@ Use a release build to assess AOT improvements; debug builds do not represent re
 
 ## Post-launch responsiveness measurement
 
-`StartupResponsivenessBenchmark` records startup timing and frame timing for five cold launches
-and five warm reopenings. It starts Home scrolling and Home → Search → Library → Home taps
-once the dock is available and the modal startup panel has closed. The dock remains mounted
-behind that panel, where input is intentionally blocked; tapping it then would not exercise navigation.
-It samples at least six seconds of the first interactive window and disables UiAutomator's implicit
-idle waits, without waiting for optional feed refreshes. Startup preparation has a bounded
-90-second readiness check that fails explicitly rather than recording blocked gestures as tab switches.
-If a paused real session is available, it also expands the mini-player. Onboarding must already
-be complete; use the preparation instructions above without clearing an existing user's data.
+`StartupResponsivenessBenchmark` records startup timing, frame timing and production trace
+sections for five iterations of each selected journey. It begins scrolling and tab changes as
+soon as Home navigation is available. There is no initialization popup, global preparation
+boundary, hidden-tab warmup, or wait for optional recommendations.
 
 ```sh
 gradle :benchmark:connectedNonMinifiedReleaseAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=com.example.benchmark.StartupResponsivenessBenchmark
 ```
 
-Run the same journey on the same device/build settings before and after changes. Compare
-`frameOverrunMs` percentiles and the Perfetto traces around launch, tab slides and player expansion,
-along with startup timing. Host unit tests and successful compilation do not measure device jank.
+Prepare a dedicated installation as described above. Keep real user data intact. Run the same
+journey with the same device, compilation mode and settings before and after a change. Repeat
+with empty history, substantial history and populated caches, and paused/active playback.
+Host tests and compilation do not establish device responsiveness or measured improvement.
 
-`optionalWorkWakeupAndInteraction` adds a warm-reopen journey covering the 15-second
-optional-work idle window and subsequent Search/Library interaction. Its 17-second
-pause is measurement-only: keep Perfetto recording to check whether contention was
-merely moved later, then verify optional work yields when input resumes. Run this
-with populated history/caches as well as a clean profiling installation. No
-production animation, refresh timer or loading gate is changed by the benchmark.
+The ordinary journeys disable UiAutomator's implicit idle waits, exercise six seconds of
+scrolling/tab changes, and verify `main_tab_<index>_settled` rather than treating the dock's
+selected label as proof that navigation completed. `rapidTabRetargeting` tests taps while
+slides are still in flight. Mini-player expansion/collapse runs when a real retained session
+exists. The Home navigation readiness check fails explicitly if onboarding is incomplete.
 
-`retainedActivityReopening` also measures a hot reopening with the existing Activity,
-separately from warm Activity creation. The early journey exercises all six directed
-Home/Search/Library changes. Use a dedicated installation with a new profile/empty Home
-cache for the first-use case, and repeat with populated caches and a paused/active
-playback session. Never clear a personal installation to prepare a benchmark.
+`warmInitialTwentySecondsThenInteraction` leaves the initial Home untouched for twenty
+seconds, then exercises the first scroll, first visits to Search/Library, and the player.
+Use its Perfetto trace to inspect 0–2, 2–6, 6–12 and 12–20 seconds after the first foreground
+draw. These intervals include the existing six-second Home admissions; there is no new
+production delay. `optionalWorkWakeupAndInteraction` records twenty idle seconds after its
+initial interaction journey, then interrupts optional work with tab changes.
 
-Perfetto includes async `Xtreme/Settings restore`, `Xtreme/Home preview restore`,
-`Xtreme/Home full cache enrichment`, `Xtreme/Home shelf …`, and
-`Xtreme/Home presentation prepare` sections. `Xtreme/Visible artwork` identifies the
-preferred-artwork/fallback portion after the interim cache probe. Inspect these alongside
-thread scheduling, GC, disk I/O and RenderThread/GPU events: work being on IO/Default
-does not establish that it is harmless to frame deadlines. Async sections remain valid
-across coroutine dispatcher switches. Do not infer measured improvement from host
-regression tests, a successful APK build, or the presence of baseline profile rules.
+`coldFirstInteractionAfterOneMinute` and `warmFirstInteractionAfterOneMinute` record sixty
+seconds before any scroll or tab selection. Compare these with `retainedActivityReopening`
+(HOT) and `warmReopening` (Activity recreation with the process retained). For a true
+background return after sixty seconds, additionally background the prepared app for sixty
+seconds and capture its resume with Perfetto; the one-minute tests keep Home foreground.
+They must not be presented as equivalent lifecycle scenarios.
 
-The ordinary journeys now wait for `main_tab_<index>_settled`, which reflects the pager's
-actual settled page and offset, rather than accepting the selected dock label as evidence
-that navigation finished. `rapidTabRetargeting` separately exercises repeated taps while
-slides are still in flight. Neither changes production animation timing.
+Current application trace names are:
 
-New trace sections include `Xtreme/Navigation transition`, `Xtreme/Artwork decode or fetch`,
-`Xtreme/Automatic lossless discovery`, and `Xtreme/Automatic lossless prebuffer` (plus the
-service-owned discovery equivalent). Compare active playback on Maximum/Lossless with a
-capped profile, and empty vs large listening histories, alongside the existing cached/cold
-artwork and hot/warm/cold launch cases. Observe both the first six interactive seconds and
-the later optional-work window. Traces are required before changing retained-tab lifecycle
-publication or image memory budgets; these are not established bottlenecks from static code.
+- `Xtreme/Foreground first draw`, `Xtreme/Settings restore`.
+- `Xtreme/Home native cache restore`, `Xtreme/Home profile cache restore`,
+  `Xtreme/Home local cache restore`.
+- `Xtreme/Native Home response`, `Xtreme/Home shelf projection`,
+  `Xtreme/Home cached shelf reveal`, `Xtreme/Home listening history`.
+- `Xtreme/Home profile admission`, `Xtreme/Home artist admission`,
+  `Xtreme/Home profile discovery`, `Xtreme/Home artist summaries`.
+- `Xtreme/ImageLoader init`, `Xtreme/Artwork decode or fetch`, `Xtreme/Artwork fetch`,
+  `Xtreme/Artwork decode`, `Xtreme/Artwork transform`.
+- `Xtreme/Home row composition`, `Xtreme/Navigation transition`,
+  `Xtreme/Search first access`, `Xtreme/Library first access`.
+- `Xtreme/Discovery optional network`, `Xtreme/Playback source resolution`.
 
-The responsiveness benchmark also includes `coldFirstInteractionAfterOneMinute` and
-`warmFirstInteractionAfterOneMinute`. They wait 60 seconds after initialization **before**
-any scrolling or tab selection, then repeat the same interactions. Compare their first-use
-frames with later frames in the same trace; do not warm the destinations in setup.
-Use the recorded viewport-artwork, listening-card and next-section trace slices to distinguish
-image/data preparation from Main/RenderThread, GC and compilation costs. Keep user data intact.
+`Home row composition` wraps existing lazy item content without adding layout nodes.
+`AndroidOwner:measureAndLayout` is emitted by the current Compose UI dependency; it covers
+owner layout, not exclusively Home. Inspect its slices alongside Home row composition,
+Main/RenderThread scheduling and frame deadlines. Search/Library first-access sections are
+timestamp markers, not end-to-end screen-load durations.
+
+The Coil listener is installed only when Android tracing is enabled. Its fetch/decode/transform
+spans close on success, failure and cancellation, including individual fallback attempts.
+Memory hits do not decode. Fetch includes disk/provider fetch time; decode identifies actual
+decoder work on the shared bounded CPU lane. Inspect gaps between fetch completion and decode
+start alongside thread scheduling to assess queue contention. The existing combined artwork
+span includes the admitted candidate attempt and must not be added to its nested spans.
+
+Trace metrics use `Mode.Sum` to include repeated occurrences instead of reporting only the
+first row/decode/navigation. Sums of overlapping async spans are elapsed request time, not
+CPU time or frame latency. Admission spans include the intentional idle wait; a six-second
+span is not six seconds of CPU work. Use frame-overrun percentiles and Perfetto scheduling,
+GC, disk, database and RenderThread tracks to establish a cause before tuning concurrency,
+cache sizes, retained-tab behavior or image quality.

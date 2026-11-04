@@ -221,13 +221,15 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                 .distinctUntilChanged().collect { eligible -> if (eligible) scheduleSupplements(false) }
         }
         owner.launch {
-            combine(homeVisible, initialPresentation, listeningUnlockAt, BackgroundWorkCoordinator.uiForeground, BackgroundWorkCoordinator.interactions) {
-                active, drawn, qualified, foreground, _ ->
+            // The timer observes input itself. Key this admission to presentation/
+            // visibility eligibility, so touches cannot revoke a completed stage.
+            combine(homeVisible, initialPresentation, listeningUnlockAt, BackgroundWorkCoordinator.uiForeground) {
+                active, drawn, qualified, foreground ->
                 if (active && foreground && drawn != null && qualified != null) maxOf(drawn, qualified) else null
-            }.collectLatest { drawn ->
+            }.distinctUntilChanged().collectLatest { drawn ->
                 profileWorkReady.value = false
                 if (drawn != null) {
-                    idleAdmission(drawn)
+                    BackgroundWorkCoordinator.traceWork("Home profile admission") { idleAdmission(drawn) }
                     profileWorkReady.value = true
                     _profileShelfVisible.value = true
                     initialProfileAdmittedAt.compareAndSet(null, elapsedTime())
@@ -236,13 +238,13 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             }
         }
         owner.launch {
-            combine(homeVisible, initialPresentation, initialProfileAdmittedAt, BackgroundWorkCoordinator.uiForeground,
-                BackgroundWorkCoordinator.interactions) { active, drawn, profileReady, foreground, _ ->
+            combine(homeVisible, initialPresentation, initialProfileAdmittedAt, BackgroundWorkCoordinator.uiForeground) {
+                active, drawn, profileReady, foreground ->
                 if (active && foreground && drawn != null && profileReady != null) maxOf(drawn, profileReady) else null
-            }.collectLatest { start ->
+            }.distinctUntilChanged().collectLatest { start ->
                 _optionalWorkReady.value = false
                 if (start != null) {
-                    idleAdmission(start)
+                    BackgroundWorkCoordinator.traceWork("Home artist admission") { idleAdmission(start) }
                     _optionalWorkReady.value = true
                     _artistPortraitsReady.value = true
                     initialArtistAdmittedAt.compareAndSet(null, elapsedTime())
@@ -276,7 +278,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             finally { profileRestored.complete(Unit) }
         }
         owner.launch {
-            try { cache.readLocal(homeKey)?.let { saved ->
+            try { BackgroundWorkCoordinator.traceWork("Home local cache restore") { cache.readLocal(homeKey) }?.let { saved ->
                 _listeningHistoryCard.update { it.copy(tracks = saved.history.tracks, isLoaded = saved.history.tracks.isNotEmpty()) }
                 val artists = saved.artists.take(15).takeIf { saved.artistDataVersion == 3 }.orEmpty()
                 _mostListenedArtists.value = artists
@@ -320,7 +322,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                     historyUnavailable = true
                     _userMode.value = HomeUserMode.UNAVAILABLE
                     _artistStatus.value = ShelfLoadStatus.ERROR
-                } }.collectLatest { rowsSnapshot ->
+                } }.collectLatest { rowsSnapshot -> BackgroundWorkCoordinator.traceWork("Home listening history") {
                     try {
                         val metadataRevision = rowsSnapshot.firstOrNull()?.trackMetadataRevision
                         val metadataChanged = metadataRevision == null || metadataRevision != recentMetadataRevision
@@ -388,7 +390,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                         _userMode.value = HomeUserMode.UNAVAILABLE
                         _artistStatus.value = ShelfLoadStatus.ERROR
                     }
-                }
+                } }
         }
         owner.launch {
             localRestored.await()

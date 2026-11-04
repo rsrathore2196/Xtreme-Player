@@ -39,6 +39,7 @@ class AdaptiveHomeLoadingTest {
     private val stores = mutableListOf<ViewModelStore>()
     private val pages = AtomicInteger(); private val supplements = AtomicInteger(); private val profiles = AtomicInteger()
     private val primaryCalls = AtomicInteger()
+    private val idleAdmissions = AtomicInteger()
     private var clockPump: Job? = null
     private fun song(n: Int) = MusicTrack("yt_${NativeFeedFixtures.id(n)}", "Song $n", "Artist $n", "Album", 120_000, "", "")
     private fun shelf(n: Int) = ServerHomeShelf("s$n", "Native $n", tracks = listOf(song(n)))
@@ -76,7 +77,10 @@ class AdaptiveHomeLoadingTest {
                     profileWait?.await()
                     if (failProfile) throw java.io.IOException("Temporary profile failure")
                     YouTubeMusicApiService.ProfileShelfResult(shelf(20).copy(title = "Music for You")) },
-                idleAdmission = { start -> if (optional) BackgroundWorkCoordinator.awaitContinuousForegroundIdle(start, 6_000L) else awaitCancellation() },
+                idleAdmission = { start ->
+                    idleAdmissions.incrementAndGet()
+                    if (optional) BackgroundWorkCoordinator.awaitContinuousForegroundIdle(start, 6_000L) else awaitCancellation()
+                },
                 connectivityUpdates = emptyFlow(),
                 supplementalLoader = { _, browse, _ ->
                     supplements.incrementAndGet()
@@ -265,6 +269,40 @@ class AdaptiveHomeLoadingTest {
         vm.refreshAll().join()
         withTimeout(5_000) { while (profiles.get() != 2) delay(10) }
         assertNotNull(vm.profileShelf.value)
+    }
+    @Test fun completedOptionalAdmissionsSurviveTouchesWithoutRepeatingTheIdleStages() = runBlocking<Unit> {
+        returningHistory()
+        val vm = model(optional = true)
+        withTimeout(5_000) {
+            vm.serverShelves.first { it.size == 8 }
+            vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING }
+        }
+        stopClock(); idle(); settled(vm, "initialProfileSettledAt")
+        idle(); settled(vm, "initialArtistSettledAt")
+        assertTrue(vm.optionalWorkReady.value)
+        @Suppress("UNCHECKED_CAST")
+        val profileReady = vm.javaClass.getDeclaredField("profileWorkReady").apply { isAccessible = true }
+            .get(vm) as StateFlow<Boolean>
+        assertTrue(profileReady.value)
+        val admissions = idleAdmissions.get()
+        repeat(4) {
+            BackgroundWorkCoordinator.touch(true); delay(75)
+            assertTrue("A completed profile admission must survive input", profileReady.value)
+            assertTrue("A completed artist admission must survive input", vm.optionalWorkReady.value)
+            BackgroundWorkCoordinator.touch(false); delay(75)
+        }
+        assertEquals("Touches must not relaunch completed idle waits", admissions, idleAdmissions.get())
+        assertEquals(1, profiles.get())
+
+        BackgroundWorkCoordinator.foreground(false)
+        withTimeout(5_000) { vm.optionalWorkReady.first { !it }; profileReady.first { !it } }
+        BackgroundWorkCoordinator.foreground(true)
+        delay(100)
+        assertFalse("A new foreground lifecycle must pass the idle gate again", vm.optionalWorkReady.value)
+        idle(5_999); assertFalse(vm.optionalWorkReady.value)
+        idle(1)
+        withTimeout(5_000) { vm.optionalWorkReady.first { it }; profileReady.first { it } }
+        assertEquals("Retained fresh profile content must not be fetched again", 1, profiles.get())
     }
     @Test fun returningActualPlaysReserveProfileAndArtistStagesBeforeNativeExpansion() = runBlocking<Unit> {
         db.musicDao().insertOrUpdateTrack(TrackEntity.fromMusicTrack(song(1)))

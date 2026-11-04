@@ -16,6 +16,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.Shadows.shadowOf
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -32,13 +33,13 @@ class AsyncImageLoaderTest {
             assertTrue(loader.execute(request) is coil.request.ErrorResult)
         } finally { loader.shutdown() }
     }
-    @Test fun earlyRequestsSuspendAndShareOneBackgroundConstruction() = runTest {
+    @Test fun earlyRequestsSuspendAndShareOneBackgroundConstruction() = runBlocking<Unit> {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val started = CountDownLatch(1)
         val release = CountDownLatch(1)
         val builds = AtomicInteger()
         val mainBuilds = AtomicInteger()
-        Dispatchers.setMain(UnconfinedTestDispatcher(testScheduler))
+        Dispatchers.setMain(UnconfinedTestDispatcher())
         val loader = AsyncImageLoader(context) {
             builds.incrementAndGet()
             if (Looper.myLooper() == Looper.getMainLooper()) mainBuilds.incrementAndGet()
@@ -49,9 +50,8 @@ class AsyncImageLoaderTest {
         try {
             assertEquals("Constructing the singleton does not prewarm caches", 0, builds.get())
             val request = ImageRequest.Builder(context).data(ColorDrawable(android.graphics.Color.RED)).size(32).build()
-            val first = async { loader.execute(request) }
-            val second = async { loader.execute(request) }
-            runCurrent()
+            val first = async(start = CoroutineStart.UNDISPATCHED) { loader.execute(request) }
+            val second = async(start = CoroutineStart.UNDISPATCHED) { loader.execute(request) }
             assertTrue(started.await(3, TimeUnit.SECONDS))
             assertFalse(first.isCompleted)
             assertFalse(second.isCompleted)
@@ -60,6 +60,14 @@ class AsyncImageLoaderTest {
             withContext(Dispatchers.Main.immediate) { uiRan = true }
             assertTrue(uiRan)
             release.countDown()
+            // Coil also posts request completion through Android's Handler. A
+            // virtual coroutine clock alone cannot drain Robolectric's Looper.
+            withTimeout(5_000L) {
+                while (!first.isCompleted || !second.isCompleted) {
+                    shadowOf(Looper.getMainLooper()).idle()
+                    delay(10)
+                }
+            }
             assertTrue(first.await() is SuccessResult)
             assertTrue(second.await() is SuccessResult)
             assertSame(loader.await(), loader.await())

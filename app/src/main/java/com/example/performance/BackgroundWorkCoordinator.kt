@@ -44,6 +44,14 @@ object BackgroundWorkCoordinator {
         try { return block() }
         finally { section.close() }
     }
+
+    /** Synchronous UI sections need neither an async cookie nor a retained handle. */
+    inline fun <T> traceSection(name: String, block: () -> T): T {
+        val enabled = androidx.tracing.Trace.isEnabled()
+        if (enabled) androidx.tracing.Trace.beginSection("Xtreme/$name")
+        try { return block() }
+        finally { if (enabled) androidx.tracing.Trace.endSection() }
+    }
     private val foregroundDrawPending = AtomicBoolean(false)
     private val firstFrame = kotlinx.coroutines.CompletableDeferred<Unit>()
     fun expectForegroundDraw() {

@@ -21,7 +21,7 @@ import org.junit.After
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Exercise the first interactive window after the modal startup boundary has closed. */
+/** Exercise instant Home presentation, optional wakeup, and the first real interactions. */
 @OptIn(androidx.benchmark.macro.ExperimentalMetricApi::class)
 @RunWith(AndroidJUnit4::class)
 @LargeTest
@@ -41,6 +41,7 @@ class StartupResponsivenessBenchmark {
 
     @Test fun coldOpening() = opening(StartupMode.COLD)
     @Test fun warmReopening() = opening(StartupMode.WARM)
+    @Test fun warmInitialTwentySecondsThenInteraction() = opening(StartupMode.WARM, idleBeforeFirstInteractionMs = 20_000L)
     @Test fun coldFirstInteractionAfterOneMinute() = opening(StartupMode.COLD, idleBeforeFirstInteractionMs = 60_000L)
     @Test fun warmFirstInteractionAfterOneMinute() = opening(StartupMode.WARM, idleBeforeFirstInteractionMs = 60_000L)
     @Test fun retainedActivityReopening() = opening(StartupMode.HOT)
@@ -50,13 +51,33 @@ class StartupResponsivenessBenchmark {
     private fun opening(mode: StartupMode, observeOptionalWakeup: Boolean = false, rapidRetargeting: Boolean = false,
         idleBeforeFirstInteractionMs: Long = 0L) = benchmark.measureRepeated(
         packageName = TARGET,
-        metrics = listOf(StartupTimingMetric(), FrameTimingMetric(),
-            TraceSectionMetric("Xtreme/Home recent restore"),
-            TraceSectionMetric("Xtreme/Home history page"),
-            TraceSectionMetric("Xtreme/Artwork cached mapping"),
-            TraceSectionMetric("Xtreme/Tab viewport artwork"),
-            TraceSectionMetric("Xtreme/Listening cards prepare"),
-            TraceSectionMetric("Xtreme/Next cached Home section")),
+        metrics = listOf(StartupTimingMetric(), FrameTimingMetric()) + listOf(
+            "Xtreme/Foreground first draw",
+            "Xtreme/Settings restore",
+            "Xtreme/Home native cache restore",
+            "Xtreme/Home profile cache restore",
+            "Xtreme/Home local cache restore",
+            "Xtreme/Native Home response",
+            "Xtreme/Home shelf projection",
+            "Xtreme/Home listening history",
+            "Xtreme/Home profile admission",
+            "Xtreme/Home artist admission",
+            "Xtreme/Home profile discovery",
+            "Xtreme/Home artist summaries",
+            "Xtreme/Home cached shelf reveal",
+            "Xtreme/ImageLoader init",
+            "Xtreme/Artwork decode or fetch",
+            "Xtreme/Artwork fetch",
+            "Xtreme/Artwork decode",
+            "Xtreme/Artwork transform",
+            "Xtreme/Home row composition",
+            "AndroidOwner:measureAndLayout",
+            "Xtreme/Navigation transition",
+            "Xtreme/Search first access",
+            "Xtreme/Library first access",
+            "Xtreme/Discovery optional network",
+            "Xtreme/Playback source resolution"
+        ).map { TraceSectionMetric(it, mode = TraceSectionMetric.Mode.Sum) },
         compilationMode = CompilationMode.Partial(),
         startupMode = mode,
         iterations = 5,
@@ -71,9 +92,6 @@ class StartupResponsivenessBenchmark {
         // include onboarding/API latency in a frame-responsiveness measurement.
         check(device.wait(Until.hasObject(By.res("nav_tab_home_active")), 90_000L)) {
             "Home did not become interactive. Check onboarding. See benchmark/README.md."
-        }
-        check(device.wait(Until.gone(By.res("startup_initialization_overlay")), 90_000L)) {
-            "Startup presentation did not finish; cannot measure interactive navigation."
         }
         // Do not visit any other tab or scroll before this wait: doing so would
         // warm the exact first-use work this scenario is intended to measure.
@@ -94,7 +112,7 @@ class StartupResponsivenessBenchmark {
         if (observeOptionalWakeup) {
             // Measurement only: trace across optional admission, then interrupt
             // it. This is not an application startup delay or a UI-idle wait.
-            SystemClock.sleep(17_000L)
+            SystemClock.sleep(20_000L)
             tab("search")
             check(device.wait(Until.hasObject(By.res("search_screen")), 2_000L))
             tab("library")
