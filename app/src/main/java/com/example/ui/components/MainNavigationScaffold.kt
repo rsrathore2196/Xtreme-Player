@@ -347,7 +347,8 @@ fun MainNavigationScaffold(
                                 onToggleFavorite = { track -> viewModel.toggleLike(track) },
                                 onOpenSettings = { selectTab(3) },
                                 onPlayInfiniteRadio = { seed -> viewModel.playInfiniteRadio(seed) },
-                                onAddToQueue = { track -> viewModel.addToQueue(track) }
+                                onAddToQueue = { track -> viewModel.addToQueue(track) },
+                                prepareCoreTabs = viewModel::prepareStartupTabs
                             )
                             1 -> {
                                 val searchState by viewModel.searchState.collectAsStateWithLifecycle()
@@ -378,10 +379,13 @@ fun MainNavigationScaffold(
                                 )
                             }
                             2 -> {
-                                val favoriteTracks by viewModel.favoriteTracks.collectAsStateWithLifecycle()
+                                val favoriteCount by viewModel.favoriteTrackCount.collectAsStateWithLifecycle()
                                 val playlists by viewModel.playlists.collectAsStateWithLifecycle()
                                 LibraryScreen(
-                                    favoriteTracks = favoriteTracks,
+                                    favoriteTracks = emptyList(),
+                                    favoriteTracksState = viewModel.favoriteTracks,
+                                    favoriteCount = favoriteCount,
+                                    onPlayLikedSongs = { viewModel.playLikedSongs() },
                                     listState = libraryListState,
                                     playlists = playlists,
                                     currentPlayingTrackId = currentPlayingTrackId,

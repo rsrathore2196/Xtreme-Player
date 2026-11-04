@@ -19,7 +19,7 @@ import kotlinx.coroutines.CancellationException
 /** Only the visible Hero requests its video artwork; no playback metadata is rewritten. */
 @Composable
 internal fun rememberHeroArtworkRequest(track: MusicTrack, size: IntSize,
-    resolve: suspend (MusicTrack) -> String?): ImageRequest {
+    resolve: suspend (MusicTrack) -> String?, resolveMetadata: Boolean = true): ImageRequest {
     val context = LocalContext.current
     val active = LocalArtworkRequestsActive.current
     val identity = heroArtworkIdentity(track)
@@ -31,7 +31,7 @@ internal fun rememberHeroArtworkRequest(track: MusicTrack, size: IntSize,
     var refreshAfter by rememberSaveable(identity) { mutableLongStateOf(0L) }
     var retainedIdentity by rememberSaveable { mutableStateOf(identity) }
     val currentResolver by rememberUpdatedState(resolve)
-    LaunchedEffect(identity, active) {
+    LaunchedEffect(identity, active, resolveMetadata) {
         // Saveable inputs are not validated when an offscreen item is restored.
         // A track change while scrolled away must never restore the previous art.
         if (retainedIdentity != identity) {
@@ -40,7 +40,7 @@ internal fun rememberHeroArtworkRequest(track: MusicTrack, size: IntSize,
             resolved = false
             refreshAfter = 0L
         }
-        if (active && (!resolved || System.currentTimeMillis() >= refreshAfter)) {
+        if (active && resolveMetadata && (!resolved || System.currentTimeMillis() >= refreshAfter)) {
             val image = try { loadVisibleHeroArtwork { currentResolver(track) } }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { null }

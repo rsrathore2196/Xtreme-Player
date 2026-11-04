@@ -108,4 +108,40 @@ class HomeCardCacheRestorationTest {
         assertEquals("https://audio.example/played", representative.audioUrl)
         assertEquals(0, cached.artistDataVersion)
     }
+
+    @Test fun initialProjectionRestoresOnlyPriorityNativeShelvesWithoutLocalCards() = runBlocking {
+        val cache = HomeCardCache(app)
+        val rows = listOf("Seasonal", "Trending Community Playlists", "Albums & Singles", "Quick Picks", "New releases")
+            .mapIndexed { index, name -> ServerHomeShelf("native-$index", name, tracks = listOf(song())) }
+        val value = saved().copy(serverShelves = rows)
+        cache.save(value)
+        durable("home_initial_${HomeCacheIdentity.fileKey(value.profileKey)}_v3.json"); clearMemory()
+        val initial = cache.readInitialServer(value.profileKey)!!
+        assertTrue(initial.initialProjection)
+        assertEquals(listOf("Quick Picks", "Albums & Singles", "Trending Community Playlists"), initial.serverShelves.map { it.title })
+        assertTrue(initial.history.tracks.isEmpty()); assertTrue(initial.artists.isEmpty()); assertNull(initial.profileShelf)
+        assertEquals(rows.map { it.id }, cache.readServer(value.profileKey)!!.serverShelves.map { it.id })
+        assertEquals(value.history.tracks, cache.readRecent(value.profileKey)!!.history.tracks)
+        assertEquals(value.artists, cache.readArtists(value.profileKey)!!.artists)
+    }
+
+    @Test fun publishingInitialProjectionDoesNotOverwriteTheExpandedCache() = runBlocking {
+        val cache = HomeCardCache(app)
+        val value = saved().copy(serverShelves = listOf("Quick Picks", "Albums & Singles", "Trending Community Playlists", "Seasonal")
+            .mapIndexed { index, name -> ServerHomeShelf("native-$index", name, tracks = listOf(song())) })
+        cache.saveHome(value)
+        val changed = value.serverShelves.take(3).map { it.copy(subtitle = "Updated native metadata") }
+        cache.saveInitialHome(value.copy(serverShelves = changed))
+        assertEquals(changed.map { it.id to it.subtitle }, cache.readInitialServer(value.profileKey)!!.serverShelves.map { it.id to it.subtitle })
+        assertEquals(value.serverShelves.map { it.id to it.subtitle }, cache.readServer(value.profileKey)!!.serverShelves.map { it.id to it.subtitle })
+    }
+
+    @Test fun preProjectionCacheRemainsCompatibleAndAccountIsolated() = runBlocking {
+        val value = saved().copy(serverShelves = listOf(ServerHomeShelf("quick", "Quick Picks", tracks = listOf(song()))))
+        val cache = HomeCardCache(app); cache.saveHome(value)
+        val projection = durable("home_initial_${HomeCacheIdentity.fileKey(value.profileKey)}_v3.json")
+        projection.delete(); clearMemory()
+        assertEquals("quick", cache.readInitialServer(value.profileKey)!!.serverShelves.single().id)
+        assertNull(cache.readInitialServer(HomeCacheIdentity.home(profile, "another-account")))
+    }
 }

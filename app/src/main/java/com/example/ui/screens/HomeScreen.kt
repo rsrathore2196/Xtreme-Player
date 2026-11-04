@@ -307,9 +307,10 @@ fun HomeScreenContent(
         } finally { homeViewModel.setArtistSectionRelevant(false) }
     }
     val homeView = androidx.compose.ui.platform.LocalView.current
-    LaunchedEffect(homeViewModel, artworkActive, homeView) {
+    val initialPreparedAt = homeViewModel?.initialHomePreparedAt?.collectAsStateWithLifecycle()?.value
+    LaunchedEffect(homeViewModel, artworkActive, homeView, initialPreparedAt) {
         if (artworkActive && homeViewModel != null) {
-            homeView.awaitContentDraw { homeViewModel.onHomeFrameDrawn() }
+            homeView.awaitContentDraw { homeViewModel.onHomeFrameDrawn(initialPreparedAt) }
         }
     }
     val profileVisible = homeViewModel?.profileShelfVisible?.collectAsStateWithLifecycle()?.value ?: true

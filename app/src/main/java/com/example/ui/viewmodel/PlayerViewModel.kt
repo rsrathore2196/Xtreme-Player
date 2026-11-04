@@ -26,6 +26,10 @@ import com.example.playback.PlayerUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -133,6 +137,7 @@ data class OnboardingRestoreState(
     val profileForDetails: com.example.data.local.UserProfile? = null
 )
 
+@OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class PlayerViewModel(
     private val repository: MusicRepository,
     private val playbackManager: PlaybackManager,
@@ -274,6 +279,11 @@ class PlayerViewModel(
     val favoriteTracks: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedFavoriteTracks) {
         repository.getFavoriteTracks()
     }
+    val favoriteTrackCount: StateFlow<Int> = retainedLibraryData(repository.retainedFavoriteTracks.size) { repository.observeFavoriteCount() }
+    fun playLikedSongs() = viewModelScope.launch {
+        val songs = withContext(AppDispatchers.Io) { repository.getFavoriteTracks().first() }
+        songs.firstOrNull()?.let { playTrack(it, songs) }
+    }
 
     val recentlyPlayed: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedRecentlyPlayed) {
         repository.getRecentlyPlayedTracks()
@@ -281,7 +291,39 @@ class PlayerViewModel(
 
     // Foreground collectors replay the repository's one shared Room snapshot.
     // Hidden screens retain the last value and stop observing when no consumer remains.
-    val playlists: StateFlow<List<PlaylistEntity>> = retainedLibraryData(repository.retainedPlaylists) { repository.getAllPlaylists() }
+    private val _preparedPlaylists = MutableStateFlow(repository.retainedPlaylists)
+    val playlists: StateFlow<List<PlaylistEntity>> = _preparedPlaylists.asStateFlow()
+    private val corePreparationMutex = Mutex()
+    private var corePreparation: Pair<String, Deferred<Unit>>? = null
+
+    /** Data-only prewarm; early tab actions retain their own foreground request paths. */
+    suspend fun prepareStartupTabs() {
+        val profile = userProfile.value
+        val key = "${profile.countryCode}|${application.resources.configuration.locales.toLanguageTags()}"
+        val pending = corePreparationMutex.withLock {
+            corePreparation?.takeIf { it.first == key }?.second ?: run {
+              corePreparation?.second?.cancel()
+              viewModelScope.async<Unit>(AppDispatchers.Io) {
+                com.example.performance.BackgroundWorkCoordinator.traceWork("Startup Search cache") {
+                    try {
+                        val categories = withTimeoutOrNull(3_000L) { repository.cachedExploreCategories(profile) }.orEmpty()
+                        ensureActive()
+                        if (categories.isNotEmpty() && userProfile.value.countryCode == profile.countryCode &&
+                            !_searchState.value.exploreIndexReady) _searchState.update { it.copy(exploreCategories = categories) }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { /* A missing category cache is a settled stage. */ }
+                }
+                com.example.performance.BackgroundWorkCoordinator.traceWork("Startup Library playlists") {
+                    try {
+                        withTimeoutOrNull(3_000L) { repository.getAllPlaylists().first() }?.let { _preparedPlaylists.value = it }
+                    } catch (cancelled: CancellationException) { throw cancelled }
+                    catch (_: Exception) { /* Retain the last valid lightweight playlist snapshot. */ }
+                }
+              }.also { corePreparation = key to it }
+            }
+        }
+        pending.await()
+    }
 
     private val preparedSettings = (application as? com.example.XtremeMusicApp)?.takeInitialStartupSettings()
     private val initialSettings = preparedSettings ?: com.example.data.local.StartupSettings()
@@ -545,6 +587,12 @@ class PlayerViewModel(
     ) }
 
     init {
+        libraryDataScope.launch {
+            combine(_preparedPlaylists.subscriptionCount, com.example.performance.BackgroundWorkCoordinator.uiForeground) { count, foreground -> count > 0 && foreground }
+                .distinctUntilChanged().flatMapLatest { active -> if (active) repository.getAllPlaylists() else emptyFlow() }
+                .catch { if (it is CancellationException) throw it }
+                .collect { _preparedPlaylists.value = it }
+        }
         viewModelScope.launch(AppDispatchers.Io) {
             if (preparedSettings != null) return@launch
             try {
@@ -861,9 +909,9 @@ class PlayerViewModel(
         activePlaybackLaunchJob = viewModelScope.launch(AppDispatchers.Io) {
             try {
                 val requestKey = com.example.data.cache.HomeCacheIdentity.home(_userProfile.value)
-                val cached = com.example.data.cache.HomeCardCache(application).read(requestKey)
-                val cachedSeed = cached?.serverShelves?.firstNotNullOfOrNull { shelf -> shelf.tracks.firstOrNull() }
-                val pivot = seedTrack ?: state.currentTrack ?: recentlyPlayed.value.firstOrNull() ?: cachedSeed
+                val pivot = seedTrack ?: state.currentTrack ?: recentlyPlayed.value.firstOrNull()
+                    ?: com.example.data.cache.HomeCardCache(application).readInitialServer(requestKey)
+                        ?.serverShelves?.firstNotNullOfOrNull { shelf -> shelf.tracks.firstOrNull() }
                     ?: com.example.data.remote.YouTubeMusicApiService.getHomeRecommendations(com.example.data.cache.HomeCacheIdentity.region(_userProfile.value), essential = true)
                         .shelves.firstNotNullOfOrNull { shelf -> shelf.tracks.firstOrNull() }
                 if (pivot == null) {

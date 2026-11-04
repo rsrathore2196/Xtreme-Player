@@ -352,6 +352,8 @@ class MusicRepository private constructor(
     }
 
     fun getFavoriteTracks(): Flow<List<MusicTrack>> = favoriteSnapshots
+    fun observeFavoriteCount(): Flow<Int> = flow { emitAll(musicDao.observeFavoriteCount()) }
+        .distinctUntilChanged().flowOn(AppDispatchers.Database)
     /** Optional ranking must not wait indefinitely for unavailable local storage. */
     suspend fun favoriteSnapshotOrRetained(): List<MusicTrack> =
         if ("favorites" in libraryFailures.value) retainedFavoriteTracks
@@ -505,6 +507,18 @@ class MusicRepository private constructor(
         catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { null }
         else streamResolver.resolveYouTubeFallback(track, quality)
+    }
+
+    suspend fun cachedExploreCategories(profile: UserProfile? = null): List<ExploreCategory> = withContext(AppDispatchers.Io) {
+        val preferences = homeProfile(profile)
+        catalogBrowser.cachedExploreCategories(preferences.countryCode.ifBlank { "US" }, browseLanguage())
+    }
+
+    suspend fun prepareStartupTabs() {
+        try { kotlinx.coroutines.withTimeoutOrNull(3_000L) { cachedExploreCategories() } }
+        catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { }
+        try { kotlinx.coroutines.withTimeoutOrNull(3_000L) { getAllPlaylists().first() } }
+        catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { }
     }
 
     /** Public category browsing stays metadata-only and uses the active profile's region. */

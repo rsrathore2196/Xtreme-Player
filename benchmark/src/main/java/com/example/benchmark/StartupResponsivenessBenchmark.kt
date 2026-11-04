@@ -41,6 +41,7 @@ class StartupResponsivenessBenchmark {
 
     @Test fun coldOpening() = opening(StartupMode.COLD)
     @Test fun warmReopening() = opening(StartupMode.WARM)
+    @Test fun warmStagedStartupThenInteraction() = opening(StartupMode.WARM, idleBeforeFirstInteractionMs = 40_000L)
     @Test fun warmInitialTwentySecondsThenInteraction() = opening(StartupMode.WARM, idleBeforeFirstInteractionMs = 20_000L)
     @Test fun coldFirstInteractionAfterOneMinute() = opening(StartupMode.COLD, idleBeforeFirstInteractionMs = 60_000L)
     @Test fun warmFirstInteractionAfterOneMinute() = opening(StartupMode.WARM, idleBeforeFirstInteractionMs = 60_000L)
@@ -56,7 +57,14 @@ class StartupResponsivenessBenchmark {
             "Xtreme/Settings restore",
             "Xtreme/Home native cache restore",
             "Xtreme/Home profile cache restore",
-            "Xtreme/Home local cache restore",
+            "Xtreme/Startup core tabs",
+            "Xtreme/Startup Search cache",
+            "Xtreme/Startup Library playlists",
+            "Xtreme/Startup Recently Played idle",
+            "Xtreme/Startup Recently Played cache",
+            "Xtreme/Startup artist cache",
+            "Xtreme/Startup remaining native idle",
+            "Xtreme/Startup remaining native cache",
             "Xtreme/Native Home response",
             "Xtreme/Home shelf projection",
             "Xtreme/Home listening history",

@@ -23,6 +23,18 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class ExploreBrowseCatalogTest {
+    @org.junit.Before fun isolateApplicationOwnedCache() {
+        // Robolectric gives each case a different files directory; the process
+        // singleton must not keep a previous case's database context.
+        val field = RecommendationCache::class.java.getDeclaredField("instance").apply { isAccessible = true }
+        (field.get(null) as? RecommendationCache)?.let { previous ->
+            (previous.javaClass.getDeclaredField("scope").apply { isAccessible = true }.get(previous) as CoroutineScope).cancel()
+            val database = previous.javaClass.getDeclaredField("database\$delegate").apply { isAccessible = true }.get(previous) as Lazy<*>
+            if (database.isInitialized()) (database.value as RecommendationCacheDatabase).close()
+        }
+        field.set(null, null)
+    }
+
     @Test fun albumPlaybackUsesTheExactReleaseCoverOnEveryPageWithoutAdditionalLookups() = runBlocking {
         var calls = 0
         val repository = CatalogRepository(browseLoader = { _, _, token, _, _ ->
@@ -75,6 +87,20 @@ class ExploreBrowseCatalogTest {
             token?.let { put("continuations", JSONArray().put(JSONObject()
                 .put("nextContinuationData", JSONObject().put("continuation", it)))) }
         })).toString()
+
+    @Test fun startupCategoryRestoreUsesOnlyExistingCacheAndNeverInvokesBrowseOnAMiss() = runBlocking {
+        var calls = 0
+        val repository = CatalogRepository(browseLoader = { _, _, _, _, _ ->
+            calls++; categories(grid("Genres", button("Rock", "FEmusic_rock", "rock")))
+        })
+        assertTrue(repository.cachedExploreCategories("US", "en").isEmpty())
+        assertEquals(0, calls)
+        val fetched = repository.exploreCategories("US", "en")
+        assertEquals(1, calls)
+        assertEquals(fetched, repository.cachedExploreCategories("US", "en"))
+        assertTrue(repository.cachedExploreCategories("IN", "hi").isEmpty())
+        assertEquals(1, calls)
+    }
 
     @Test fun categoryIndexPreservesOpaqueEndpointsAndDropsOnlyDuplicateShortcuts() {
         val root = JSONObject(categories(

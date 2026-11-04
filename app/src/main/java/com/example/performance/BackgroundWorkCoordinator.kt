@@ -27,6 +27,14 @@ object BackgroundWorkCoordinator {
     // Audio decoding, stream extraction and network waits remain independent.
     val optionalCpuDispatcher = AppDispatchers.CpuBounded
     private val traceCookies = AtomicInteger()
+    private val corePreparations = AtomicInteger()
+
+    /** Optional process work yields to data-only core preparation, never UI or playback. */
+    fun coreTabsPreparation(): AutoCloseable {
+        corePreparations.incrementAndGet()
+        val closed = AtomicBoolean()
+        return AutoCloseable { if (closed.compareAndSet(false, true)) corePreparations.decrementAndGet() }
+    }
 
     fun trace(name: String): AutoCloseable {
         val cookie = traceCookies.incrementAndGet()
@@ -103,7 +111,7 @@ object BackgroundWorkCoordinator {
             // Headless workers must not wait for a UI that will not draw.
             if (!foreground.get()) return
             val now = SystemClock.elapsedRealtime()
-            val uiReady = firstFrame.isCompleted && optionalInteractionIdle(now)
+            val uiReady = firstFrame.isCompleted && corePreparations.get() == 0 && optionalInteractionIdle(now)
             if (uiReady && jobs.get() == 0 && isInteractionIdle()) return
             delay(250L)
         }
@@ -129,6 +137,7 @@ object BackgroundWorkCoordinator {
     private fun optionalCanRun(requireForeground: Boolean, urgent: () -> Boolean, awaitFrameQuiet: Boolean = true): Boolean {
         if (urgent()) return true
         if (com.example.recommendation.DiscoveryRequestCoordinator.playbackResolving) return false
+        if (foreground.get() && corePreparations.get() > 0) return false
         if (requireForeground && !foreground.get()) return false
         if (!foreground.get()) return true
         return isInteractionIdle(awaitFrameQuiet = awaitFrameQuiet) && optionalInteractionIdle(SystemClock.elapsedRealtime(), awaitFrameQuiet)
@@ -234,7 +243,7 @@ object BackgroundWorkCoordinator {
                     val interactionQuiet = !foreground.get() || optionalInteractionIdle(now)
                     val breathingGapMet = lastOptionalCompleted.get() == 0L ||
                         now - lastOptionalCompleted.get() >= BETWEEN_JOBS_MS
-                    val quiet = jobs.get() == 0 && (!foreground.get() ||
+                    val quiet = (!foreground.get() || corePreparations.get() == 0) && jobs.get() == 0 && (!foreground.get() ||
                         !interacting && now - lastSlowFrame.get() >= 250L) && interactionQuiet && breathingGapMet
                     if (next === ticket && (if (essential) !essentialActive && !interacting
                         else !optionalActive && !essentialActive && quiet)) {
@@ -296,7 +305,7 @@ object BackgroundWorkCoordinator {
             val optional = admission?.priority == StartupPriority.DEFERRED ||
                 admission?.priority == StartupPriority.MAINTENANCE
             val frameQuiet = awaitFrameQuiet && admission?.priority != StartupPriority.ESSENTIAL_UI
-            if (bypass() || !essentialWaiting && isInteractionIdle(requireForeground, frameQuiet) &&
+            if (bypass() || !essentialWaiting && (!optional || !foreground.get() || corePreparations.get() == 0) && isInteractionIdle(requireForeground, frameQuiet) &&
                 (!optional || optionalInteractionIdle(SystemClock.elapsedRealtime()))) return
             delay(50L)
         }

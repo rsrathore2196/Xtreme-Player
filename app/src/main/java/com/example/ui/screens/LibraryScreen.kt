@@ -71,6 +71,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -131,6 +132,9 @@ fun LibraryScreen(
     onCreatePlaylistClick: () -> Unit,
     onImportPlaylistClick: () -> Unit = {},
     onOpenArtist: (com.example.data.repository.CatalogArtist) -> Unit = {},
+    favoriteTracksState: kotlinx.coroutines.flow.StateFlow<List<MusicTrack>>? = null,
+    favoriteCount: Int = favoriteTracks.size,
+    onPlayLikedSongs: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState()
 ) {
@@ -142,10 +146,11 @@ fun LibraryScreen(
     val likedScroll = rememberLazyListState()
     if (likedOpen) {
         androidx.activity.compose.BackHandler { likedOpen = false }
-        val liked by androidx.compose.runtime.produceState<com.example.data.local.PlaylistWithTracks?>(null, favoriteTracks) {
+        val openedFavorites = favoriteTracksState?.collectAsStateWithLifecycle()?.value ?: favoriteTracks
+        val liked by androidx.compose.runtime.produceState<com.example.data.local.PlaylistWithTracks?>(null, openedFavorites) {
             value = kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.CpuBounded) {
                 com.example.data.local.PlaylistWithTracks(com.example.data.local.PlaylistEntity(-1L, "Liked Songs", "Your favorite songs",
-                    favoriteTracks.firstOrNull()?.coverUrl.orEmpty()), favoriteTracks.map(com.example.data.local.TrackEntity::fromMusicTrack)).also { it.musicTracks }
+                    openedFavorites.firstOrNull()?.coverUrl.orEmpty()), openedFavorites.map(com.example.data.local.TrackEntity::fromMusicTrack)).also { it.musicTracks }
             }
         }
         liked?.let { PlaylistDetailScreen(it, currentPlayingTrackId = currentPlayingTrackId,
@@ -348,7 +353,7 @@ fun LibraryScreen(
                                     )
                                 )
                                 Text(
-                                    text = "${favoriteTracks.size} tracks liked",
+                                    text = "$favoriteCount tracks liked",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = if (appColors.isDark) Color(0xFFCBD5E1) else appColors.textSecondary,
                                         fontWeight = FontWeight.Medium
@@ -356,11 +361,11 @@ fun LibraryScreen(
                                 )
                             }
 
-                            if (favoriteTracks.isNotEmpty()) {
+                            if (favoriteCount > 0) {
                                 Box(
                                     modifier = Modifier
                                         .size(38.dp)
-                                        .clickable { favoriteTracks.firstOrNull()?.let { onTrackClick(it, favoriteTracks) } }
+                                        .clickable { if (onPlayLikedSongs != null) onPlayLikedSongs() else favoriteTracks.firstOrNull()?.let { onTrackClick(it, favoriteTracks) } }
                                         .testTag("play_liked_songs")
                                         .clip(CircleShape)
                                         .background(appColors.primaryAccent),

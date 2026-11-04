@@ -1,6 +1,8 @@
 package com.example
 
 import androidx.test.core.app.ApplicationProvider
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import com.example.ui.viewmodel.HomeViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -38,15 +40,11 @@ class HomeViewModelInitializationTest {
     fun testHomeViewModelInitializationDoesNotThrowAndRefreshErrorMessageIsInitiallyNull() {
         val app = ApplicationProvider.getApplicationContext<XtremeMusicApp>()
 
-        // Construct HomeViewModel with controlled dependencies and dispatchers
-        val viewModel = HomeViewModel(
-            repository = app.repository,
-            playbackManager = app.playbackManager,
-            application = app
-        )
-
-        // Verify initialization does not throw and refreshErrorMessage is accessible and initially null
-        assertNotNull(viewModel)
-        assertNull("refreshErrorMessage must be accessible and initially null", viewModel.refreshErrorMessage.value)
+        val store = ViewModelStore()
+        try {
+            val viewModel = ViewModelProvider(store, HomeViewModel.provideFactory(app.repository, app.playbackManager, app))[HomeViewModel::class.java]
+            assertNotNull(viewModel)
+            assertNull("refreshErrorMessage must be accessible and initially null", viewModel.refreshErrorMessage.value)
+        } finally { store.clear(); app.playbackManager.release() }
     }
 }

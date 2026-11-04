@@ -14,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import coil.Coil
 import coil.ImageLoader
@@ -94,6 +95,8 @@ class HeroArtworkFillUiTest {
                     items(30) { androidx.compose.foundation.layout.Spacer(Modifier.height(100.dp)) }
                 }
             } }
+            assertEquals("Startup must not enrich Hero metadata", 0, lookups.get())
+            compose.onNodeWithTag("hero_play_infinite_radio_button").performClick()
             fun waitForImage() = compose.waitUntil(5_000) {
                 org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
                 loader.memoryCache?.keys?.any { it.key == "hero-landscape:${native(track)}" } == true
@@ -121,6 +124,9 @@ class HeroArtworkFillUiTest {
             waitForMounts(0)
             compose.runOnIdle { track = track.copy(id = "yt_zyxwvutsrqp", title = "Next song") }
             compose.runOnIdle { scope.launch { list.scrollToItem(0) } }
+            waitForMounts(1)
+            assertEquals("A newly shown seed is passive until Hero Play", 1, lookups.get())
+            compose.onNodeWithTag("hero_play_infinite_radio_button").performClick()
             waitForImage()
             assertEquals("A changed seed gets its own illustration", 2, lookups.get())
         } finally { Coil.setImageLoader(previous); loader.shutdown() }
@@ -165,6 +171,8 @@ class HeroArtworkFillUiTest {
                 release.await()
                 videoUrl
             }) } }
+            assertFalse(loading.get())
+            compose.onNodeWithTag("hero_play_infinite_radio_button").performClick()
             compose.waitUntil(5_000) { org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle(); loading.get() }
             compose.waitUntil(5_000) {
                 org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
@@ -285,6 +293,8 @@ class HeroArtworkFillUiTest {
             compose.setContent { MaterialTheme { InfiniteRadioHeroCard(track, null, false, onPlayInfiniteRadio = {}, artworkResolver = {
                 resolving.set(true); release.await(); video
             }) } }
+            assertFalse(resolving.get())
+            compose.onNodeWithTag("hero_play_infinite_radio_button").performClick()
             compose.waitUntil(5_000) {
                 org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper()).idle()
                 resolving.get() && loader.memoryCache?.keys?.any { it.key == "hero-landscape:$cover" } == true

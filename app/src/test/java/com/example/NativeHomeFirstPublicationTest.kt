@@ -45,7 +45,7 @@ class NativeHomeFirstPublicationTest {
                     homeLoader = { _, token, _ ->
                         assertNull("Initial presentation never consumes a continuation", token)
                         calls.incrementAndGet(); entered.complete(Unit); release.await()
-                        YouTubeHomeParser.ParsedHomeFeed(listOf(ServerHomeShelf("native", "Native shelf", tracks = listOf(
+                        YouTubeHomeParser.ParsedHomeFeed(listOf(ServerHomeShelf("native", "Quick Picks", tracks = listOf(
                             MusicTrack("yt_abcdefghijk", "Song", "Singer", "Album", 180_000, "", "")))), "later")
                     }, profileLoader = { _, _, _ ->
                         profileEntered.complete(Unit); profileRelease.await(); YouTubeMusicApiService.ProfileShelfResult(null)

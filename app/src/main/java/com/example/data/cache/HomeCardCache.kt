@@ -73,7 +73,8 @@ data class SavedHomeCards(
     val serverContentVersion: Int = SERVER_HOME_CONTENT_VERSION,
     val sourceBrowseId: String = "FEmusic_home",
     val completedBrowseIds: Set<String> = emptySet(),
-    val browseSources: List<HomeBrowseSnapshot> = emptyList()
+    val browseSources: List<HomeBrowseSnapshot> = emptyList(),
+    val initialProjection: Boolean = false
 )
 
 internal const val SERVER_HOME_CONTENT_VERSION = 4
@@ -261,6 +262,42 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
         val home = readJson("server_${HomeCacheIdentity.fileKey(profile)}")?.takeIf { validHome(it, profile) } ?: return null
         return withContext(AppDispatchers.CpuBounded) { local(profile, home, null) }
     }
+    private fun initialProjection(root: JSONObject): JSONObject {
+        fun select(rows: JSONArray?): JSONArray {
+            val selected = (0 until (rows?.length() ?: 0)).mapNotNull { rows?.optJSONObject(it) }
+                .filter { com.example.data.model.initialHomeShelfRank(it.optString("title")) != null }
+                .distinctBy { com.example.data.model.initialHomeShelfRank(it.optString("title")) }
+                .sortedBy { com.example.data.model.initialHomeShelfRank(it.optString("title")) }
+            return JSONArray(selected)
+        }
+        return JSONObject().apply {
+            listOf("key", "accountIdentity", "refreshedAt", "success", "contentVersion", "continuationToken",
+                "consumedContinuations", "sourceBrowseId", "completedBrowseIds").forEach { key -> if (root.has(key)) put(key, root.opt(key)) }
+            put("serverShelves", select(root.optJSONArray("serverShelves")))
+            val sources = root.optJSONArray("browseSources")
+            put("browseSources", JSONArray((0 until (sources?.length() ?: 0)).mapNotNull { index -> sources?.optJSONObject(index)?.let { source ->
+                JSONObject().apply {
+                    listOf("browseId", "account", "continuation", "consumed", "fetchedAt", "success", "emptyPages").forEach { if (source.has(it)) put(it, source.opt(it)) }
+                    put("shelves", select(source.optJSONArray("shelves")))
+                }
+            } }))
+        }
+    }
+    suspend fun readInitialServer(profile: String): SavedHomeCards? {
+        val root = readJson("initial_${HomeCacheIdentity.fileKey(profile)}")?.takeIf { validHome(it, profile) }
+            ?: readJson("server_${HomeCacheIdentity.fileKey(profile)}")?.takeIf { validHome(it, profile) } ?: return null
+        return withContext(AppDispatchers.CpuBounded) { local(profile, initialProjection(root), null).copy(initialProjection = true) }
+    }
+    suspend fun readRecent(profile: String): SavedHomeCards? {
+        val root = readJson("local") ?: return null
+        return withContext(AppDispatchers.CpuBounded) { local(profile, null,
+            JSONObject().put("recent", root.optJSONArray("recent")).put("inputRevision", root.opt("inputRevision"))) }
+    }
+    suspend fun readArtists(profile: String): SavedHomeCards? {
+        val root = readJson("local") ?: return null
+        return withContext(AppDispatchers.CpuBounded) { local(profile, null,
+            JSONObject().put("artists", root.optJSONArray("artists")).put("artistDataVersion", root.optInt("artistDataVersion"))) }
+    }
     suspend fun readLocal(profile: String): SavedHomeCards? {
         val history = readJson("local")
         return withContext(AppDispatchers.CpuBounded) {
@@ -291,6 +328,24 @@ class HomeCardCache(context: Context, private val workerDispatcher: CoroutineDis
                     .put("continuation", source.continuation).put("consumed", JSONArray(source.consumed.toList()))
                     .put("fetchedAt", source.fetchedAt).put("success", source.succeeded).put("emptyPages", source.emptyPages)
             }))
+        }
+        saveInitialHome(cards)
+    }
+    suspend fun saveInitialHome(cards: SavedHomeCards) {
+        val selected = com.example.data.model.initialHomeShelves(cards.serverShelves)
+        write("initial_${HomeCacheIdentity.fileKey(cards.profileKey)}",
+            HomeCheckpoint(cards.profileKey, cards.refreshedAt, cards.serverFetchSucceeded, selected, cards.continuationToken,
+                cards.consumedContinuations, cards.sourceBrowseId, cards.completedBrowseIds,
+                cards.browseSources.map { it.copy(shelves = com.example.data.model.initialHomeShelves(it.shelves)) })) {
+            val root = JSONObject().put("key", cards.profileKey).put("accountIdentity", cards.profileKey.substringAfter('|'))
+                .put("refreshedAt", cards.refreshedAt).put("success", cards.serverFetchSucceeded).put("contentVersion", cards.serverContentVersion)
+                .put("serverShelves", JSONArray(selected.map(::shelf))).put("continuationToken", cards.continuationToken)
+                .put("browseSources", JSONArray(cards.browseSources.map { source -> JSONObject()
+                    .put("browseId", source.browseId).put("account", source.accountIdentity)
+                    .put("shelves", JSONArray(com.example.data.model.initialHomeShelves(source.shelves).map(::shelf)))
+                    .put("continuation", source.continuation).put("consumed", JSONArray(source.consumed.toList()))
+                    .put("fetchedAt", source.fetchedAt).put("success", source.succeeded).put("emptyPages", source.emptyPages) }))
+            root
         }
     }
     suspend fun saveProfile(cards: SavedHomeCards) {

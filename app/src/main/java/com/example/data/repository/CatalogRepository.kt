@@ -111,6 +111,18 @@ class CatalogRepository(context: Context? = null,
             catch (failure: Exception) { decoded() ?: throw failure }
         }
     }
+    /** Startup cache restoration must never invoke the browse transport. */
+    suspend fun cachedExploreCategories(countryCode: String = "US", languageCode: String = "en"): List<ExploreCategory> = withContext(AppDispatchers.Io) {
+        val (country, language) = locale(countryCode, languageCode)
+        val key = browseCacheKey("categories", country, language, "FEmusic_moods_and_genres", null, null)
+        val saved = synchronized(cache) { cache.get(key) } ?: metadataCache?.get(key)?.let { it.fetchedAt to it.body }
+            ?: return@withContext emptyList()
+        if (System.currentTimeMillis() - saved.first !in 0 until TimeUnit.DAYS.toMillis(7)) return@withContext emptyList()
+        try { withContext(AppDispatchers.CpuBounded) { YouTubeExploreParser.decodeCategories(saved.second) } }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) { emptyList() }
+    }
+
     suspend fun exploreCategories(countryCode: String = "US", languageCode: String = "en",
         forceRefresh: Boolean = false): List<ExploreCategory> {
         val (country, language) = locale(countryCode, languageCode)

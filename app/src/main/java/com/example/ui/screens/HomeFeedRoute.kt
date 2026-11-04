@@ -17,9 +17,9 @@ import com.example.ui.viewmodel.HomeViewModel
 import kotlinx.coroutines.awaitCancellation
 
 @Composable
-private fun retainedHomeFeed(): HomeViewModel {
+private fun retainedHomeFeed(prepareCoreTabs: suspend () -> Unit): HomeViewModel {
     val app = LocalContext.current.applicationContext as XtremeMusicApp
-    val factory = remember(app) { HomeViewModel.provideFactory(app.repository, app.playbackManager, app) }
+    val factory = remember(app) { HomeViewModel.provideFactory(app.repository, app.playbackManager, app, prepareCoreTabs) }
     return viewModel(factory = factory)
 }
 
@@ -39,9 +39,10 @@ internal fun HomeFeedRoute(
     onOpenSettings: () -> Unit,
     onPlayInfiniteRadio: (MusicTrack?) -> Unit,
     onAddToQueue: (MusicTrack) -> Unit,
-    onOpenCatalog: (com.example.data.repository.CatalogDestination) -> Unit = {}
+    onOpenCatalog: (com.example.data.repository.CatalogDestination) -> Unit = {},
+    prepareCoreTabs: suspend () -> Unit = {}
 ) {
-    val feed = retainedHomeFeed()
+    val feed = retainedHomeFeed(prepareCoreTabs)
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(feed, lifecycle, isVisible) {
         if (isVisible) lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {

@@ -69,7 +69,7 @@ Current application trace names are:
 
 - `Xtreme/Foreground first draw`, `Xtreme/Settings restore`.
 - `Xtreme/Home native cache restore`, `Xtreme/Home profile cache restore`,
-  `Xtreme/Home local cache restore`.
+  `Xtreme/Startup Recently Played cache`.
 - `Xtreme/Native Home response`, `Xtreme/Home shelf projection`,
   `Xtreme/Home cached shelf reveal`, `Xtreme/Home listening history`.
 - `Xtreme/Home profile admission`, `Xtreme/Home artist admission`,
@@ -99,3 +99,24 @@ CPU time or frame latency. Admission spans include the intentional idle wait; a 
 span is not six seconds of CPU work. Use frame-overrun percentiles and Perfetto scheduling,
 GC, disk, database and RenderThread tracks to establish a cause before tuning concurrency,
 cache sizes, retained-tab behavior or image quality.
+
+## Sequential startup stages
+
+The initial cache projection contains only Quick Picks, Albums & Singles and Trending
+Community Playlists. Missing native shelves receive bounded native browse attempts; a
+terminal response settles startup without fabricating sections. First draw is independent
+of the network and optional data.
+
+After usable priority content is drawn (or its fetch terminates), `Startup core tabs`
+contains cache-only Search restore and lightweight Library playlist preparation. Deferred
+read stages then wait five continuous foreground idle seconds each: Recently Played,
+Music for You, Most Listened Artists. Each timer starts after the preceding data stage
+settles. Remaining native cache restoration follows six further idle seconds. Playback
+recording/journaling and explicit user actions bypass optional startup admission.
+
+`warmStagedStartupThenInteraction` records forty foreground idle seconds before the first
+interaction. It supplements the existing first-twenty-second journeys; it does not add an
+application delay or guarantee remote work completes within forty seconds. Inspect the
+`Startup ... idle/cache`, `Startup Search cache`, `Startup Library playlists`, profile
+discovery and artist-summary spans for the actual sequence. Wait spans are elapsed idle
+time, not CPU work. No initialization popup or hidden-tab composition is involved.

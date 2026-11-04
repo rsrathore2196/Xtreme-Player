@@ -11,6 +11,8 @@ data class ArtistTrackCredits(val id: String, val artist: String, val singers: S
 
 @Dao
 interface MusicDao {
+    @Query("SELECT COUNT(*) FROM tracks WHERE isLiked = 1")
+    fun observeFavoriteCount(): Flow<Int>
 
     // Catalog metadata must never replace persisted user choices or listening history.
     @Transaction

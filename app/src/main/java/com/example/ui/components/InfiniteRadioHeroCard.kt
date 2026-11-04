@@ -53,6 +53,7 @@ fun InfiniteRadioHeroCard(
     artworkResolver: suspend (MusicTrack) -> String? = ::resolveYouTubeHeroArtwork
 ) {
     val appColors = LocalAppColors.current
+    var artworkRequested by remember { mutableStateOf(false) }
     val isDark = appColors.isDark
     val glassEnabled = LocalDynamicGlassEnabled.current
     // Artwork is not a light-theme surface: a localized dark scrim keeps white
@@ -84,7 +85,8 @@ fun InfiniteRadioHeroCard(
             .testTag("infinite_radio_hero_card")
     ) {
         if (seedTrack != null && artworkSize.width > 0 && artworkSize.height > 0) {
-            val fullQualityArtwork = com.example.ui.util.rememberHeroArtworkRequest(seedTrack, artworkSize, artworkResolver)
+            val fullQualityArtwork = com.example.ui.util.rememberHeroArtworkRequest(seedTrack, artworkSize, artworkResolver,
+                resolveMetadata = artworkRequested)
             AsyncImage(
                 model = fullQualityArtwork,
                 contentDescription = null,
@@ -147,7 +149,7 @@ fun InfiniteRadioHeroCard(
                         interactionSource = interaction,
                         indication = null,
                         role = Role.Button,
-                        onClick = { onPlayInfiniteRadio(null) }
+                        onClick = { artworkRequested = true; onPlayInfiniteRadio(null) }
                     )
                     .padding(horizontal = if (compactLayout) 16.dp else 24.dp, vertical = 13.dp)
                     .testTag("hero_play_infinite_radio_button"),

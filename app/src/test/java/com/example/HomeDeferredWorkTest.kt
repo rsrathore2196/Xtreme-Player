@@ -29,7 +29,7 @@ import org.robolectric.shadows.ShadowSystemClock
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [32], application = Application::class, instrumentedPackages = ["com.example.ui.viewmodel"])
 class HomeDeferredWorkTest {
-    @Test fun artistQueriesAndProfileSearchWaitForAHomeDrawAndSixSecondsAfterTheLastInput() = runBlocking<Unit> {
+    @Test fun localStagesWaitForFiveIdleSecondsAfterEachPreviousStageSettles() = runBlocking<Unit> {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         val app = ApplicationProvider.getApplicationContext<Application>()
         val coordinator = BackgroundWorkCoordinator
@@ -71,31 +71,33 @@ class HomeDeferredWorkTest {
             ShadowSystemClock.advanceBy(Duration.ofSeconds(60)); delay(300)
             assertEquals(0, searches.get()); assertEquals(0, queries.get())
             vm.onHomeFrameDrawn()
-            ShadowSystemClock.advanceBy(Duration.ofSeconds(5)); delay(300)
+            withTimeout(5_000) { vm.coreTabsReady.first { it } }
             coordinator.interaction()
-            ShadowSystemClock.advanceBy(Duration.ofMillis(5_999)); delay(300)
+            ShadowSystemClock.advanceBy(Duration.ofMillis(4_999)); delay(300)
             assertEquals(0, searches.get()); assertEquals(0, queries.get())
-            ShadowSystemClock.advanceBy(Duration.ofMillis(1))
+            ShadowSystemClock.advanceBy(Duration.ofMillis(1)); delay(300)
+            withTimeout(5_000) { vm.hasRecentlyPlayed.first { it } }
+            assertEquals(0, searches.get()); assertEquals(0, queries.get())
+            ShadowSystemClock.advanceBy(Duration.ofSeconds(5))
             withTimeout(5_000) { vm.profileShelf.first { it != null } }
+            assertEquals(1, searches.get()); assertEquals(0, queries.get())
             @Suppress("UNCHECKED_CAST")
             val profileSettled = vm.javaClass.getDeclaredField("initialProfileSettledAt").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.StateFlow<Long?>
             withTimeout(5_000) { profileSettled.first { it != null } }
-            assertEquals(1, searches.get()); assertEquals(0, queries.get())
-            assertFalse(vm.artistPortraitsReady.value)
-            ShadowSystemClock.advanceBy(Duration.ofMillis(5_999)); delay(300)
+            ShadowSystemClock.advanceBy(Duration.ofMillis(4_999)); delay(300)
             assertEquals(0, queries.get()); assertFalse(vm.artistPortraitsReady.value)
             ShadowSystemClock.advanceBy(Duration.ofMillis(1))
             withTimeout(5_000) { vm.mostListenedArtists.first { it.isNotEmpty() } }
             assertEquals(1, queries.get()); assertFalse(heavyWorkOnMain.get())
             assertEquals("Singer", vm.mostListenedArtists.value.single().name)
             vm.setHomeVisible(false)
-            withTimeout(5_000) { vm.optionalWorkReady.first { !it } }
+            delay(100); assertTrue(vm.optionalWorkReady.value)
             assertEquals("Singer", vm.mostListenedArtists.value.single().name)
             val resumeInteraction = coordinator.interactions.value
             vm.setHomeVisible(true)
             withTimeout(5_000) { coordinator.interactions.first { it > resumeInteraction } }
-            ShadowSystemClock.advanceBy(Duration.ofSeconds(6)); delay(300)
-            withTimeout(5_000) { vm.optionalWorkReady.first { it } }
+            withTimeout(5_000) { while (queries.get() < 2) delay(10) }
+            assertTrue(vm.optionalWorkReady.value)
             assertEquals("Returning Home renews one small aggregate subscription", 2, queries.get())
             assertEquals("Fresh retained profile results do not refetch", 1, searches.get())
         } finally { store.clear(); player.release(); db.close(); coordinator.foreground(false); Dispatchers.resetMain() }

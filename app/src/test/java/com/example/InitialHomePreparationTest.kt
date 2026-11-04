@@ -56,7 +56,7 @@ class InitialHomePreparationTest {
         player = PlaybackManager(app, MusicRepository(db.musicDao(), app))
     }
     @After fun stop() = runBlocking { stores.forEach { it.clear() }; player.release(); db.close(); clockPump?.cancelAndJoin(); Dispatchers.resetMain(); com.example.performance.BackgroundWorkCoordinator.foreground(false) }
-    private fun viewModel(loader: suspend (String, String?) -> YouTubeHomeParser.ParsedHomeFeed,
+    private suspend fun viewModel(loader: suspend (String, String?) -> YouTubeHomeParser.ParsedHomeFeed,
         profile: suspend (UserProfile, Int) -> YouTubeMusicApiService.ProfileShelfResult = { _, _ -> YouTubeMusicApiService.ProfileShelfResult(null) },
         account: kotlinx.coroutines.flow.StateFlow<String>? = null,
         authenticatedRequests: MutableList<Boolean>? = null,
@@ -77,13 +77,27 @@ class InitialHomePreparationTest {
                     supplementContinuationLoader = { _, browse, token, _ -> extraPage(browse, token) }, connectivityUpdates = connectivity) as T
         }
         return ViewModelProvider(store, factory)[HomeViewModel::class.java].also { vm ->
+            // This suite tests transport after startup admission, not startup timing.
+            (vm.javaClass.getDeclaredField("corePreparationLease").apply { isAccessible = true }.get(vm) as AutoCloseable).close()
+            vm.javaClass.getDeclaredField("corePreparationLease").apply { isAccessible = true }.set(vm, null)
+            (vm.javaClass.getDeclaredField("restored").apply { isAccessible = true }.get(vm) as CompletableDeferred<*>).await()
             @Suppress("UNCHECKED_CAST")
             val access = vm.javaClass.getDeclaredField("_additionalShelvesUnlocked").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<Boolean>
             access.value = true // These tests exercise transport after admission; idle timing has dedicated tests.
             @Suppress("UNCHECKED_CAST")
-            val qualification = vm.javaClass.getDeclaredField("listeningUnlockAt").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<Long?>
+            val qualification = vm.javaClass.getDeclaredField("nativeStageReadyAt").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<Long?>
             qualification.value = elapsed
+            if (vm.javaClass.getDeclaredField("deferredServerCache").apply { isAccessible = true }.getBoolean(vm))
+                withContext(com.example.performance.AppDispatchers.HomeBookkeeping) { vm.restoreRemainingNativeCache(urgent = true) }
+            @Suppress("UNCHECKED_CAST")
+            val coreReady = vm.javaClass.getDeclaredField("_coreTabsReady").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<Boolean>
+            coreReady.value = true
+            vm.javaClass.getDeclaredField("coreSettledAt").apply { isAccessible = true }.set(vm, elapsed)
+            @Suppress("UNCHECKED_CAST")
+            val initialReady = vm.javaClass.getDeclaredField("initialNativeReadyAt").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.MutableStateFlow<Long?>
+            initialReady.value = elapsed
             vm.onHomeFrameDrawn()
+            vm.viewModelScope.launch { initialReady.collect { if (it != null) vm.onHomeFrameDrawn(it) } }
         }
     }
     private suspend fun reveal(vm: HomeViewModel) = withContext(com.example.performance.AppDispatchers.HomeBookkeeping) {
@@ -241,7 +255,7 @@ class InitialHomePreparationTest {
         assertTrue(vm.loadServerHome())
         assertEquals(com.example.recommendation.HomeUserMode.LOADING, vm.userMode.value)
         vm.setHomeVisible(true)
-        withTimeout(5_000) { vm.userMode.first { it != com.example.recommendation.HomeUserMode.LOADING } }
+        assertEquals("Historical reads now wait for the first idle stage", com.example.recommendation.HomeUserMode.LOADING, vm.userMode.value)
         assertTrue("Room artist aggregation is not a startup prerequisite", vm.mostListenedArtists.value.isEmpty())
         releaseIdle.complete(Unit)
         withTimeout(5_000) { vm.mostListenedArtists.first { it.isNotEmpty() } }
@@ -319,7 +333,10 @@ class InitialHomePreparationTest {
         val language = country.copy(languages = listOf("Punjabi"))
         val cache = HomeCardCache(app)
         for (selected in listOf(preferences, country, language)) cache.save(SavedHomeCards(HomeCacheIdentity.home(selected),
-            refreshedAt = System.currentTimeMillis(), serverShelves = listOf(shelf(selected.countryCode)), serverFetchSucceeded = true,
+            refreshedAt = System.currentTimeMillis(), serverShelves = listOf(
+                shelf(selected.countryCode).copy(title = "Quick Picks"),
+                shelf("albums").copy(title = "Albums & Singles"),
+                shelf("playlists").copy(title = "Trending Community Playlists")), serverFetchSucceeded = true,
             profileShelfKey = HomeCacheIdentity.profile(selected), profileFetchedAt = System.currentTimeMillis(), profileFetchSucceeded = true,
             profileShelf = shelf(selected.languages.single())))
         val homeCalls = AtomicInteger(); val profileCalls = AtomicInteger()
@@ -329,7 +346,7 @@ class InitialHomePreparationTest {
         vm.setHomeVisible(true); vm.setArtistSectionRelevant(true)
         withTimeout(5_000) { vm.profileShelf.first { it?.id == "Hindi" } }
         vm.updateUserProfile(country)
-        withTimeout(5_000) { vm.serverShelves.first { it.singleOrNull()?.id == "GB" }; vm.profileShelf.first { it?.id == "Hindi" } }
+        withTimeout(5_000) { vm.serverShelves.first { it.firstOrNull()?.id == "GB" }; vm.profileShelf.first { it?.id == "Hindi" } }
         vm.updateUserProfile(language)
         withTimeout(5_000) { vm.profileShelf.first { it?.id == "Punjabi" } }
         assertTrue(vm.loadServerHome()); assertTrue(vm.loadProfileShelf())
@@ -712,7 +729,9 @@ class InitialHomePreparationTest {
         release.complete(Unit)
         withTimeout(5_000) { vm.serverShelves.first { it.size == 3 } }
         assertTrue(vm.serverShelves.value.all { it.title.startsWith("account-b") })
-        assertFalse(HomeCardCache(app).readServer(HomeCacheIdentity.home(preferences, "account-b"))!!.serverShelves.any { it.title.startsWith("account-a") })
+        val checkpoint = HomeCardCache(app).readInitialServer(HomeCacheIdentity.home(preferences, "account-b"))!!
+        assertEquals(HomeCacheIdentity.home(preferences, "account-b"), checkpoint.profileKey)
+        assertFalse(checkpoint.serverShelves.any { it.title.startsWith("account-a") })
     }
 
     @Test fun manualRefreshPromotesExistingSupplementRequestsAndWaitsForBothWithoutDuplicates() = runBlocking {

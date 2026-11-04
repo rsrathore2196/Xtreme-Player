@@ -49,6 +49,18 @@ data class HomeBrowseSnapshot(
 
 enum class NativeShelfKind { STANDARD, QUICK_PICKS, MUSIC_VIDEOS }
 
+/** Startup projects native shelves only; missing server sections are never fabricated. */
+fun initialHomeShelfRank(title: String): Int? = when (HomeShelfIdentity.title(title)) {
+    "quick picks" -> 0
+    "albums singles", "albums and singles" -> 1
+    "trending community playlists" -> 2
+    else -> null
+}
+
+fun initialHomeShelves(shelves: List<ServerHomeShelf>): List<ServerHomeShelf> =
+    shelves.filter { initialHomeShelfRank(it.title) != null }
+        .distinctBy { initialHomeShelfRank(it.title) }.sortedBy { initialHomeShelfRank(it.title) }
+
 /** Native song Trending shelves keep square cards; playlist charts keep their own art. */
 fun ServerHomeShelf.requiresSongArtwork(): Boolean {
     val heading = HomeShelfIdentity.title(title)
