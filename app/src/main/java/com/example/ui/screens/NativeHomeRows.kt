@@ -31,8 +31,15 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.MusicTrack
 import com.example.data.model.ServerHomeItem
+import com.example.data.repository.CatalogNames
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.util.rememberOptimizedImageRequest
+
+/** Decode provider text without removing versions, credits or release qualifiers. */
+@Composable
+internal fun homeTrackTitle(track: MusicTrack): String = remember(track.title, track.originalProviderTitle) {
+    CatalogNames.clean(track.originalProviderTitle.ifBlank { track.title })
+}
 
 /** Six native songs per page, in row-major server order. */
 @OptIn(ExperimentalFoundationApi::class)
@@ -73,6 +80,7 @@ internal fun NativeMusicVideoRow(items: List<ServerHomeItem.Song>, queue: List<M
         horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.testTag("native_music_video_row")) {
         items(items, key = { it.key }) { item ->
             val selected = item.track.id == playing
+            val title = homeTrackTitle(item.track)
             VisibleItemArtwork(state, item.key) {
                 Column(Modifier.width(224.dp).clickable { play(item.track, queue) }) {
                     Box(Modifier.size(224.dp, 126.dp).testTag("native_video_art_${item.track.id}").clip(RoundedCornerShape(14.dp)).background(background)
@@ -80,13 +88,13 @@ internal fun NativeMusicVideoRow(items: List<ServerHomeItem.Song>, queue: List<M
                         AsyncImage(model = rememberOptimizedImageRequest(
                             item.landscapeThumbnail.ifBlank { item.track.coverUrl }, targetSize = pixels.width,
                             crossfadeEnabled = false, preferStableArtwork = true, decodeSize = pixels),
-                            contentDescription = item.track.title, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                            contentDescription = title, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
                         if (selected) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .4f)), contentAlignment = Alignment.Center) {
                             Icon(Icons.Default.Equalizer, "Playing", tint = accent, modifier = Modifier.size(24.dp))
                         }
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text(item.track.cleanTitle, color = if (selected) accent else foreground, fontSize = 13.sp,
+                    Text(title, color = if (selected) accent else foreground, fontSize = 13.sp,
                         fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(2.dp))
                     Text(item.track.artist, color = muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)

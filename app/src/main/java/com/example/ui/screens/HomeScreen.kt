@@ -814,7 +814,8 @@ fun SectionCardLayout(
                                 val cover = if (resolveSongCovers) com.example.ui.util.rememberNativeSongArtworkRequest(
                                     item.track, item.squareSongThumbnail, artworkContext, landscapeThumbnail = item.landscapeThumbnail) else null
                                 ShelfTrackCard(item.track, item.track.id == currentPlayingId,
-                                    cardBg, cardBorderColor, textPrimaryColor, textMutedColor, cover) { onTrackClick(item.track, safeTracks) }
+                                    cardBg, cardBorderColor, textPrimaryColor, textMutedColor, cover,
+                                    landscapeCard = resolveSongCovers) { onTrackClick(item.track, safeTracks) }
                             }
                             is ServerHomeItem.Album -> ShelfContentCard(item.album.title,
                                 item.subtitle.ifBlank { item.album.artists.joinToString { it.name } },
@@ -839,6 +840,7 @@ fun SectionCardLayout(
                             textPrimaryColor = textPrimaryColor,
                             textMutedColor = textMutedColor,
                             artworkRequest = if (resolveSongCovers) com.example.ui.util.rememberNativeSongArtworkRequest(track, "", artworkContext) else null,
+                            landscapeCard = resolveSongCovers,
                             onClick = { onTrackClick(track, safeTracks) }
                         )
                     }
@@ -920,7 +922,7 @@ fun HabitPillItem(
             verticalArrangement = Arrangement.Center
         ) {
             Text(
-                text = remember(track.title) { track.cleanTitle },
+                text = homeTrackTitle(track),
                 fontWeight = FontWeight.Bold,
                 fontSize = 13.sp,
                 color = if (isPlaying) appColors.primaryAccent else textPrimaryColor,
@@ -985,31 +987,37 @@ fun ShelfTrackCard(
     textPrimaryColor: Color = if (LocalAppColors.current.isDark) Color(0xFFFFFFFF) else Color(0xFF09090B),
     textMutedColor: Color = if (LocalAppColors.current.isDark) Color(0xFFA1A1AA) else Color(0xFF71717A),
     artworkRequest: coil.request.ImageRequest? = null,
+    landscapeCard: Boolean = false,
     onClick: () -> Unit
 ) {
-    ShelfContentCard(remember(track.title) { track.cleanTitle }, track.artist,
+    val title = homeTrackTitle(track)
+    ShelfContentCard(title, track.artist,
         artworkRequest ?: rememberOptimizedImageRequest(track = track, targetSize = com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
             crossfadeEnabled = false, preferStableArtwork = true), isPlaying,
-        cardBg, cardBorderColor, textPrimaryColor, textMutedColor, artworkDescription = track.title,
+        cardBg, cardBorderColor, textPrimaryColor, textMutedColor, artworkDescription = title,
         artworkContentScale = artworkRequest?.let { com.example.ui.util.nativeSongArtworkContentScale(it) } ?: ContentScale.Crop,
+        landscapeCard = landscapeCard,
         onClick = onClick)
 }
 
 @Composable
 private fun ShelfContentCard(title: String, subtitle: String, artwork: coil.request.ImageRequest, isPlaying: Boolean,
     cardBg: Color, cardBorderColor: Color, textPrimaryColor: Color, textMutedColor: Color,
-    artworkDescription: String = title, artworkContentScale: ContentScale = ContentScale.Crop, onClick: () -> Unit) {
+    artworkDescription: String = title, artworkContentScale: ContentScale = ContentScale.Crop,
+    landscapeCard: Boolean = false, onClick: () -> Unit) {
     val appColors = LocalAppColors.current
+    val artworkWidth = if (landscapeCard) 224.dp else 163.2.dp
+    val artworkHeight = if (landscapeCard) 126.dp else 163.2.dp
 
     Column(
         modifier = Modifier
-            .width(163.2.dp)
+            .width(artworkWidth)
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
     ) {
         Box(
             modifier = Modifier
-                .size(163.2.dp)
+                .size(artworkWidth, artworkHeight)
                 .clip(RoundedCornerShape(14.dp))
                 .background(cardBg)
                 .border(

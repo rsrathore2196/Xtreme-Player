@@ -26,7 +26,7 @@ internal fun rememberNativeSongArtworkRequest(track: MusicTrack, nativeSongCover
 ): ImageRequest {
     val context = LocalContext.current.applicationContext
     val active = LocalArtworkRequestsActive.current
-    val pixels = with(LocalDensity.current) { 163.2.dp.roundToPx().coerceIn(1, 1500) }
+    val pixels = with(LocalDensity.current) { IntSize(224.dp.roundToPx().coerceIn(1, 1500), 126.dp.roundToPx().coerceIn(1, 1500)) }
     val identity = remember(track) { playerCoverLookupIdentity(track) }
     val visibility = remember(identity, requestContext) { ArtworkVisibility(active) }
     SideEffect { visibility.active.value = active }
@@ -45,7 +45,7 @@ internal fun rememberNativeSongArtworkRequest(track: MusicTrack, nativeSongCover
             try {
                 val cover = resolved ?: resolve(track, nativeSongCover) ?: return@withContext
                 val request = buildOptimizedImageRequest(context, cover, ImageConfig.RECOMMENDATION_CARD_SIZE, track,
-                    decodeSize = IntSize(pixels, pixels), requireSquareSongArtwork = true, visibleThumbnail = true)
+                    decodeSize = pixels, requireSquareSongArtwork = true, visibleThumbnail = true)
                 val result = context.imageLoader.execute(request) as? SuccessResult
                 ensureActive()
                 val bitmap = (result?.drawable as? android.graphics.drawable.BitmapDrawable)?.bitmap
@@ -62,7 +62,7 @@ internal fun rememberNativeSongArtworkRequest(track: MusicTrack, nativeSongCover
     }
     return remember(identity, requestContext, initial, square, pixels, fallbackIndex, fallbacks) {
         buildOptimizedImageRequest(context, initial, ImageConfig.RECOMMENDATION_CARD_SIZE, track,
-            decodeSize = IntSize(pixels, pixels), requireSquareSongArtwork = square != null,
+            decodeSize = pixels, requireSquareSongArtwork = square != null,
             preserveAspectRatio = square == null, allowVideoFallback = false,
             visibleThumbnail = true, visibility = visibility).newBuilder()
             .listener(onError = { _, _ ->

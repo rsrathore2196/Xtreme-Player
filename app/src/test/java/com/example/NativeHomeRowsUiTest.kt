@@ -27,17 +27,21 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class NativeHomeRowsUiTest {
     @get:Rule val compose = createComposeRule()
-    private val tracks = (1..20).map { MusicTrack("yt_native$it", "Native song $it", "Artist $it", "Album", 120_000, "", "") }
-    private fun content(kind: NativeShelfKind, click: (MusicTrack, List<MusicTrack>) -> Unit = { _, _ -> }) {
+    private val fullTitle = "Artist 1 - Native song 1 (Live Remix) (Official Music Video)"
+    private val tracks = (1..20).map { MusicTrack("yt_native$it", if (it == 2) "Native song 2 (Acoustic)" else "Native song $it", "Artist $it", "Album", 120_000, "", "",
+        originalProviderTitle = if (it == 1) fullTitle else "") }
+    private fun content(kind: NativeShelfKind, trending: Boolean = false, click: (MusicTrack, List<MusicTrack>) -> Unit = { _, _ -> }) {
         compose.setContent { MaterialTheme {
             CompositionLocalProvider(LocalAppColors provides DarkAppColors.copy(dynamicGlassEnabled = false),
                 LocalDynamicGlassEnabled provides false, LocalVisualEffectsActive provides false, LocalArtworkRequestsActive provides false) {
                 SectionCardLayout(SectionState(title = "Native shelf", tracks = tracks, isLoaded = true), tracks[1].id,
                     DarkAppColors.cardBackground, DarkAppColors.cardBorder, DarkAppColors.textPrimary, DarkAppColors.textMuted,
-                    onTrackClick = click, tracksPrepared = true, nativeKind = kind,
+                    onTrackClick = click, tracksPrepared = true, nativeKind = kind, resolveSongCovers = trending,
                     shelfItems = tracks.map { ServerHomeItem.Song(it, "MUSIC_VIDEO_TYPE_OMV") })
             }
         } }
+        compose.onNodeWithText(fullTitle).assertIsDisplayed()
+        compose.onNodeWithText(tracks[1].title).assertIsDisplayed()
     }
     @Test fun quickPicksHasTwoColumnsAndThreeRowsPerLazyPageWithOriginalQueueOrder() {
         var selected: MusicTrack? = null; var queue: List<MusicTrack> = emptyList()
@@ -59,7 +63,7 @@ class NativeHomeRowsUiTest {
         content(NativeShelfKind.MUSIC_VIDEOS) { _, list -> queue = list }
         compose.onNodeWithTag("native_video_art_yt_native1", useUnmergedTree = true)
             .assertWidthIsEqualTo(224.dp).assertHeightIsEqualTo(126.dp)
-        compose.onNodeWithText(tracks[0].title).performClick()
+        compose.onNodeWithText(fullTitle).performClick()
         compose.runOnIdle { assertEquals(tracks, queue) }
     }
     @Test fun quickPicksEndsAfterThreePagesOfSixWithoutChangingThePlaybackQueue() {
@@ -76,7 +80,15 @@ class NativeHomeRowsUiTest {
         content(NativeShelfKind.STANDARD)
         compose.onNodeWithTag("native_music_video_row").assertDoesNotExist()
         compose.onNodeWithTag("native_quick_picks_grid").assertDoesNotExist()
-        compose.onNodeWithContentDescription(tracks[0].title, useUnmergedTree = true)
+        compose.onNodeWithContentDescription(fullTitle, useUnmergedTree = true)
             .assertWidthIsEqualTo(163.2.dp).assertHeightIsEqualTo(163.2.dp)
+    }
+    @Test fun trendingUsesLandscapeArtworkAndKeepsItsPlaybackQueue() {
+        var queue: List<MusicTrack> = emptyList()
+        content(NativeShelfKind.STANDARD, trending = true) { _, list -> queue = list }
+        compose.onNodeWithContentDescription(fullTitle, useUnmergedTree = true)
+            .assertWidthIsEqualTo(224.dp).assertHeightIsEqualTo(126.dp)
+        compose.onNodeWithText(fullTitle).performClick()
+        compose.runOnIdle { assertEquals(tracks, queue) }
     }
 }
