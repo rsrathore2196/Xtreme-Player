@@ -9,8 +9,6 @@ import com.example.performance.AppDispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
@@ -20,21 +18,41 @@ import java.net.URI
 /** Public recording artwork only. Never changes the selected video or resolves an audio URL. */
 internal class YouTubePlayerArtworkResolver(
     private val next: suspend (String) -> String,
-    private val search: suspend (String) -> String
+    private val search: suspend (String) -> String,
+    private val contextIdentity: () -> String = { "" },
+    private val readSaved: suspend (String) -> String? = { null },
+    private val save: suspend (String, String?) -> Unit = { _, _ -> }
 ) {
     private val cache = LruCache<String, Pair<Long, String?>>(128)
-    private val locks = Array(4) { Mutex() }
+    private fun key(track: MusicTrack, context: String) = "song-cover-v2:" + java.security.MessageDigest.getInstance("SHA-256")
+        .digest("$context|${playerCoverIdentity(track)}|${RecordingIdentity.isrc(track.isrc).orEmpty()}".toByteArray()).let { bytes -> buildString(64) {
+            for (byte in bytes) { val n = byte.toInt() and 255; append("0123456789abcdef"[n ushr 4]); append("0123456789abcdef"[n and 15]) }
+        } }
+    fun peek(track: MusicTrack): String? = cache.get(key(track, contextIdentity()))
+        ?.takeIf { android.os.SystemClock.elapsedRealtime() < it.first }?.second
 
-    suspend fun resolve(track: MusicTrack): String? = withContext(AppDispatchers.Io) {
+    suspend fun resolve(track: MusicTrack, nativeSongCover: String = ""): String? = withContext(AppDispatchers.Io) {
         if (!needsSongCover(track)) return@withContext null
-        val key = playerCoverLookupIdentity(track)
-        locks[(key.hashCode() and Int.MAX_VALUE) % locks.size].withLock {
+        val context = contextIdentity()
+        val key = key(track, context)
+        val result = com.example.recommendation.DiscoveryRequestCoordinator.shared(
+            "song-cover:${System.identityHashCode(this@YouTubePlayerArtworkResolver)}:$key",
+            essential = false, network = false, playbackMetadata = true, awaitFrameQuiet = false) {
+          suspend fun find(): String? {
             cache.get(key)?.takeIf { android.os.SystemClock.elapsedRealtime() < it.first }
-                ?.let { return@withLock it.second }
-            val videoId = YouTubeAudioStreamService.videoIdFromReference(track.id, track.audioUrl) ?: return@withLock null
+                ?.let { return it.second }
+            val persisted = try { readSaved(key) } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
+            if (persisted != null && (persisted.isEmpty() || validSongImageUrl(persisted))) {
+                val cover = persisted.takeIf { validSongImageUrl(it) }
+                cache.put(key, (android.os.SystemClock.elapsedRealtime() + if (cover == null) 60_000L else 86_400_000L) to cover)
+                return cover
+            }
+            val supplied = nativeSongCover.takeIf(::validSongImageUrl)
+            if (supplied != null) { cache.put(key, (android.os.SystemClock.elapsedRealtime() + 86_400_000L) to supplied); save(key, supplied); return supplied }
+            val videoId = YouTubeAudioStreamService.videoIdFromReference(track.id, track.audioUrl) ?: return null
             val linked = attempt {
                 val body = next(videoId)
-                withContext(AppDispatchers.CpuBounded) { counterpartCover(JSONObject(body), videoId) }
+                withContext(AppDispatchers.CpuBounded) { counterpartCover(JSONObject(body), videoId, track) }
             }
             val cover = linked ?: if (RecordingIdentity.artistNames(track).isEmpty()) null else {
                 val query = withContext(AppDispatchers.CpuBounded) {
@@ -48,13 +66,27 @@ internal class YouTubePlayerArtworkResolver(
             currentCoroutineContext().ensureActive()
             // Failures are brief, not permanent missing covers. Successful metadata is reusable
             // across replay/foreground changes; Coil still owns image memory/disk caching.
+            if (context != contextIdentity()) return null
             cache.put(key, (android.os.SystemClock.elapsedRealtime() + if (cover == null) 60_000L else 24 * 60 * 60_000L) to cover)
-            cover
+            save(key, cover)
+            android.util.Log.d("SongArtwork", "resolved linked=${linked != null} found=${cover != null}")
+            return cover
+          }
+          find()?.let { listOf(track.copy(coverUrl = it)) }.orEmpty()
+        }
+        result.firstOrNull()?.coverUrl?.takeIf { context == contextIdentity() }
+    }
+
+    suspend fun reject(track: MusicTrack, url: String) = withContext(AppDispatchers.Io) {
+        val key = key(track, contextIdentity())
+        if (cache.get(key)?.second == url) {
+            cache.put(key, (android.os.SystemClock.elapsedRealtime() + 60_000L) to null)
+            save(key, null)
         }
     }
 
     private suspend fun attempt(block: suspend () -> String?): String? = try {
-        withTimeoutOrNull(4_000L) { block() }
+        block()
     } catch (cancelled: CancellationException) { throw cancelled }
     catch (_: Exception) { null }
 
@@ -70,34 +102,40 @@ internal class YouTubePlayerArtworkResolver(
             return host.endsWith(".googleusercontent.com") || host.endsWith(".ggpht.com")
         }
 
-        private fun square(value: JSONObject): String? {
-            val declared = YouTubeExploreParser.thumbnail(value, squareOnly = true)
-                .takeIf { it.isNotBlank() && !isVideoImage(it) }
-            if (declared != null) return declared
-            // Some native song thumbnails omit dimensions but retain an explicit
-            // square Google rendition. Never infer square art from a video URL.
-            return first(value.optJSONObject("thumbnailRenderer") ?: value.optJSONObject("thumbnail") ?: value.optJSONObject("image")) { node ->
+        internal fun validSongImageUrl(url: String): Boolean {
+            val uri = try { URI(url) } catch (_: Exception) { return false }
+            val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
+            return uri.scheme == "https" && (host.endsWith(".googleusercontent.com") || host.endsWith(".ggpht.com"))
+        }
+        internal fun square(value: JSONObject): String? {
+            var selected: String? = null
+            var largest = 0
+            first(value.optJSONObject("thumbnailRenderer") ?: value.optJSONObject("thumbnail") ?: value.optJSONObject("image")) { node ->
                 val url = node.optString("url")
-                val host = try { URI(url).host.orEmpty().lowercase(java.util.Locale.ROOT) } catch (_: Exception) { "" }
-                if (!(host.endsWith(".googleusercontent.com") || host.endsWith(".ggpht.com")) ||
-                    !url.startsWith("https://") || node.optInt("width") > 0 || node.optInt("height") > 0) return@first null
+                if (!validSongImageUrl(url)) return@first null
                 val w = Regex("(?:=|-)w(\\d+)").find(url)?.groupValues?.get(1)?.toIntOrNull()
                 val h = Regex("(?:=|-)h(\\d+)").find(url)?.groupValues?.get(1)?.toIntOrNull()
-                url.takeIf { w != null && w > 0 && w == h || Regex("=s[1-9][0-9]*(?:-|$)").containsMatchIn(url) }
+                val declaredW = node.optInt("width"); val declaredH = node.optInt("height")
+                val size = if (declaredW > 0 || declaredH > 0) declaredW.takeIf { it > 0 && it == declaredH }
+                    else w?.takeIf { it > 0 && it == h }
+                        ?: Regex("=s([1-9][0-9]*)(?:-|$)").find(url)?.groupValues?.get(1)?.toIntOrNull()
+                if (size != null && size > largest) { largest = size; selected = url }
+                null
             }
-        }
-        private fun isVideoImage(url: String): Boolean {
-            val host = try { URI(url).host.orEmpty() } catch (_: Exception) { return true }
-            return host == "img.youtube.com" || host.endsWith(".ytimg.com")
+            return selected
         }
         /** The requested upload can be either side of a native song/video pair. */
-        fun counterpartCover(root: JSONObject, videoId: String): String? {
-            fun type(renderer: JSONObject) = renderer.optJSONObject("navigationEndpoint")?.optJSONObject("watchEndpoint")
+        fun counterpartCover(root: JSONObject, videoId: String, requested: MusicTrack? = null): String? {
+            fun type(renderer: JSONObject) = renderer.optString("musicVideoType").ifBlank { renderer.optJSONObject("navigationEndpoint")?.optJSONObject("watchEndpoint")
                 ?.optJSONObject("watchEndpointMusicSupportedConfigs")?.optJSONObject("watchEndpointMusicConfig")
-                ?.optString("musicVideoType").orEmpty()
-            fun cover(song: JSONObject): String? = if (song.has("unplayableText") ||
+                ?.optString("musicVideoType").orEmpty() }
+            fun cover(song: JSONObject, pairedAudio: Boolean = false): String? = if (song.has("unplayableText") ||
                 !YouTubeAudioStreamService.isVideoId(song.optString("videoId")) ||
-                type(song).let { it.isNotBlank() && it != "MUSIC_VIDEO_TYPE_ATV" }) null else square(song)
+                (type(song) != "MUSIC_VIDEO_TYPE_ATV" && !(pairedAudio && type(song).isBlank()))) null else {
+                val candidate = YouTubeMusicApiService.parseAnyRenderer(JSONObject().put("playlistPanelVideoRenderer", song))
+                val verified = candidate?.copy(isrc = song.optString("isrc").ifBlank { candidate.isrc })
+                if (requested != null && verified != null && !compatibleOfficialPair(requested, verified)) null else square(song)
+            }
             return first(root) { node ->
                 val wrapper = node.optJSONObject("playlistPanelVideoWrapperRenderer")
                 if (wrapper == null) {
@@ -111,32 +149,44 @@ internal class YouTubePlayerArtworkResolver(
                     counterparts?.optJSONObject(index)?.optJSONObject("counterpartRenderer")?.optJSONObject("playlistPanelVideoRenderer")
                 }
                 if (pair.none { it.optString("videoId") == videoId }) return@first null
-                val covers = pair.mapNotNull { renderer -> cover(renderer)?.let { it to type(renderer) } }
-                covers.firstOrNull { it.second == "MUSIC_VIDEO_TYPE_ATV" }?.first
-                    // If both sides have untyped square crops, use the songs lookup
-                    // rather than guess which image is the original cover.
-                    ?: covers.singleOrNull()?.first
+                val requestedIsVideo = pair.any { it.optString("videoId") == videoId &&
+                    type(it) in setOf("MUSIC_VIDEO_TYPE_OMV", "MUSIC_VIDEO_TYPE_UGC") }
+                pair.firstNotNullOfOrNull { cover(it, requestedIsVideo && it.optString("videoId") != videoId) }
             }
         }
         /** Songs-filtered native results still need recording identity and a genuine square image. */
         fun matchingSongCover(root: JSONObject, track: MusicTrack): String? = first(root) { node ->
             val renderer = node.optJSONObject("musicResponsiveListItemRenderer") ?: return@first null
             val cover = square(renderer) ?: return@first null
-            val type = renderer.optJSONObject("navigationEndpoint")?.optJSONObject("watchEndpoint")
+            val type = renderer.optString("musicVideoType").ifBlank { renderer.optJSONObject("navigationEndpoint")?.optJSONObject("watchEndpoint")
                 ?.optJSONObject("watchEndpointMusicSupportedConfigs")?.optJSONObject("watchEndpointMusicConfig")
-                ?.optString("musicVideoType").orEmpty()
+                ?.optString("musicVideoType").orEmpty() }
             if (type.isNotBlank() && type != "MUSIC_VIDEO_TYPE_ATV") return@first null
-            val candidate = YouTubeMusicApiService.parseAnyRenderer(node) ?: return@first null
+            val parsed = YouTubeMusicApiService.parseAnyRenderer(node) ?: return@first null
+            val candidate = parsed.copy(isrc = renderer.optString("isrc").ifBlank { parsed.isrc })
             // Official videos can include an intro/outro absent from the audio
             // recording. For artwork only, retain exact title/artist/version/ISRC
             // checks without requiring the two edits to have the same duration.
-            val videoFrame = isVideoImage(track.coverUrl) || run {
-                val w = Regex("(?:=|-)w(\\d+)").find(track.coverUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                val h = Regex("(?:=|-)h(\\d+)").find(track.coverUrl)?.groupValues?.get(1)?.toIntOrNull() ?: 0
-                h > 0 && w > h
-            }
-            if (RecordingIdentity.providerConfidence(track, candidate) != null || videoFrame &&
-                RecordingIdentity.providerConfidence(track.copy(durationMs = 0), candidate.copy(durationMs = 0)) != null) cover else null
+            // Dimensions cannot establish whether the requested upload is audio
+            // or a square-cropped video. Artwork matching uses exact recording
+            // credits/version/release, without video intro/outro timing.
+            if (sameRecording(track, candidate, ignoreDuration = true)) cover else null
+        }
+
+        private fun sameRecording(track: MusicTrack, candidate: MusicTrack, ignoreDuration: Boolean): Boolean {
+            val first = if (ignoreDuration) track.copy(durationMs = 0) else track
+            val second = if (ignoreDuration) candidate.copy(durationMs = 0) else candidate
+            return RecordingIdentity.providerConfidence(first, second) != null &&
+                RecordingIdentity.same(first, second, durationToleranceMs = (track.durationMs / 40).coerceIn(3_000L, 8_000L), requireAlbum = true)
+        }
+
+        private fun compatibleOfficialPair(track: MusicTrack, candidate: MusicTrack): Boolean {
+            val a = RecordingIdentity.signature(track); val b = RecordingIdentity.signature(candidate)
+            if (a.title != b.title || a.versions != b.versions || a.isrc != null && b.isrc != null && a.isrc != b.isrc) return false
+            if (a.artists.isEmpty() || b.artists.isEmpty())
+                return a.album == null || b.album == null || a.album == b.album
+            return (a.artists.first() == b.artists.first() || a.artists.toSet() == b.artists.toSet()) &&
+                RecordingIdentity.same(track.copy(durationMs = 0), candidate.copy(durationMs = 0), requireAlbum = true)
         }
 
         private fun first(root: Any?, read: (JSONObject) -> String?): String? {
@@ -154,13 +204,46 @@ internal class YouTubePlayerArtworkResolver(
     }
 }
 
-internal fun playerCoverIdentity(track: MusicTrack) = "${track.id}|${track.title}|${track.artist}|${track.album}|${track.coverUrl}"
-internal fun playerCoverLookupIdentity(track: MusicTrack) = "${playerCoverIdentity(track)}|${track.durationMs}|${track.primaryArtists.joinToString()}"
+internal fun playerCoverIdentity(track: MusicTrack): String {
+    val recording = RecordingIdentity.signature(track)
+    return "${track.id}|${recording.title}|${recording.artists.joinToString()}|${recording.versions.sorted().joinToString()}"
+}
+internal fun playerCoverLookupIdentity(track: MusicTrack) = "${playerCoverIdentity(track)}|${track.durationMs}|${track.album}|${track.coverUrl}|${track.isrc}"
+
+internal fun songArtworkContext(): String = listOf(YouTubeMusicApiService.discoveryAccountIdentity(),
+    com.example.data.cache.HomeCacheIdentity.region(UserProfilePreferences.peekUserProfile() ?: com.example.data.local.UserProfile()),
+    java.util.Locale.getDefault().toLanguageTag(), UserProfilePreferences.peekUserProfile()?.languages.orEmpty().map { it.trim().lowercase(java.util.Locale.ROOT) }.sorted().joinToString()).joinToString("|")
+
+private suspend fun songCoverRequest(operation: String, value: String): String {
+    val region = com.example.data.cache.HomeCacheIdentity.region(UserProfilePreferences.peekUserProfile() ?: com.example.data.local.UserProfile())
+    val language = java.util.Locale.getDefault().toLanguageTag()
+    return try { com.example.recommendation.DiscoveryRequestCoordinator.network {
+        withTimeoutOrNull(4_000L) { YouTubeAudioStreamService.discoveryResponse(operation, value, region, languageCode = language,
+            includeAccount = YouTubeMusicApiService.hasAuthenticatedAccount()) } ?: throw java.io.IOException("Song artwork request timed out")
+    } } catch (cancelled: CancellationException) { throw cancelled }
+      catch (error: Exception) {
+        if (!YouTubeMusicApiService.hasAuthenticatedAccount()) throw error
+        com.example.recommendation.DiscoveryRequestCoordinator.network {
+            withTimeoutOrNull(4_000L) { YouTubeAudioStreamService.discoveryResponse(operation, value, region, languageCode = language, includeAccount = false) }
+                ?: throw java.io.IOException("Song artwork fallback timed out")
+        }
+    }
+}
 
 private val playerCoverResolver = YouTubePlayerArtworkResolver(
-    next = { id -> YouTubeAudioStreamService.discoveryResponse("related", id,
-        UserProfilePreferences.peekUserProfile()?.countryCode ?: "US") },
-    search = { query -> YouTubeAudioStreamService.discoveryResponse("search", query,
-        UserProfilePreferences.peekUserProfile()?.countryCode ?: "US") }
+    next = { id -> songCoverRequest("related", id) },
+    search = { query -> songCoverRequest("search", query) },
+    contextIdentity = ::songArtworkContext,
+    readSaved = { key ->
+        val entry = com.example.data.cache.RecommendationCache.get(com.example.XtremeMusicApp.getInstance()).get(key)
+        entry?.takeIf { System.currentTimeMillis() < it.expiresAt }?.let {
+            withContext(AppDispatchers.CpuBounded) { runCatching { JSONObject(it.body).takeIf { it.optInt("version") == 2 }?.optString("url") }.getOrNull() }
+        }
+    },
+    save = { key, url -> com.example.data.cache.RecommendationCache.get(com.example.XtremeMusicApp.getInstance())
+        .putBody(key, JSONObject().put("version", 2).put("url", url.orEmpty()).toString(), if (url == null) 60_000L else 86_400_000L) }
 )
 internal suspend fun resolveYouTubePlayerCover(track: MusicTrack): String? = playerCoverResolver.resolve(track)
+internal suspend fun resolveNativeSongCover(track: MusicTrack, nativeCover: String): String? = playerCoverResolver.resolve(track, nativeCover)
+internal fun cachedNativeSongCover(track: MusicTrack): String? = playerCoverResolver.peek(track)
+internal suspend fun rejectSongCover(track: MusicTrack, url: String) = playerCoverResolver.reject(track, url)

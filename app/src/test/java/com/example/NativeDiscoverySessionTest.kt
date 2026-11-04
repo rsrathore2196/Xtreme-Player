@@ -58,6 +58,13 @@ class NativeDiscoverySessionTest {
             assertEquals("IN", requests.last().second.getJSONObject("context").getJSONObject("client").getString("gl"))
             assertEquals("FEmusic_home", requests.last().second.getString("browseId"))
 
+            YouTubeAudioStreamService.requestDiscovery(account, "related", "abcdefghijk", setLogin = true)
+            assertTrue(requests.last().first.url.encodedPath.endsWith("/next"))
+            assertTrue(requests.last().first.header("Authorization").orEmpty().startsWith("SAPISIDHASH "))
+            assertEquals("IN", requests.last().second.getJSONObject("context").getJSONObject("client").getString("gl"))
+            assertEquals("1", account.sessionSnapshot().authUser)
+            assertEquals(before, playback.sessionSnapshot())
+
             YouTubeAudioStreamService.requestDiscovery(anonymous, "browse", "FEmusic_home", continuation = "page-two")
             assertNull(requests.last().first.header("Authorization"))
             assertFalse(requests.last().first.header("Cookie").orEmpty().contains("fixture-session"))

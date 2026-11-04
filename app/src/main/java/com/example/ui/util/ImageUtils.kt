@@ -250,7 +250,8 @@ internal fun buildOptimizedImageRequest(
     visibility: ArtworkVisibility? = null,
     currentTrack: Boolean = false,
     sourceSize: IntSize? = decodeSize,
-    visibleThumbnail: Boolean = false
+    visibleThumbnail: Boolean = false,
+    requireSquareSongArtwork: Boolean = false
 ): ImageRequest {
     val metadata = ArtworkRequestMetadata(
         trackId = track?.id,
@@ -262,17 +263,18 @@ internal fun buildOptimizedImageRequest(
         visibility = visibility,
         currentTrack = currentTrack,
         visibleThumbnail = visibleThumbnail,
+        requireSquareSongArtwork = requireSquareSongArtwork,
         // A verified song cover must not be replaced by a larger frame of its music video.
-        allowVideoFallback = !isSelectedSongCover(track?.id, url) &&
+        allowVideoFallback = !requireSquareSongArtwork && !isSelectedSongCover(track?.id, url) &&
             !((currentTrack || targetSize == ImageConfig.MINI_PLAYER_SIZE) && hasNativeSquareCover(url))
     )
     // Direct provider URL: no Room lookup or search before the image can load.
     val initialUrl = (when {
-        currentTrack -> aspectPreservingArtworkUrl(url, IntSize(metadata.sourceDimension, metadata.sourceDimension))
+        currentTrack || requireSquareSongArtwork -> aspectPreservingArtworkUrl(url, IntSize(metadata.sourceDimension, metadata.sourceDimension))
         visibleThumbnail -> providerThumbnailUrl(url, metadata.sourceDimension)
         else -> providerArtworkUrl(url, metadata.sourceDimension)
     }).ifBlank {
-        youtubeArtworkAlternatives(track?.id, emptyList()).firstOrNull().orEmpty()
+        if (requireSquareSongArtwork) "" else youtubeArtworkAlternatives(track?.id, emptyList()).firstOrNull().orEmpty()
     }
     val placeholder = if (currentTrack) {
         // Reuse the same catalog cover already shown on Home/Search while its

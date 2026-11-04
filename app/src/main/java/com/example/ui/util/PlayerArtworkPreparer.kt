@@ -79,19 +79,26 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
                 val cover = resolveCover(track)
                 currentCoroutineContext().ensureActive()
                 val artworkTrack = cover?.let { track.copy(coverUrl = it) } ?: track
-                if (cover != null) selectedSongCovers.put(track.id, cover)
                 val request = buildOptimizedImageRequest(context, artworkTrack.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE,
-                    artworkTrack, decodeSize = playerArtworkDecodeSize(context), currentTrack = true)
+                    artworkTrack, decodeSize = playerArtworkDecodeSize(context), currentTrack = true, requireSquareSongArtwork = cover != null)
                 val loader = loaderFor(context)
-                val result = loader.execute(request) as? SuccessResult ?: return@collectLatest
+                val result = loader.execute(request) as? SuccessResult
+                if (result == null) {
+                    if (cover != null) com.example.data.remote.rejectSongCover(track, cover)
+                    return@collectLatest
+                }
                 if (cover != null) {
                     // Publish only usable square art, already in Coil's cache. A failed
                     // cover download never blanks the player's current artwork.
                     val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
                     val width = bitmap?.width ?: result.drawable.intrinsicWidth
                     val height = bitmap?.height ?: result.drawable.intrinsicHeight
-                    if (width <= 0 || width != height) return@collectLatest
+                    if (width <= 0 || width != height) {
+                        com.example.data.remote.rejectSongCover(track, cover)
+                        return@collectLatest
+                    }
                     currentCoroutineContext().ensureActive()
+                    selectedSongCovers.put(track.id, cover)
                     onCoverResolved(ResolvedPlayerCover(playerCoverIdentity(track), cover))
                 }
                 val key = playerPaletteKey(artworkTrack, true, Color.White, Color.Black, request.data.toString())

@@ -67,21 +67,22 @@ internal object DiscoveryRequestCoordinator {
     }
 
     suspend fun shared(key: String, essential: Boolean, network: Boolean = true, playbackMetadata: Boolean = false,
+        awaitFrameQuiet: Boolean = true,
         block: suspend () -> List<MusicTrack>): List<MusicTrack> {
         val flight = synchronized(flights) {
             flights.getOrPut(key) {
                 val urgent = MutableStateFlow(essential)
-                Flight(urgent, scope.async(SharedPriority(urgent), start = CoroutineStart.LAZY) {
+                Flight(urgent, scope.async(SharedPriority(urgent, awaitFrameQuiet), start = CoroutineStart.LAZY) {
                     suspend fun work(): List<MusicTrack> {
-                        return if (network) permit(urgent) {
+                        return if (network) permit(urgent, awaitFrameQuiet) {
                             BackgroundWorkCoordinator.traceWork(if (urgent.value) "Discovery urgent shared request" else "Discovery optional shared request") {
                                 BackgroundWorkCoordinator.finishBoundedBatch { withTimeoutOrNull(12_000L) { block() }.orEmpty() }
                             }
                         }
                         else block()
                     }
-                    if (playbackMetadata) BackgroundWorkCoordinator.localDataPreparation(urgent = { urgent.value }) { work() }
-                    else BackgroundWorkCoordinator.optionalProcessing(urgent = { urgent.value }) { work() }
+                    if (playbackMetadata) BackgroundWorkCoordinator.localDataPreparation(urgent = { urgent.value }, awaitFrameQuiet = awaitFrameQuiet) { work() }
+                    else BackgroundWorkCoordinator.optionalProcessing(urgent = { urgent.value }, awaitFrameQuiet = awaitFrameQuiet) { work() }
                 })
             }.also {
                 it.readers++

@@ -25,7 +25,8 @@ data class ServerHomeShelf(
 @Immutable
 sealed interface ServerHomeItem {
     val key: String
-    data class Song(val track: MusicTrack, val videoType: String = "", val landscapeThumbnail: String = "") : ServerHomeItem { override val key = "song:${track.id}" }
+    data class Song(val track: MusicTrack, val videoType: String = "", val landscapeThumbnail: String = "",
+        val squareSongThumbnail: String = "") : ServerHomeItem { override val key = "song:${track.id}" }
     data class Album(val album: CatalogAlbum, val subtitle: String = "") : ServerHomeItem {
         override val key = "album:${album.id}:${album.browseParams.orEmpty()}"
     }
@@ -47,6 +48,13 @@ data class HomeBrowseSnapshot(
 )
 
 enum class NativeShelfKind { STANDARD, QUICK_PICKS, MUSIC_VIDEOS }
+
+/** Native song Trending shelves keep square cards; playlist charts keep their own art. */
+fun ServerHomeShelf.requiresSongArtwork(): Boolean {
+    val heading = HomeShelfIdentity.title(title)
+    return (heading == "trending" || heading.startsWith("trending ")) &&
+        (tracks.isNotEmpty() || items.any { it is ServerHomeItem.Song })
+}
 
 /** Exact native headings plus provider music-video metadata; song titles never classify shelves. */
 fun ServerHomeShelf.nativeKind(): NativeShelfKind {

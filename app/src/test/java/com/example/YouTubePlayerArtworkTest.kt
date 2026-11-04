@@ -30,9 +30,9 @@ class YouTubePlayerArtworkTest {
         .put("thumbnails", JSONArray().put(JSONObject().put("url", url).put("width", width).put("height", height)))
     private fun linked(primary: String = videoId, url: String = square, width: Int = 600, height: Int = 600) = JSONObject()
         .put("contents", JSONObject().put("playlistPanelVideoWrapperRenderer", JSONObject()
-            .put("primaryRenderer", JSONObject().put("playlistPanelVideoRenderer", JSONObject().put("videoId", primary)))
+            .put("primaryRenderer", JSONObject().put("playlistPanelVideoRenderer", JSONObject().put("videoId", primary).put("musicVideoType", "MUSIC_VIDEO_TYPE_OMV")))
             .put("counterpart", JSONArray().put(JSONObject().put("counterpartRenderer", JSONObject()
-                .put("playlistPanelVideoRenderer", JSONObject().put("videoId", NativeFeedFixtures.id(2))
+                .put("playlistPanelVideoRenderer", JSONObject().put("videoId", NativeFeedFixtures.id(2)).put("musicVideoType", "MUSIC_VIDEO_TYPE_ATV")
                     .put("thumbnail", thumbnail(url, width, height))))))))
     private fun song(title: String = "Song 1", artist: String = "Singer 1", cover: String = square) = NativeFeedFixtures.song(2, title).apply {
         val renderer = getJSONObject("musicResponsiveListItemRenderer")
@@ -112,10 +112,10 @@ class YouTubePlayerArtworkTest {
         val root = linked(primary = NativeFeedFixtures.id(2))
         val wrapper = root.getJSONObject("contents").getJSONObject("playlistPanelVideoWrapperRenderer")
         wrapper.getJSONObject("primaryRenderer").getJSONObject("playlistPanelVideoRenderer")
-            .put("thumbnail", thumbnail(square))
+            .put("thumbnail", thumbnail(square)).put("musicVideoType", "MUSIC_VIDEO_TYPE_ATV")
         wrapper.getJSONArray("counterpart").getJSONObject(0).getJSONObject("counterpartRenderer")
             .getJSONObject("playlistPanelVideoRenderer").put("videoId", videoId)
-            .put("thumbnail", thumbnail(video.coverUrl, 1280, 720))
+            .put("thumbnail", thumbnail(video.coverUrl, 1280, 720)).put("musicVideoType", "MUSIC_VIDEO_TYPE_OMV")
         assertEquals(square, YouTubePlayerArtworkResolver.counterpartCover(root, videoId))
     }
 
@@ -124,6 +124,10 @@ class YouTubePlayerArtworkTest {
         root.getJSONObject("contents").getJSONObject("playlistPanelVideoWrapperRenderer")
             .getJSONObject("primaryRenderer").getJSONObject("playlistPanelVideoRenderer")
             .put("thumbnail", thumbnail("https://lh3.googleusercontent.com/video-crop=w600-h600-l90-rj"))
+            .remove("musicVideoType")
+        root.getJSONObject("contents").getJSONObject("playlistPanelVideoWrapperRenderer")
+            .getJSONArray("counterpart").getJSONObject(0).getJSONObject("counterpartRenderer")
+            .getJSONObject("playlistPanelVideoRenderer").remove("musicVideoType")
         assertNull(YouTubePlayerArtworkResolver.counterpartCover(root, videoId))
         val resolver = YouTubePlayerArtworkResolver({ root.toString() }, { search(song()).toString() })
         assertEquals(square, resolver.resolve(video))
@@ -148,14 +152,67 @@ class YouTubePlayerArtworkTest {
         assertEquals(square, YouTubePlayerArtworkResolver.matchingSongCover(search(song()), extendedVideo))
         assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song(artist = "Other Singer")), extendedVideo))
         assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song(title = "Song 1 (Live)")), extendedVideo))
-        assertNull("Normal audio matches retain duration checks", YouTubePlayerArtworkResolver.matchingSongCover(
-            search(song()), extendedVideo.copy(coverUrl = square)))
+        assertEquals("A square crop does not prove that the upload is an audio-only edit", square,
+            YouTubePlayerArtworkResolver.matchingSongCover(search(song()), extendedVideo.copy(coverUrl = square)))
     }
 
     @Test fun missingThumbnailAndImportedYoutubeReferencesStillFindTheNativeSquare() = runBlocking {
         val resolver = YouTubePlayerArtworkResolver({ assertEquals(videoId, it); linked().toString() }, { error("No search") })
         assertEquals(square, resolver.resolve(video.copy(coverUrl = "")))
         assertEquals(square, resolver.resolve(video.copy(id = "imported-song", audioUrl = "https://music.youtube.com/watch?v=$videoId")))
+    }
+
+    @Test fun nativeSongProofAndPersistentCoversAvoidRequestsAndRemainContextIsolated() = runBlocking {
+        val saved = java.util.concurrent.ConcurrentHashMap<String, String>()
+        var context = "account-a|IN|hi"
+        val calls = AtomicInteger()
+        fun resolver() = YouTubePlayerArtworkResolver({ calls.incrementAndGet(); linked().toString() }, { error("No search") },
+            { context }, { saved[it] }, { key, value -> saved[key] = value.orEmpty() })
+        val first = resolver()
+        assertEquals(square, first.resolve(video, square))
+        assertEquals(0, calls.get())
+        assertEquals(square, resolver().resolve(video.copy(album = "Enriched release", coverUrl = "https://i.ytimg.com/vi/$videoId/maxresdefault.jpg")))
+        assertEquals(0, calls.get())
+        context = "account-b|IN|hi"
+        assertEquals(square, resolver().resolve(video)); assertEquals(1, calls.get())
+        context = "account-b|GB|en"
+        assertEquals(square, resolver().resolve(video)); assertEquals(2, calls.get())
+    }
+
+    @Test fun oneCancelledConsumerCannotCancelAnotherVisibleCardsSharedLookup() = runBlocking {
+        val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>()
+        val calls = AtomicInteger()
+        val resolver = YouTubePlayerArtworkResolver({ calls.incrementAndGet(); entered.complete(Unit); release.await(); linked().toString() }, { error("No search") })
+        val first = async { resolver.resolve(video) }
+        entered.await()
+        val second = async(start = CoroutineStart.UNDISPATCHED) { resolver.resolve(video) }
+        delay(100)
+        first.cancelAndJoin(); release.complete(Unit)
+        assertEquals(square, second.await()); assertEquals(1, calls.get())
+    }
+
+    @Test fun oldContextCannotPublishAndRejectedDecodedCoverCanRetryAfterItsShortNegativeTtl() = runBlocking {
+        val release = CompletableDeferred<Unit>(); val started = CompletableDeferred<Unit>()
+        var context = "old"
+        val calls = AtomicInteger()
+        val resolver = YouTubePlayerArtworkResolver({ calls.incrementAndGet(); started.complete(Unit); release.await(); linked().toString() }, { error("No search") }, { context })
+        val old = async { resolver.resolve(video) }; started.await(); context = "new"; release.complete(Unit)
+        assertNull(old.await()); assertNull(resolver.peek(video))
+        assertEquals(square, resolver.resolve(video)); resolver.reject(video, square)
+        assertNull(resolver.resolve(video)); assertEquals(2, calls.get())
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
+        assertEquals(square, resolver.resolve(video)); assertEquals(3, calls.get())
+    }
+
+    @Test fun metadataArtworkEditsCannotDiscardAnAlreadyDecodedCurrentCover() {
+        val cover = ResolvedPlayerCover(playerCoverIdentity(video), square)
+        val enriched = video.copy(album = "Enriched release", coverUrl = "https://lh3.googleusercontent.com/video-crop=w600-h600",
+            primaryArtists = listOf(video.artist), isrc = "USABC2400001")
+        val state = PlayerUiState(currentTrack = enriched, queue = listOf(video))
+        assertEquals(square, playerCoverState(state, cover).currentTrack!!.coverUrl)
+        assertEquals(state.queue, playerCoverState(state, cover).queue)
+        val other = state.copy(currentTrack = enriched.copy(title = "Other recording"))
+        assertSame(other, playerCoverState(other, cover))
     }
 
 }

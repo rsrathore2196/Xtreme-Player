@@ -3,6 +3,7 @@ package com.example.ui.screens
 import android.content.res.Configuration
 import com.example.data.model.ServerHomeItem
 import com.example.data.model.nativeKind
+import com.example.data.model.requiresSongArtwork
 import com.example.ui.components.awaitContentDraw
 import com.example.ui.viewmodel.HomeShelfPresentation
 import com.example.ui.viewmodel.ShelfLoadStatus
@@ -615,7 +616,9 @@ fun HomeScreenContent(
                                 currentPlayingId = currentPlayingId, cardBg = cardBg, cardBorderColor = cardBorderColor,
                                 textPrimaryColor = textPrimaryColor, textMutedColor = textMutedColor, onTrackClick = onTrackClick,
                                 shelfItems = shelf?.items.orEmpty(), onOpenCatalog = onOpenCatalog,
-                                nativeKind = remember(shelf) { shelf?.nativeKind() ?: com.example.data.model.NativeShelfKind.STANDARD })
+                                nativeKind = remember(shelf) { shelf?.nativeKind() ?: com.example.data.model.NativeShelfKind.STANDARD },
+                                resolveSongCovers = shelf?.requiresSongArtwork() == true,
+                                artworkContext = remember(userProfile, shelf) { com.example.data.remote.songArtworkContext() })
                         }
                         ShelfLoadStatus.EMPTY, ShelfLoadStatus.ERROR -> Unit
                     }
@@ -749,7 +752,9 @@ fun SectionCardLayout(
     tracksPrepared: Boolean = false,
     shelfItems: List<ServerHomeItem> = emptyList(),
     onOpenCatalog: (CatalogDestination) -> Unit = {},
-    nativeKind: com.example.data.model.NativeShelfKind = com.example.data.model.NativeShelfKind.STANDARD
+    nativeKind: com.example.data.model.NativeShelfKind = com.example.data.model.NativeShelfKind.STANDARD,
+    resolveSongCovers: Boolean = false,
+    artworkContext: String = ""
 ) {
     // If no verified tracks and not loading, completely hide the entire shelf
     if (!state.isLoading && state.tracks.isEmpty() && shelfItems.isEmpty()) {
@@ -803,8 +808,12 @@ fun SectionCardLayout(
                 if (shelfItems.isNotEmpty()) items(shelfItems, key = { it.key }, contentType = { "home_item" }) { item ->
                     VisibleItemArtwork(shelfListState, item.key) {
                         when (item) {
-                            is ServerHomeItem.Song -> ShelfTrackCard(item.track, item.track.id == currentPlayingId,
-                                cardBg, cardBorderColor, textPrimaryColor, textMutedColor) { onTrackClick(item.track, safeTracks) }
+                            is ServerHomeItem.Song -> {
+                                val cover = if (resolveSongCovers) com.example.ui.util.rememberNativeSongArtworkRequest(
+                                    item.track, item.squareSongThumbnail, artworkContext) else null
+                                ShelfTrackCard(item.track, item.track.id == currentPlayingId,
+                                    cardBg, cardBorderColor, textPrimaryColor, textMutedColor, cover) { onTrackClick(item.track, safeTracks) }
+                            }
                             is ServerHomeItem.Album -> ShelfContentCard(item.album.title,
                                 item.subtitle.ifBlank { item.album.artists.joinToString { it.name } },
                                 rememberOptimizedImageRequest(item.album.image, com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
@@ -827,6 +836,7 @@ fun SectionCardLayout(
                             cardBorderColor = cardBorderColor,
                             textPrimaryColor = textPrimaryColor,
                             textMutedColor = textMutedColor,
+                            artworkRequest = if (resolveSongCovers) com.example.ui.util.rememberNativeSongArtworkRequest(track, "", artworkContext) else null,
                             onClick = { onTrackClick(track, safeTracks) }
                         )
                     }
@@ -972,10 +982,11 @@ fun ShelfTrackCard(
     cardBorderColor: Color = if (LocalAppColors.current.isDark) Color(0xFF27272A) else Color(0xFFE4E4E7),
     textPrimaryColor: Color = if (LocalAppColors.current.isDark) Color(0xFFFFFFFF) else Color(0xFF09090B),
     textMutedColor: Color = if (LocalAppColors.current.isDark) Color(0xFFA1A1AA) else Color(0xFF71717A),
+    artworkRequest: coil.request.ImageRequest? = null,
     onClick: () -> Unit
 ) {
     ShelfContentCard(remember(track.title) { track.cleanTitle }, track.artist,
-        rememberOptimizedImageRequest(track = track, targetSize = com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
+        artworkRequest ?: rememberOptimizedImageRequest(track = track, targetSize = com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
             crossfadeEnabled = false, preferStableArtwork = true), isPlaying,
         cardBg, cardBorderColor, textPrimaryColor, textMutedColor, artworkDescription = track.title, onClick = onClick)
 }

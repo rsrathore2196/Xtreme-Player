@@ -50,7 +50,8 @@ data class ArtworkRequestMetadata(
     val currentTrack: Boolean = false,
     val visibleThumbnail: Boolean = false,
     val allowVideoFallback: Boolean = true,
-    val landscapeArtwork: Boolean = false
+    val landscapeArtwork: Boolean = false,
+    val requireSquareSongArtwork: Boolean = false
 )
 
 /** Small visible Home cards need a native thumbnail, not a full-player rendition. */
@@ -224,7 +225,7 @@ class ArtworkResolutionInterceptor : Interceptor {
         val urls = (originals.map {
             when {
                 metadata.landscapeArtwork -> aspectPreservingArtworkUrl(it, androidx.compose.ui.unit.IntSize(width, height))
-                metadata.currentTrack -> aspectPreservingArtworkUrl(it, androidx.compose.ui.unit.IntSize(sourceDimension, sourceDimension))
+                metadata.currentTrack || metadata.requireSquareSongArtwork -> aspectPreservingArtworkUrl(it, androidx.compose.ui.unit.IntSize(sourceDimension, sourceDimension))
                 metadata.visibleThumbnail -> providerThumbnailUrl(it, sourceDimension)
                 else -> providerArtworkUrl(it, sourceDimension)
             }
@@ -235,7 +236,7 @@ class ArtworkResolutionInterceptor : Interceptor {
         // the player. These alternatives are cache probes, never extra downloads.
         val cacheUrls = if (metadata.landscapeArtwork) urls else (urls.take(1) + originals.flatMap { source ->
             listOf(600, 1200, 2000, 3000, 200).map {
-                if (metadata.currentTrack) aspectPreservingArtworkUrl(source, androidx.compose.ui.unit.IntSize(it, it))
+                if (metadata.currentTrack || metadata.requireSquareSongArtwork) aspectPreservingArtworkUrl(source, androidx.compose.ui.unit.IntSize(it, it))
                 else providerArtworkUrl(source, it)
             }
         } + urls.drop(1)).distinct()
@@ -282,14 +283,24 @@ class ArtworkResolutionInterceptor : Interceptor {
                     }
                 }
             }
-            val loaded = (result as? SuccessResult)?.let { success ->
+            val decoded = (result as? SuccessResult)?.takeIf { success ->
+                if (!metadata.requireSquareSongArtwork) true else {
+                    val bitmap = (success.drawable as? BitmapDrawable)?.bitmap
+                    val w = bitmap?.width ?: success.drawable.intrinsicWidth
+                    val h = bitmap?.height ?: success.drawable.intrinsicHeight
+                    w > 0 && w == h
+                }
+            }
+            val loaded = decoded?.let { success ->
                 // Probe restrictions are internal to this attempt. The selected
                 // source feeds header/palette requests, which need the caller's
                 // real cache policy rather than a memory-only probe's flags.
                 success.copy(request = success.request.newBuilder()
                     .networkCachePolicy(request.networkCachePolicy)
                     .diskCachePolicy(request.diskCachePolicy).build())
-            }.also { if (it == null && !cacheOnly && !memoryOnly) lastError = result }
+            }.also { if (it == null && !cacheOnly && !memoryOnly) lastError =
+                if (metadata.requireSquareSongArtwork && result is SuccessResult)
+                    ErrorResult(null, request, IOException("Native song artwork decoded with incompatible dimensions")) else result }
             if (cacheOnly && !memoryOnly) cachedImages[url] = loaded
             return loaded
         }
