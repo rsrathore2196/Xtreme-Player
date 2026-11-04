@@ -743,6 +743,7 @@ object YouTubeMusicApiService {
             return MusicTrack(
                 id = "yt_$videoId",
                 title = cleanTitle,
+                originalProviderTitle = rawTitle,
                 artist = cleanArtist,
                 album = cleanAlbum,
                 durationMs = durationMs,
@@ -1066,8 +1067,11 @@ object YouTubeMusicApiService {
         val pvr = item.optJSONObject("playlistVideoRenderer") ?: item.optJSONObject("playlistPanelVideoRenderer")
         if (pvr != null) {
             val vid = pvr.optString("videoId", "")
-            val rawTitle = pvr.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optString("text", "")
-                ?: pvr.optJSONObject("title")?.optString("simpleText", "").orEmpty()
+            val title = pvr.optJSONObject("title")
+            val titleRuns = title?.optJSONArray("runs")
+            val rawTitle = if (titleRuns != null) (0 until titleRuns.length()).joinToString("") {
+                titleRuns.optJSONObject(it)?.optString("text").orEmpty()
+            } else title?.optString("simpleText").orEmpty()
             val byline = pvr.optJSONObject("longBylineText") ?: pvr.optJSONObject("shortBylineText")
             val credits = YouTubeExploreParser.performingArtists(pvr)
             val bylineRuns = byline?.optJSONArray("runs")
@@ -1085,6 +1089,7 @@ object YouTubeMusicApiService {
                 return MusicTrack(
                     id = "yt_$vid",
                     title = cleanTitle,
+                    originalProviderTitle = rawTitle,
                     artist = cleanArtist,
                     album = if (item.has("playlistPanelVideoRenderer")) "Unknown" else "YouTube Playlist",
                     durationMs = if (durSec > 0) durSec * 1000L else parseDurationText(pvr.optJSONObject("lengthText")?.optString("simpleText").orEmpty()),
@@ -1113,6 +1118,7 @@ object YouTubeMusicApiService {
                 return MusicTrack(
                     id = "yt_$vid",
                     title = cleanTitle,
+                    originalProviderTitle = rawTitle,
                     artist = cleanArtist,
                     album = "YouTube Playlist",
                     durationMs = 0L,

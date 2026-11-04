@@ -99,7 +99,7 @@ internal object PlaybackSessionStore {
                 .put("bitrate", extras?.getInt("bitrate", 0) ?: 0)
                 .put("duration", extras?.getLong("duration", 0L) ?: 0L)
                 .put("qualityBadge", extras?.getString("qualityBadge").orEmpty()).apply {
-                    listOf("singers", "writer", "language", "year", "isrc").forEach { key -> put(key, extras?.getString(key).orEmpty()) }
+                    listOf("singers", "writer", "language", "year", "isrc", "originalProviderTitle").forEach { key -> put(key, extras?.getString(key).orEmpty()) }
                     put("enhancerOrigin", JSONObject().apply {
                         com.example.playback.SourceTransitionOrigin.keys.forEach { key ->
                             if (extras?.containsKey(key) == true) put(key, extras.get(key))
@@ -179,7 +179,7 @@ internal object PlaybackSessionStore {
                         .setExtras(Bundle().apply {
                             putString("media_source", entry.optString("source")); putInt("bitrate", entry.optInt("bitrate"))
                             putLong("duration", entry.optLong("duration")); putString("qualityBadge", entry.optString("qualityBadge"))
-                            listOf("singers", "writer", "language", "year", "isrc").forEach { key -> putString(key, entry.optString(key)) }
+                            listOf("singers", "writer", "language", "year", "isrc", "originalProviderTitle").forEach { key -> putString(key, entry.optString(key)) }
                             val primary = entry.optJSONArray("primaryArtists")
                             putStringArrayList("primaryArtists", ArrayList((0 until (primary?.length() ?: 0))
                                 .map { primary!!.getString(it) }.filter(String::isNotBlank)))

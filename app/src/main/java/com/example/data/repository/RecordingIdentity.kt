@@ -12,7 +12,8 @@ internal object RecordingIdentity {
     private val featured = Regex("(?i)\\s*(?:\\(|\\[)?\\b(?:feat\\.?|ft\\.?|featuring)\\s+([^\\)\\]]+)(?:\\)|\\])?\\s*$")
     private val versions = Regex("(?i)\\b(?:live|re[ -]?mix|rmx|remaster(?:ed)?|radio[ -]?edit|acoustic|unplugged|instrumental|karaoke|cover|slowed|reverb|sped[ -]?up|nightcore|extended|demo|mono|stereo|edit)\\b")
     private val albumEdition = Regex("(?i)\\s*(?:\\(|\\[)(?:deluxe|expanded|bonus|anniversary)[^\\)\\]]*(?:\\)|\\])\\s*$")
-    private val unknown = setOf("", "unknown", "unknown artist", "various artists", "online artist", "youtube artist", "internet archive")
+    private val unknown = setOf("", "unknown", "unknown artist", "various artists", "online artist", "youtube artist", "internet archive",
+        "youtube", "youtube music", "jiosaavn", "saavn", "extended stream")
     private val unknownAlbums = setOf("", "unknown", "single", "online stream", "extended stream", "youtube music", "youtube playlist")
 
     fun isrc(value: String): String? = value.uppercase(Locale.ROOT).replace(codeSeparators, "")

@@ -788,6 +788,7 @@ class PlaybackManager(
             playlistEntryId = extras?.getLong("playlist_entry_id", 0L) ?: 0L,
             language = extras?.getString("language") ?: "Unknown", year = extras?.getString("year").orEmpty(),
             isrc = extras?.getString("isrc").orEmpty(),
+            originalProviderTitle = extras?.getString("originalProviderTitle").orEmpty(),
             source = source.ifBlank { if (item.mediaId.startsWith("yt_")) "Extended Stream" else "HD Stream" },
             isLossless = extras?.getBoolean("isLossless", false) == true,
             recommendationOnly = extras?.getBoolean("recommendation_only", false) == true)
@@ -2634,6 +2635,7 @@ class PlaybackManager(
                         putStringArrayList("primaryArtists", ArrayList(primaryArtists))
                         putLong("playlist_entry_id", playlistEntryId)
                         putString("language", language); putString("year", year); putString("isrc", isrc)
+                        putString("originalProviderTitle", originalProviderTitle)
                         SourceTransitionOrigin.write(this, metadata.origin?.takeIf { it.track.id == id })
                     })
                     .build()

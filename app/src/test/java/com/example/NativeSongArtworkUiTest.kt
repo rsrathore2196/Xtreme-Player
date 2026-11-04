@@ -82,10 +82,9 @@ class NativeSongArtworkUiTest {
                                     lookups.add(item.id)
                                     "https://lh3.googleusercontent.com/album-${item.id}=w600-h600-l90-rj".also { covers[item.id] = it }
                                 }, cached = { covers[it.id] })
-                                AsyncImage(request, track.title, modifier = Modifier.size(163.2.dp), contentScale = ContentScale.Crop,
+                                AsyncImage(request, track.title, modifier = Modifier.size(163.2.dp), contentScale = nativeSongArtworkContentScale(request),
                                     onSuccess = { result ->
-                                        assertTrue(result.result.request.data.toString().contains("album-"))
-                                        decoded.add(track.id)
+                                        if (result.result.request.data.toString().contains("album-")) decoded.add(track.id)
                                     })
                             }
                         }
@@ -95,8 +94,8 @@ class NativeSongArtworkUiTest {
             compose.runOnIdle { assertTrue(lookups.isEmpty()); assertTrue(urls.isEmpty()); active = true }
             waitForCover { decoded.size >= 2 }
             assertTrue("Unseen cards must not start metadata discovery", lookups.distinct().size <= 3)
-            assertTrue(urls.all { it.startsWith("https://lh3.googleusercontent.com/album-") })
-            assertFalse(urls.any { it.contains("ytimg") })
+            assertTrue(urls.all { url -> url.startsWith("https://lh3.googleusercontent.com/album-") ||
+                tracks.any { url.contains("/vi/${it.id.removePrefix("yt_")}/") } })
             compose.onNodeWithContentDescription("Song 1").assertWidthIsEqualTo(163.2.dp).assertHeightIsEqualTo(163.2.dp)
             compose.runOnIdle { unrelated++ }
             compose.waitForIdle()

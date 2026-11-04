@@ -164,6 +164,7 @@ class MusicService : MediaLibraryService() {
             item.localConfiguration?.uri?.toString().orEmpty(),
             bitrateKbps = previous?.getInt("bitrate", 0) ?: 0, source = previous?.getString("media_source").orEmpty(),
             isrc = previous?.getString("isrc").orEmpty(),
+            originalProviderTitle = previous?.getString("originalProviderTitle").orEmpty(),
             primaryArtists = previous?.getStringArrayList("primaryArtists")?.toList().orEmpty(),
             recommendationOnly = previous?.getBoolean("recommendation_only") == true)
         repeat(3) {
@@ -401,7 +402,8 @@ class MusicService : MediaLibraryService() {
             bitrateKbps = extras?.getInt("bitrate") ?: 0, qualityBadge = extras?.getString("qualityBadge").orEmpty(),
             source = extras?.getString("media_source").orEmpty(), isLossless = extras?.getBoolean("isLossless") == true,
             playlistEntryId = extras?.getLong("playlist_entry_id", 0L) ?: 0L,
-            primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(), isrc = extras?.getString("isrc").orEmpty())
+            primaryArtists = extras?.getStringArrayList("primaryArtists")?.toList().orEmpty(), isrc = extras?.getString("isrc").orEmpty(),
+            originalProviderTitle = extras?.getString("originalProviderTitle").orEmpty())
     }
 
     /** Headless discovery hands its result to the same source replacement/recovery owner. */

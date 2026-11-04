@@ -37,6 +37,7 @@ fun MusicTrack.toMediaItem(): MediaItem {
         .setExtras(android.os.Bundle().apply {
             putLong("duration", durationMs)
             putString("isrc", isrc)
+            putString("originalProviderTitle", originalProviderTitle)
             putBoolean("recommendation_only", recommendationOnly)
             putString("media_source", source)
             putStringArrayList("primaryArtists", ArrayList(primaryArtists))

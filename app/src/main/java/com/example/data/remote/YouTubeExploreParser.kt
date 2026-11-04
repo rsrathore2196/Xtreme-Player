@@ -163,7 +163,8 @@ internal object YouTubeExploreParser {
         if (!YouTubeAudioStreamService.isVideoId(id) || name.isBlank()) return null
         val credits = artists(value).map { it.name }
         return MusicTrack("yt_$id", name, credits.joinToString(", ").ifBlank { "Unknown" }, "Unknown",
-            0, thumbnail(value), "", bitrateKbps = 0, qualityBadge = "", source = "YouTube Music", primaryArtists = credits)
+            0, thumbnail(value), "", bitrateKbps = 0, qualityBadge = "", source = "YouTube Music", primaryArtists = credits,
+            originalProviderTitle = name)
     }
     private fun containerToken(value: JSONObject): String? {
         val continuations = value.optJSONArray("continuations")

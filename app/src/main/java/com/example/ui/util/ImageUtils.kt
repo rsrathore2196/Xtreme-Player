@@ -251,7 +251,9 @@ internal fun buildOptimizedImageRequest(
     currentTrack: Boolean = false,
     sourceSize: IntSize? = decodeSize,
     visibleThumbnail: Boolean = false,
-    requireSquareSongArtwork: Boolean = false
+    requireSquareSongArtwork: Boolean = false,
+    preserveAspectRatio: Boolean = false,
+    allowVideoFallback: Boolean? = null
 ): ImageRequest {
     val metadata = ArtworkRequestMetadata(
         trackId = track?.id,
@@ -264,17 +266,19 @@ internal fun buildOptimizedImageRequest(
         currentTrack = currentTrack,
         visibleThumbnail = visibleThumbnail,
         requireSquareSongArtwork = requireSquareSongArtwork,
+        preserveAspectRatio = preserveAspectRatio,
         // A verified song cover must not be replaced by a larger frame of its music video.
-        allowVideoFallback = !requireSquareSongArtwork && !isSelectedSongCover(track?.id, url) &&
-            !((currentTrack || targetSize == ImageConfig.MINI_PLAYER_SIZE) && hasNativeSquareCover(url))
+        allowVideoFallback = allowVideoFallback ?: (!requireSquareSongArtwork && !isSelectedSongCover(track?.id, url) &&
+            !((currentTrack || targetSize == ImageConfig.MINI_PLAYER_SIZE) && hasNativeSquareCover(url)))
     )
     // Direct provider URL: no Room lookup or search before the image can load.
     val initialUrl = (when {
+        preserveAspectRatio -> url
         currentTrack || requireSquareSongArtwork -> aspectPreservingArtworkUrl(url, IntSize(metadata.sourceDimension, metadata.sourceDimension))
         visibleThumbnail -> providerThumbnailUrl(url, metadata.sourceDimension)
         else -> providerArtworkUrl(url, metadata.sourceDimension)
     }).ifBlank {
-        if (requireSquareSongArtwork) "" else youtubeArtworkAlternatives(track?.id, emptyList()).firstOrNull().orEmpty()
+        if (!metadata.allowVideoFallback) "" else youtubeArtworkAlternatives(track?.id, emptyList()).firstOrNull().orEmpty()
     }
     val placeholder = if (currentTrack) {
         // Reuse the same catalog cover already shown on Home/Search while its
@@ -293,7 +297,7 @@ internal fun buildOptimizedImageRequest(
         .fetcherDispatcher(AppDispatchers.Io)
         // One process-wide CPU budget, including explicitly opened player covers.
         .decoderDispatcher(AppDispatchers.CpuBounded)
-        .scale(Scale.FILL)
+        .scale(if (preserveAspectRatio) Scale.FIT else Scale.FILL)
         // Downsample to the destination, but never manufacture a larger bitmap
         // from a native thumbnail and mistake its dimensions for genuine detail.
         .precision(Precision.INEXACT)

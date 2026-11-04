@@ -812,7 +812,7 @@ fun SectionCardLayout(
                         when (item) {
                             is ServerHomeItem.Song -> {
                                 val cover = if (resolveSongCovers) com.example.ui.util.rememberNativeSongArtworkRequest(
-                                    item.track, item.squareSongThumbnail, artworkContext) else null
+                                    item.track, item.squareSongThumbnail, artworkContext, landscapeThumbnail = item.landscapeThumbnail) else null
                                 ShelfTrackCard(item.track, item.track.id == currentPlayingId,
                                     cardBg, cardBorderColor, textPrimaryColor, textMutedColor, cover) { onTrackClick(item.track, safeTracks) }
                             }
@@ -990,13 +990,15 @@ fun ShelfTrackCard(
     ShelfContentCard(remember(track.title) { track.cleanTitle }, track.artist,
         artworkRequest ?: rememberOptimizedImageRequest(track = track, targetSize = com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
             crossfadeEnabled = false, preferStableArtwork = true), isPlaying,
-        cardBg, cardBorderColor, textPrimaryColor, textMutedColor, artworkDescription = track.title, onClick = onClick)
+        cardBg, cardBorderColor, textPrimaryColor, textMutedColor, artworkDescription = track.title,
+        artworkContentScale = artworkRequest?.let { com.example.ui.util.nativeSongArtworkContentScale(it) } ?: ContentScale.Crop,
+        onClick = onClick)
 }
 
 @Composable
 private fun ShelfContentCard(title: String, subtitle: String, artwork: coil.request.ImageRequest, isPlaying: Boolean,
     cardBg: Color, cardBorderColor: Color, textPrimaryColor: Color, textMutedColor: Color,
-    artworkDescription: String = title, onClick: () -> Unit) {
+    artworkDescription: String = title, artworkContentScale: ContentScale = ContentScale.Crop, onClick: () -> Unit) {
     val appColors = LocalAppColors.current
 
     Column(
@@ -1021,7 +1023,7 @@ private fun ShelfContentCard(title: String, subtitle: String, artwork: coil.requ
             AsyncImage(
                 model = artwork,
                 contentDescription = artworkDescription,
-                contentScale = ContentScale.Crop,
+                contentScale = artworkContentScale,
                 modifier = Modifier.fillMaxSize()
             )
 

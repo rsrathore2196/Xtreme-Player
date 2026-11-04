@@ -17,6 +17,16 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class NativeHomeLayoutPolicyTest {
+    @Test fun trendingFallbackCandidatesKeepNativeVideoTrackCoverAndOnlyTheSameVideoAlternatives() {
+        val track = MusicTrack("yt_${NativeFeedFixtures.id(1)}", "Song", "Singer", "Album", 180_000,
+            "https://lh3.googleusercontent.com/native-cover=w600-h600", "")
+        val video = "https://i.ytimg.com/vi/${NativeFeedFixtures.id(1)}/hq720.jpg"
+        val candidates = com.example.ui.util.nativeSongArtworkFallbacks(track, video)
+        assertEquals(video, candidates.first())
+        assertEquals(track.coverUrl, candidates[1])
+        assertEquals(candidates.size, candidates.distinct().size)
+        assertTrue(candidates.drop(2).all { it.contains("/vi/${NativeFeedFixtures.id(1)}/") })
+    }
     private fun video(type: String = "MUSIC_VIDEO_TYPE_OMV") = NativeFeedFixtures.song(1).apply {
         getJSONObject("musicResponsiveListItemRenderer").put("navigationEndpoint", JSONObject().put("watchEndpoint", JSONObject()
             .put("videoId", NativeFeedFixtures.id(1)).put("watchEndpointMusicSupportedConfigs", JSONObject()

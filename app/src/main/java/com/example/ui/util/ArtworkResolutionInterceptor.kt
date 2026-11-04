@@ -51,7 +51,8 @@ data class ArtworkRequestMetadata(
     val visibleThumbnail: Boolean = false,
     val allowVideoFallback: Boolean = true,
     val landscapeArtwork: Boolean = false,
-    val requireSquareSongArtwork: Boolean = false
+    val requireSquareSongArtwork: Boolean = false,
+    val preserveAspectRatio: Boolean = false
 )
 
 /** Small visible Home cards need a native thumbnail, not a full-player rendition. */
@@ -225,6 +226,7 @@ class ArtworkResolutionInterceptor : Interceptor {
         val urls = (originals.map {
             when {
                 metadata.landscapeArtwork -> aspectPreservingArtworkUrl(it, androidx.compose.ui.unit.IntSize(width, height))
+                metadata.preserveAspectRatio -> it
                 metadata.currentTrack || metadata.requireSquareSongArtwork -> aspectPreservingArtworkUrl(it, androidx.compose.ui.unit.IntSize(sourceDimension, sourceDimension))
                 metadata.visibleThumbnail -> providerThumbnailUrl(it, sourceDimension)
                 else -> providerArtworkUrl(it, sourceDimension)
@@ -234,7 +236,7 @@ class ArtworkResolutionInterceptor : Interceptor {
             (if (metadata.allowVideoFallback) youtubeArtworkAlternatives(metadata.trackId, originals) else emptyList()) + originals).distinct()
         // A smaller view can reuse a larger rendition already fetched by Home or
         // the player. These alternatives are cache probes, never extra downloads.
-        val cacheUrls = if (metadata.landscapeArtwork) urls else (urls.take(1) + originals.flatMap { source ->
+        val cacheUrls = if (metadata.landscapeArtwork || metadata.preserveAspectRatio) urls else (urls.take(1) + originals.flatMap { source ->
             listOf(600, 1200, 2000, 3000, 200).map {
                 if (metadata.currentTrack || metadata.requireSquareSongArtwork) aspectPreservingArtworkUrl(source, androidx.compose.ui.unit.IntSize(it, it))
                 else providerArtworkUrl(source, it)

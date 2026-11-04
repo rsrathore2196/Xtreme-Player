@@ -111,6 +111,7 @@ object YouTubeHomeParser {
             return MusicTrack(
                 id = "yt_$videoId",
                 title = cleanTitle(rawTitle),
+                originalProviderTitle = rawTitle,
                 artist = rawArtist,
                 album = "YouTube Music",
                 durationMs = 0L,
@@ -120,7 +121,7 @@ object YouTubeHomeParser {
                 qualityBadge = "HQ Stream",
                 genre = "Unknown",
                 source = "YouTube Music",
-                primaryArtists = credits.ifEmpty { listOf(rawArtist) }
+                primaryArtists = credits.ifEmpty { listOf(rawArtist).filter { it != "YouTube Music" } }
             )
         }
 

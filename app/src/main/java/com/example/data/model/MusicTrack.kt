@@ -29,7 +29,9 @@ data class MusicTrack(
     /** Recording-level primary credits, never the provider's combined contributor list. */
     val primaryArtists: List<String> = emptyList(),
     /** Playlist occurrence identity; catalog/song IDs and provider matching stay unchanged. */
-    val playlistEntryId: Long = 0L
+    val playlistEntryId: Long = 0L,
+    /** Full provider metadata for artwork verification; title remains the display name. */
+    val originalProviderTitle: String = ""
 ) {
     val streamUrl: String get() = audioUrl
     val coverArtUrl: String get() = coverUrl

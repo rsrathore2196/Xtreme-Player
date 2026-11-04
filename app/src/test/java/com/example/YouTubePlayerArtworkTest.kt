@@ -5,6 +5,7 @@ import android.os.Looper
 import com.example.data.model.MusicTrack
 import com.example.data.remote.YouTubePlayerArtworkResolver
 import com.example.data.remote.playerCoverIdentity
+import com.example.data.repository.RecordingIdentity
 import com.example.playback.PlayerUiState
 import com.example.ui.util.ResolvedPlayerCover
 import com.example.ui.util.playerCoverState
@@ -202,6 +203,55 @@ class YouTubePlayerArtworkTest {
         assertNull(resolver.resolve(video)); assertEquals(2, calls.get())
         org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofSeconds(61))
         assertEquals(square, resolver.resolve(video)); assertEquals(3, calls.get())
+    }
+
+    @Test fun originalProviderTitlesRestorePrefixAndPresentationEvidenceWithoutChangingDisplayNames() = runBlocking {
+        val original = video.copy(originalProviderTitle = "Singer 1 - Song 1 (Official Music Video)")
+        assertEquals(square, YouTubePlayerArtworkResolver.matchingSongCover(search(song()), original))
+        val resolver = YouTubePlayerArtworkResolver({ "{}" }, { query ->
+            assertEquals("Song 1 singer 1", query)
+            search(song()).toString()
+        })
+        assertEquals(square, resolver.resolve(original))
+        assertEquals("Song 1", original.title)
+        assertEquals(video.id, original.id)
+    }
+
+    @Test fun originalRecordingVersionsCannotBeLostThroughShortenedDisplayTitles() {
+        for (version in listOf("Live", "Acoustic", "Club Remix")) {
+            val original = video.copy(originalProviderTitle = "Singer 1 - Song 1 ($version) (Official Music Video)")
+            assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song()), original))
+            assertEquals(square, YouTubePlayerArtworkResolver.matchingSongCover(search(song(title = "Song 1 ($version)")), original))
+            assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song(title = "Song 1 ($version)", artist = "Other Singer")), original))
+        }
+        assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song()),
+            video.copy(originalProviderTitle = "Other Song 1 (Official Music Video)")))
+    }
+
+    @Test fun onlyAnOfficialPairCanSupplyMissingPrimaryCreditsAndStillRejectConflictingIsrc() {
+        val missing = video.copy(artist = "YouTube Music", primaryArtists = listOf("YouTube Music"),
+            originalProviderTitle = "Singer 1 - Song 1 (Official Music Video)")
+        val pair = linked()
+        val audio = pair.getJSONObject("contents").getJSONObject("playlistPanelVideoWrapperRenderer")
+            .getJSONArray("counterpart").getJSONObject(0).getJSONObject("counterpartRenderer")
+            .getJSONObject("playlistPanelVideoRenderer")
+        audio.put("title", NativeFeedFixtures.text("Song 1")).put("longBylineText", NativeFeedFixtures.text("Singer 1"))
+        assertTrue(RecordingIdentity.artistNames(missing).isEmpty())
+        assertEquals(square, YouTubePlayerArtworkResolver.counterpartCover(pair, videoId, missing))
+        assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song()), missing))
+        audio.put("isrc", "USABC2400002")
+        assertNull(YouTubePlayerArtworkResolver.counterpartCover(pair, videoId, missing.copy(isrc = "USABC2400001")))
+    }
+
+    @Test fun newlyAvailableOriginalMetadataAndNativeAudioProofBypassIncompleteNegativeResults() = runBlocking {
+        val calls = AtomicInteger()
+        val resolver = YouTubePlayerArtworkResolver({ if (calls.incrementAndGet() == 1) "{}" else linked().toString() }, { "{}" })
+        assertNull(resolver.resolve(video))
+        assertEquals(square, resolver.resolve(video.copy(originalProviderTitle = "Singer 1 - Song 1 (Official Music Video)")))
+        assertEquals(2, calls.get())
+        val negative = YouTubePlayerArtworkResolver({ "{}" }, { "{}" })
+        assertNull(negative.resolve(video))
+        assertEquals(square, negative.resolve(video, square))
     }
 
     @Test fun metadataArtworkEditsCannotDiscardAnAlreadyDecodedCurrentCover() {

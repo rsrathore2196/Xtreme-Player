@@ -133,6 +133,7 @@ internal class RecommendationCache private constructor(context: Context) {
 internal object RecommendationTrackCodec {
     fun encode(tracks: List<MusicTrack>): String = JSONArray(tracks.map { t -> JSONObject()
         .put("id", t.id).put("title", t.title).put("artist", t.artist).put("album", t.album)
+        .put("originalProviderTitle", t.originalProviderTitle)
         .put("duration", t.durationMs).put("cover", t.coverUrl).put("audio", if (t.id.startsWith("yt_")) "" else t.audioUrl)
         .put("bitrate", t.bitrateKbps).put("badge", t.qualityBadge).put("genre", t.genre)
         .put("singers", t.singers).put("primaryArtists", JSONArray(t.primaryArtists)).put("language", t.language).put("year", t.year)
@@ -143,6 +144,7 @@ internal object RecommendationTrackCodec {
         val rows = JSONArray(body)
         (0 until minOf(rows.length(), maxTracks)).mapNotNull { i -> rows.optJSONObject(i)?.let { t ->
             MusicTrack(id = t.getString("id"), title = t.getString("title"), artist = t.getString("artist"),
+                originalProviderTitle = t.optString("originalProviderTitle"),
                 album = t.optString("album"), durationMs = t.optLong("duration"), coverUrl = t.optString("cover"),
                 audioUrl = t.optString("audio"), bitrateKbps = t.optInt("bitrate"), qualityBadge = t.optString("badge"),
                 genre = t.optString("genre", "Unknown"), singers = t.optString("singers"),
