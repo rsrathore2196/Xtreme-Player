@@ -63,11 +63,13 @@ class ArtworkLoadingWorkloadTest {
         val nativeCache: Boolean = false,
         val diskOnly: Boolean = false
     ) : Interceptor.Chain {
+        val diskProbes = AtomicInteger()
         override fun withRequest(request: ImageRequest) = Chain(request, cached, failures, cachedDimension, size, calls, onNetwork, dimensions, densityScaled, nativeCache, diskOnly)
         override fun withSize(size: Size) = Chain(request, cached, failures, cachedDimension, size, calls, onNetwork, dimensions, densityScaled, nativeCache, diskOnly)
         override suspend fun proceed(request: ImageRequest): ImageResult {
             val url = request.data.toString()
             val remote = request.networkCachePolicy.readEnabled
+            if (!remote && request.diskCachePolicy.readEnabled) diskProbes.incrementAndGet()
             calls.add(url to remote)
             if ((!remote && (url !in cached || diskOnly && !request.diskCachePolicy.readEnabled)) || url in failures)
                 return ErrorResult(null, request, IOException("No available image"))
@@ -121,6 +123,35 @@ class ArtworkLoadingWorkloadTest {
         val result = ArtworkResolutionInterceptor().intercept(chain) as SuccessResult
         assertEquals(provider, result.request.data)
         assertEquals(listOf(provider), chain.calls.filter { it.second }.map { it.first })
+    }
+    @Test fun knownMissingCachedRenditionsDoNotRunRepeatedCoilDiskProbesBeforeTheVisibleDownload() = runBlocking {
+        val directory = java.io.File(context.cacheDir, "empty-artwork-${System.nanoTime()}")
+        val cache = coil.disk.DiskCache.Builder().directory(directory).maxSizeBytes(1024 * 1024).build()
+        val source = "https://lh3.googleusercontent.com/album=w60-h60-l90-rj"
+        val req = request().newBuilder().size(300, 300).setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(source, 300, visibleThumbnail = true), null).build()
+        val chain = Chain(req)
+        try {
+            assertTrue(ArtworkResolutionInterceptor { cache }.intercept(chain) is SuccessResult)
+            assertEquals("Only the shared-flight cache recheck remains", 1, chain.diskProbes.get())
+            assertEquals(listOf(providerThumbnailUrl(source, 300)), chain.calls.filter { it.second }.map { it.first })
+        } finally { cache.clear(); directory.deleteRecursively() }
+    }
+
+    @Test fun indexedLargerCachedArtworkStillAvoidsANewThumbnailDownload() = runBlocking {
+        val directory = java.io.File(context.cacheDir, "saved-artwork-${System.nanoTime()}")
+        val cache = coil.disk.DiskCache.Builder().directory(directory).maxSizeBytes(1024 * 1024).build()
+        val source = "https://lh3.googleusercontent.com/album=w60-h60-l90-rj"
+        val large = providerArtworkUrl(source, 600)
+        cache.openEditor(large)!!.apply { metadata.toFile().writeText("fixture"); data.toFile().writeBytes(byteArrayOf(1)); commit() }
+        val req = request().newBuilder().size(300, 300).setParameter(ARTWORK_METADATA_PARAMETER,
+            ArtworkRequestMetadata(source, 300, visibleThumbnail = true), null).build()
+        val chain = Chain(req, cached = setOf(large), diskOnly = true)
+        try {
+            val result = ArtworkResolutionInterceptor { cache }.intercept(chain) as SuccessResult
+            assertEquals(large, result.request.data)
+            assertEquals(1, chain.diskProbes.get()); assertTrue(chain.calls.none { it.second })
+        } finally { cache.clear(); directory.deleteRecursively() }
     }
     @Test fun visibleHomeDiskCacheDoesNotWaitForTouchOrNetworkAdmission() = runBlocking {
         val coordinator = com.example.performance.BackgroundWorkCoordinator

@@ -66,6 +66,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     val profileShelf = _profileShelf.asStateFlow()
     private val _revealedShelfCount = MutableStateFlow(3)
     val revealedShelfCount = _revealedShelfCount.asStateFlow()
+    private val historyAdmitted = MutableStateFlow(false)
     private val _listeningHistoryCard = MutableStateFlow(SectionState(title = "Jump Back In", subtitle = "Based on your recent listening history & frequency"))
     val listeningHistoryCard = _listeningHistoryCard.asStateFlow()
     val recentlyPlayed = _listeningHistoryCard.map { it.tracks }.stateIn(owner, SharingStarted.Eagerly, emptyList())
@@ -74,7 +75,8 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     val mostListenedArtists = _mostListenedArtists.asStateFlow()
     private val _hasListenedArtists = MutableStateFlow(false)
     val hasListenedArtists = _hasListenedArtists.asStateFlow()
-    val hasRecentlyPlayed = recentlyPlayed.map { it.isNotEmpty() }.stateIn(owner, SharingStarted.Eagerly, false)
+    val hasRecentlyPlayed = combine(recentlyPlayed, historyAdmitted) { tracks, admitted -> admitted && tracks.isNotEmpty() }
+        .stateIn(owner, SharingStarted.Eagerly, false)
     private val _userMode = MutableStateFlow(HomeUserMode.LOADING)
     val userMode = _userMode.asStateFlow()
     val heroSeedTrack = combine(playbackManager.uiState.map { it.currentTrack }.distinctUntilChanged(), recentlyPlayed, _serverShelves) {
@@ -100,7 +102,6 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private val _coreTabsReady = MutableStateFlow(false)
     val coreTabsReady = _coreTabsReady.asStateFlow()
     private var coreSettledAt: Long? = null
-    private val historyAdmitted = MutableStateFlow(false)
     private val initialHistorySettledAt = MutableStateFlow<Long?>(null)
     private val nativeStageReadyAt = MutableStateFlow<Long?>(null)
     private var deferredServerCache = false
@@ -187,7 +188,22 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
 
     init {
         owner.launch {
-            combine(homeVisible, BackgroundWorkCoordinator.uiForeground, startupRevision) { active, foreground, revision ->
+            var previousForeground: Boolean? = null
+            val foreground = BackgroundWorkCoordinator.uiForeground.onEach { active ->
+                if (!active) {
+                    // Keep the tracks, but do not reopen Room or show the retained
+                    // card before the next foreground Home's five idle seconds.
+                    historyAdmitted.value = false
+                    initialHistorySettledAt.value = null
+                    initialHomeRenderedAt.value = null
+                } else if (previousForeground == false) initialNativeReadyAt.value?.let { previous ->
+                    // A new presentation identity makes the retained UI report an
+                    // actual draw, including a reopen without Activity recreation.
+                    initialNativeReadyAt.value = maxOf(elapsedTime(), previous + 1L)
+                }
+                previousForeground = active
+            }
+            combine(homeVisible, foreground, startupRevision) { active, foreground, revision ->
                 revision.takeIf { active && foreground }
             }.distinctUntilChanged().collectLatest { revision -> if (revision != null) runStartupStages(revision) }
         }
@@ -381,8 +397,9 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             current(); coreSettledAt = elapsedTime(); _coreTabsReady.value = true
             corePreparationLease?.close(); corePreparationLease = null
         }
-        if (initialHistorySettledAt.value == null) {
-            BackgroundWorkCoordinator.traceWork("Startup Recently Played idle") { idleAdmission(coreSettledAt ?: elapsedTime()) }
+        if (!historyAdmitted.value || initialHistorySettledAt.value == null) {
+            val start = maxOf(coreSettledAt ?: 0L, initialNativeReadyAt.value ?: 0L, initialHomeRenderedAt.value ?: 0L)
+            BackgroundWorkCoordinator.traceWork("Startup Recently Played idle") { idleAdmission(start) }
             current()
             if (!localRestored.isCompleted) {
                 try { BackgroundWorkCoordinator.traceWork("Startup Recently Played cache") {
@@ -394,6 +411,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
                 catch (_: Exception) { /* Room remains authoritative. */ }
                 finally { localRestored.complete(Unit) }
             }
+            if (!historyAdmitted.value) initialHistorySettledAt.value = null
             historyAdmitted.value = true
             initialHistorySettledAt.first { it != null }
         }

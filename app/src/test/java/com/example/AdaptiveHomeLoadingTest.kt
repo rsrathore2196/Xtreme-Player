@@ -181,7 +181,30 @@ class AdaptiveHomeLoadingTest {
     @Test fun backgroundTimeDoesNotCountTowardThePendingIdleWindow() = runBlocking<Unit> {
         val vm = model(); stopClock(); idle(3_000); BackgroundWorkCoordinator.foreground(false); idle(60_000)
         assertEquals(0, historyReads.get()); BackgroundWorkCoordinator.foreground(true); delay(100)
+        vm.onHomeFrameDrawn()
         idle(4_999); assertEquals(0, historyReads.get()); idle(1); recent(vm)
+    }
+    @Test fun cachedRecentCardAndRoomSubscriptionWaitAgainAfterAWarmForegroundOpening() = runBlocking<Unit> {
+        history(); cache(); val vm = model(); stopClock(); idle(); recent(vm)
+        assertTrue(vm.hasRecentlyPlayed.value)
+        val previousFrame = vm.initialHomePreparedAt.value
+        BackgroundWorkCoordinator.foreground(false); vm.setHomeVisible(false)
+        withTimeout(5_000) { vm.hasRecentlyPlayed.first { !it } }
+        delay(100)
+        val readsBefore = historyReads.get()
+        idle(60_000)
+        BackgroundWorkCoordinator.foreground(true); vm.setHomeVisible(true)
+        withTimeout(5_000) { vm.initialHomePreparedAt.first { it != previousFrame } }
+        // Time before the retained Home actually draws cannot earn idle credit.
+        idle(60_000)
+        assertFalse(vm.hasRecentlyPlayed.value); assertEquals(readsBefore, historyReads.get())
+        assertTrue("Retain the data without showing the card", vm.listeningHistoryCard.value.tracks.isNotEmpty())
+        vm.onHomeFrameDrawn()
+        idle(4_999); assertFalse(vm.hasRecentlyPlayed.value); assertEquals(readsBefore, historyReads.get())
+        idle(1); recent(vm)
+        withTimeout(5_000) { vm.hasRecentlyPlayed.first { it } }
+        assertTrue(historyReads.get() > readsBefore); assertEquals(1, cores.get())
+        assertEquals(0, profiles.get()); assertEquals(0, artistReads.get())
     }
     @Test fun manualNativeRefreshDoesNotWaitForTheDeferredHomeStages() = runBlocking<Unit> {
         cache(); val vm = model(); stopClock(); withTimeout(5_000) { vm.refreshHome(true).join() }

@@ -73,7 +73,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
     private fun createImageLoader(): ImageLoader {
         com.example.performance.MaintenanceScheduler.onCacheUsed(this)
         return ImageLoader.Builder(this)
-            .components { add(com.example.ui.util.ArtworkResolutionInterceptor()) }
+            .components { add(com.example.ui.util.ArtworkResolutionInterceptor { initializedImageDiskCache }) }
             .eventListenerFactory {
                 if (androidx.tracing.Trace.isEnabled()) com.example.ui.util.ArtworkTraceEventListener()
                 else coil.EventListener.NONE

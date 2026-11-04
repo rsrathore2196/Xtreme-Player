@@ -87,7 +87,7 @@ class HomeArtworkAdmissionTest {
         val jobs = List(8) { index -> async { ArtworkResolutionInterceptor().intercept(cache.chain("https://covers.example/$index.jpg")) } }
         try {
             withTimeout(3_000) { repeat(8) { cache.probes.receive() }; repeat(2) { cache.diskStarts.receive() } }
-            assertNull("Visible disk work must use the two existing artwork permits",
+            assertNull("Visible disk work must stay bounded to two concurrent reads",
                 withTimeoutOrNull(200) { cache.diskStarts.receive() })
             val cachedUrl = "https://covers.example/already-loaded.jpg"
             cache.memory[cachedUrl] = BitmapDrawable(context.resources, Bitmap.createBitmap(160, 160, Bitmap.Config.ARGB_8888))
@@ -97,5 +97,19 @@ class HomeArtworkAdmissionTest {
             assertTrue(withTimeout(3_000) { jobs.awaitAll() }.all { it is SuccessResult })
             assertEquals(8, cache.decodes.get())
         } finally { cache.release.complete(Unit); jobs.forEach { it.cancel() }; jobs.joinAll() }
+    }
+
+    @Test fun savedVisibleArtworkDoesNotQueueBehindTwoSlowDownloads() = runBlocking {
+        val downloads = ArtworkResolutionInterceptor::class.java.getDeclaredField("coldArtworkRequests")
+            .apply { isAccessible = true }.get(null) as kotlinx.coroutines.sync.Semaphore
+        downloads.acquire(); downloads.acquire()
+        val cache = Cache().also { it.release.complete(Unit) }
+        val image = async { ArtworkResolutionInterceptor().intercept(cache.chain("https://covers.example/saved.jpg")) }
+        try {
+            val result = withTimeout(1_000) { image.await() } as SuccessResult
+            assertEquals(DataSource.DISK, result.dataSource)
+            assertEquals(1, cache.decodes.get())
+            assertEquals(0, downloads.availablePermits)
+        } finally { downloads.release(); downloads.release(); image.cancelAndJoin() }
     }
 }
