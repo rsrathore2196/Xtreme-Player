@@ -591,15 +591,15 @@ fun AboutPage(
 
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = if (isDarkMode) Color(0xFF0F3A2A) else Color(0xFFD1FAE5),
-                        border = BorderStroke(1.dp, if (isDarkMode) Color(0xFF10B981) else Color(0xFF059669))
+                        color = if (isDarkMode) Color(0xFF382D0C) else Color(0xFFFEF3C7),
+                        border = BorderStroke(1.dp, if (isDarkMode) Color(0xFFF59E0B) else Color(0xFFD97706))
                     ) {
                         Text(
-                            text = "STABLE RELEASE",
+                            text = "BETA",
                             fontSize = 9.5.sp,
                             fontWeight = FontWeight.ExtraBold,
                             letterSpacing = 0.5.sp,
-                            color = if (isDarkMode) Color(0xFF34D399) else Color(0xFF059669),
+                            color = if (isDarkMode) Color(0xFFFBBF24) else Color(0xFFB45309),
                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                         )
                     }

@@ -250,10 +250,10 @@ class ExampleUnitTest {
 
     @Test
     fun testAppVersion() {
-        assertEquals("2.0", com.example.BuildConfig.VERSION_NAME)
-        assertEquals(10, com.example.BuildConfig.VERSION_CODE)
-        assertEquals("2.0", com.example.ui.screens.settings.APP_VERSION)
-        assertEquals("v2.0", com.example.ui.screens.settings.APP_VERSION_DISPLAY)
+        assertEquals("2.1", com.example.BuildConfig.VERSION_NAME)
+        assertEquals(11, com.example.BuildConfig.VERSION_CODE)
+        assertEquals("2.1", com.example.ui.screens.settings.APP_VERSION)
+        assertEquals("v2.1", com.example.ui.screens.settings.APP_VERSION_DISPLAY)
     }
 
     @Test
