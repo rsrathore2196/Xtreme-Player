@@ -55,6 +55,7 @@ class StartupResponsivenessBenchmark {
         metrics = listOf(StartupTimingMetric(), FrameTimingMetric()) + listOf(
             "Xtreme/Foreground first draw",
             "Xtreme/Settings restore",
+            "Xtreme/Baseline profile install",
             "Xtreme/Home native cache restore",
             "Xtreme/Home profile cache restore",
             "Xtreme/Startup core tabs",

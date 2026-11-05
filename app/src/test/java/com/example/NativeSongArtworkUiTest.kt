@@ -45,6 +45,46 @@ class NativeSongArtworkUiTest {
         condition()
     }
 
+    @Test fun cachedCoverUsesOnlyTheDisplayedStrictSquareRequest() = assertOneDisplayedCover(cachedCover = true)
+    @Test fun nativeCoverUsesOnlyTheDisplayedStrictSquareRequest() = assertOneDisplayedCover(cachedCover = false)
+
+    private fun assertOneDisplayedCover(cachedCover: Boolean) {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val cover = "https://lh3.googleusercontent.com/cached-album=w600-h600-l90-rj"
+        val requests = java.util.concurrent.atomic.AtomicInteger()
+        val lookups = java.util.concurrent.atomic.AtomicInteger()
+        val ready = java.util.concurrent.atomic.AtomicBoolean()
+        val bytes = ByteArrayOutputStream().use { out ->
+            Bitmap.createBitmap(600, 600, Bitmap.Config.ARGB_8888).apply {
+                compress(Bitmap.CompressFormat.PNG, 100, out); recycle()
+            }; out.toByteArray()
+        }
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200)
+                .message("fixture").body(bytes.toResponseBody("image/png".toMediaType())).build()
+        }.build()
+        val loader = ImageLoader.Builder(app).components { add(ArtworkResolutionInterceptor()) }.okHttpClient(client)
+            .networkObserverEnabled(false).eventListener(object : coil.EventListener {
+                override fun onStart(request: coil.request.ImageRequest) { requests.incrementAndGet() }
+            }).build()
+        val previous = Coil.imageLoader(app); Coil.setImageLoader(loader)
+        var update by mutableIntStateOf(0)
+        val track = MusicTrack("yt_abcdefghijk", "Song", "Singer", "Album", 180_000, "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg", "")
+        try {
+            compose.setContent {
+                update
+                val request = rememberNativeSongArtworkRequest(track, if (cachedCover) "" else cover, "cached-fixture", cached = { cover.takeIf { cachedCover } },
+                    resolve = { _, _ -> lookups.incrementAndGet(); cover })
+                assertTrue(request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.requireSquareSongArtwork)
+                AsyncImage(request, "Cached cover", Modifier.size(224.dp, 126.dp), onSuccess = { ready.set(true) })
+            }
+            waitForCover { ready.get() }
+            compose.runOnIdle { update++ }; compose.waitForIdle()
+            assertEquals("No separate preload/validation request for an already cached candidate", 1, requests.get())
+            assertEquals(if (cachedCover) 0 else 1, lookups.get())
+        } finally { Coil.setImageLoader(previous); loader.shutdown() }
+    }
+
     @Test fun onlyVisibleCardsResolveSquareCoversAndRetainThemThroughScrollingAndRecomposition() {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val bytes = ByteArrayOutputStream().use { out ->

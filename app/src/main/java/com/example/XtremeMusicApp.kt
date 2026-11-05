@@ -70,6 +70,10 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
     override fun newImageLoader(): ImageLoader = asynchronousImageLoader
     internal suspend fun awaitImageLoader(): ImageLoader = asynchronousImageLoader.await()
 
+    internal fun installRuntimeProfileAfterFirstDraw() {
+        com.example.performance.DeferredLibraryInitialization.installProfileAfterFirstDraw(this, startupScope)
+    }
+
     private fun createImageLoader(): ImageLoader {
         com.example.performance.MaintenanceScheduler.onCacheUsed(this)
         return ImageLoader.Builder(this)

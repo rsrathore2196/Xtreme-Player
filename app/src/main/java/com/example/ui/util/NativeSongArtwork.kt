@@ -15,6 +15,7 @@ import com.example.performance.AppDispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 
 /** Metadata/decoding belong to visible Trending cards, never the Home feed loader. */
 @Composable
@@ -31,6 +32,7 @@ internal fun rememberNativeSongArtworkRequest(track: MusicTrack, nativeSongCover
     val visibility = remember(identity, requestContext) { ArtworkVisibility(active) }
     SideEffect { visibility.active.value = active }
     var resolved by remember(identity, requestContext) { mutableStateOf(cached(track)) }
+    val requestScope = rememberCoroutineScope()
     var rejected by remember(identity, requestContext) { mutableStateOf(emptySet<String>()) }
     val fallbacks = remember(track.id, track.coverUrl, landscapeThumbnail) {
         nativeSongArtworkFallbacks(track, landscapeThumbnail)
@@ -40,10 +42,15 @@ internal fun rememberNativeSongArtworkRequest(track: MusicTrack, nativeSongCover
         ?.takeUnless { it in rejected }
     val initial = square ?: fallbacks.getOrNull(fallbackIndex).orEmpty()
     LaunchedEffect(identity, requestContext, nativeSongCover, active) {
-        if (!active) return@LaunchedEffect
+        // The displayed strict-square request already validates a cached cover.
+        // Pre-validation is only needed before replacing a visible fallback.
+        if (!active || resolved != null) return@LaunchedEffect
         withContext(AppDispatchers.Io) {
             try {
                 val cover = resolved ?: resolve(track, nativeSongCover) ?: return@withContext
+                // Native metadata may already be displayed by the same strict
+                // request; retain its identity cache without loading it twice.
+                if (cover == square) return@withContext
                 val request = buildOptimizedImageRequest(context, cover, ImageConfig.RECOMMENDATION_CARD_SIZE, track,
                     decodeSize = pixels, requireSquareSongArtwork = true, visibleThumbnail = true)
                 val result = context.imageLoader.execute(request) as? SuccessResult
@@ -69,6 +76,11 @@ internal fun rememberNativeSongArtworkRequest(track: MusicTrack, nativeSongCover
                 if (square != null) {
                     rejected = rejected + square
                     if (resolved == square) resolved = null
+                    requestScope.launch(AppDispatchers.Io) {
+                        try { rejectSongCover(track, square) }
+                        catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: Exception) { /* The same-track fallback remains usable. */ }
+                    }
                 } else if (fallbacks.getOrNull(fallbackIndex) == initial && fallbackIndex < fallbacks.size) {
                     fallbackIndex++
                 }

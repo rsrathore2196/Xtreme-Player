@@ -273,8 +273,10 @@ class MainActivity : ComponentActivity() {
                 if (!firstPaintPosted) {
                     firstPaintPosted = true
                     decor.post {
-                        if (firstDrawListener === this && uiResumed)
+                        if (firstDrawListener === this && uiResumed) {
                             com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
+                            (application as? XtremeMusicApp)?.installRuntimeProfileAfterFirstDraw()
+                        }
                     }
                 }
                 if (!fullyDrawnPosted) {

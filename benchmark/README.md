@@ -79,6 +79,7 @@ Current application trace names are:
 - `Xtreme/Home row composition`, `Xtreme/Navigation transition`,
   `Xtreme/Search first access`, `Xtreme/Library first access`.
 - `Xtreme/Discovery optional network`, `Xtreme/Playback source resolution`.
+- `Xtreme/Baseline profile install`.
 
 `Home row composition` wraps existing lazy item content without adding layout nodes.
 `AndroidOwner:measureAndLayout` is emitted by the current Compose UI dependency; it covers
@@ -120,3 +121,27 @@ application delay or guarantee remote work completes within forty seconds. Inspe
 `Startup ... idle/cache`, `Startup Search cache`, `Startup Library playlists`, profile
 discovery and artist-summary spans for the actual sequence. Wait spans are elapsed idle
 time, not CPU work. No initialization popup or hidden-tab composition is involved.
+
+## Runtime profile installation
+
+The application installs its packaged profile once after the first foreground draw, on
+the existing IO dispatcher. Short input/navigation and playback-resolution admission
+applies, but installation does not wait for Home stages or scheduled maintenance. A
+transient IO failure permits another attempt on a later foreground draw; there is no
+retry timer. `RuntimeProfile` logs ProfileInstaller's numeric result (`1` means installed,
+`2` already installed). The trace above measures installation work, not ART compilation.
+
+Play may supply install-time profiles and dex metadata. A plain sideloaded APK containing
+`assets/dexopt/baseline.prof` and `baseline.profm` does not by itself guarantee install-time
+AOT compilation. Runtime installation makes the profile available for subsequent ART
+optimization; it cannot retroactively compile the first launch. Verify actual ART state
+and compare the same compilation mode on each device before reporting a startup gain.
+
+Release packaging can be checked without a device using SDK `profgen dumpProfile` with
+the packaged binary profile and the exact APK, then `profgen extractProfile` with
+`--profile-format v0_1_5_s` to verify Android 12+ profile/metadata conversion. This does not
+replace collecting real journeys. No connected device was available for the low-end
+audit, so the checked-in rules were retained and no new device-collected profile or
+cold/warm frame-time result is claimed. Run the existing journeys on both Android 12/13
+low-end hardware and a modern reference device with equivalent real cache/history data,
+and inspect the first 20 seconds and background/reopening scenarios described above.
