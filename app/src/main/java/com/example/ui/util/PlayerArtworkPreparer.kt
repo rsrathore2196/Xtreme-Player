@@ -137,7 +137,7 @@ internal fun playerAppearanceColors(source: AppThemeColors): AppThemeColors = so
 @Suppress("UNUSED_PARAMETER")
 fun playerPaletteKey(track: MusicTrack, dark: Boolean, accent: Color, base: Color,
     artworkIdentity: String = track.coverUrl): String =
-    "album-colors-v3|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
+    "album-bg-colors-v6|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
 
 /** The URL is ready on the first composition; no metadata API or navigation wait. */
 @Composable
@@ -191,22 +191,106 @@ private fun playerArtworkDerivative(artwork: ImageRequest, targetPixels: Int): I
 /** Called on CpuBounded with the small software sample, never with a full-size hardware bitmap. */
 @Suppress("UNUSED_PARAMETER")
 internal fun extractPlayerArtworkColors(bitmap: Bitmap, dark: Boolean): ExtractedTrackColors? {
-    val palette = Palette.from(bitmap)
-        .resizeBitmapArea(ImageConfig.PALETTE_THUMBNAIL_SIZE * ImageConfig.PALETTE_THUMBNAIL_SIZE)
-        .maximumColorCount(24)
-        // White/black artwork is meaningful. Palette's default skin-tone/neutral
-        // filters can otherwise discard most of a cover and exaggerate a tiny logo.
-        .clearFilters()
-        .generate()
-    val dominant = palette.dominantSwatch ?: return null
-    val total = palette.swatches.sumOf { it.population }.coerceAtLeast(1)
-    val substantial = palette.swatches.filter {
-        it.population >= dominant.population * 0.20f && it.population >= total * 0.05f
+    val w = bitmap.width
+    val h = bitmap.height
+    if (w <= 0 || h <= 0) return null
+
+    // Read pixels directly into an IntArray - zero allocation overhead and avoids canvas drawing bugs.
+    val pixels = IntArray(w * h)
+    bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+    val marginX = (w * 0.14f).toInt().coerceIn(2, 24)
+    val marginY = (h * 0.14f).toInt().coerceIn(2, 24)
+
+    // Bins for 5-bit RGB quantization (32x32x32 = 32768)
+    val binWeights = FloatArray(32768)
+    val binSumR = FloatArray(32768)
+    val binSumG = FloatArray(32768)
+    val binSumB = FloatArray(32768)
+    val binTotalW = FloatArray(32768)
+
+    // Sample perimeter / border pixels where the album art background color lives.
+    // The subject/figure is in the center, while the background fills the top, sides, and corners.
+    for (y in 0 until h) {
+        val isTop = y < marginY
+        val isBottom = y >= h - marginY
+        val rowOffset = y * w
+        for (x in 0 until w) {
+            val isLeft = x < marginX
+            val isRight = x >= w - marginX
+
+            if (isTop || isBottom || isLeft || isRight) {
+                val pixel = pixels[rowOffset + x]
+                val a = (pixel ushr 24) and 0xFF
+                if (a < 128) continue // Ignore transparent pixels
+
+                val r = (pixel ushr 16) and 0xFF
+                val g = (pixel ushr 8) and 0xFF
+                val b = pixel and 0xFF
+
+                // Weight based on location:
+                // Top corners and top border are almost always 100% background color.
+                val locWeight = when {
+                    isTop && (isLeft || isRight) -> 4.0f // Top corners
+                    isTop -> 3.0f                        // Top edge
+                    isLeft || isRight -> 2.5f            // Side edges
+                    isBottom && (isLeft || isRight) -> 2.0f // Bottom corners
+                    else -> 1.0f                         // Bottom edge
+                }
+
+                // Saturation: prioritize vivid background color over desaturated suits/text/greys
+                val maxC = maxOf(r, maxOf(g, b))
+                val minC = minOf(r, minOf(g, b))
+                val sat = if (maxC == 0) 0f else (maxC - minC).toFloat() / maxC
+                val adjustedWeight = locWeight * (1.0f + 2.5f * sat)
+
+                val bin = ((r shr 3) shl 10) or ((g shr 3) shl 5) or (b shr 3)
+                binWeights[bin] += adjustedWeight
+                binSumR[bin] += r * adjustedWeight
+                binSumG[bin] += g * adjustedWeight
+                binSumB[bin] += b * adjustedWeight
+                binTotalW[bin] += adjustedWeight
+            }
+        }
     }
-    // Use real, sufficiently populated swatches. Target getters can manufacture
-    // light/dark vibrant colors or return an unrelated theme accent on neutral art.
-    val accent = substantial.maxByOrNull { it.population * (0.25f + 0.75f * it.hsl[1]) } ?: dominant
-    val vibrant = substantial.maxByOrNull { it.population * (0.50f + 0.50f * it.hsl[1]) } ?: dominant
-    // Keep actual artwork colors. Color mode must not lighten or darken the player.
-    return ExtractedTrackColors(Color(dominant.rgb), Color(accent.rgb), Color(vibrant.rgb))
+
+    // Find the highest-weighted bin (dominant background color)
+    var bestBin = -1
+    var maxWeight = 0f
+    for (i in 0 until 32768) {
+        if (binWeights[i] > maxWeight) {
+            maxWeight = binWeights[i]
+            bestBin = i
+        }
+    }
+
+    if (bestBin == -1 || binTotalW[bestBin] <= 0f) {
+        // Fallback to Palette if image border was completely transparent
+        val palette = Palette.from(bitmap).clearFilters().generate()
+        val dom = palette.dominantSwatch ?: return null
+        return ExtractedTrackColors(Color(dom.rgb), Color(dom.rgb), Color(dom.rgb))
+    }
+
+    val domR = (binSumR[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
+    val domG = (binSumG[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
+    val domB = (binSumB[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
+    val dominantColor = Color(domR, domG, domB)
+
+    // Derive harmonious accent and vibrant variations in the exact background hue
+    val hsv = FloatArray(3)
+    android.graphics.Color.RGBToHSV(domR, domG, domB, hsv)
+
+    val accHsv = hsv.clone().apply {
+        this[1] = (this[1] * 1.08f).coerceIn(0f, 1f)
+        this[2] = (this[2] * 1.15f).coerceIn(0f, 1f)
+    }
+    val vibHsv = hsv.clone().apply {
+        this[1] = (this[1] * 1.20f).coerceIn(0f, 1f)
+        this[2] = (this[2] * 0.90f).coerceIn(0f, 1f)
+    }
+
+    val accentColor = Color(android.graphics.Color.HSVToColor(accHsv))
+    val vibrantColor = Color(android.graphics.Color.HSVToColor(vibHsv))
+
+    return ExtractedTrackColors(dominantColor, accentColor, vibrantColor)
 }

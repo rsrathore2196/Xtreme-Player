@@ -96,7 +96,7 @@ internal class YouTubePoTokenProvider(
                 retryAfterMs = if (YouTubeTokenWebView.isRendererInCooldown(now())) {
                     now() + YouTubeTokenWebView.RENDERER_CRASH_COOLDOWN_MS
                 } else {
-                    now() + 30_000L
+                    now() + 5_000L
                 }
                 discard()
             }

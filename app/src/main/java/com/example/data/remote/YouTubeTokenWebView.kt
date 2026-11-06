@@ -55,10 +55,9 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
         check(alive)
         val web = WebView(context.applicationContext)
         view = web
-        web.setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             runCatching {
-                web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, false)
+                web.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_BOUND, true)
             }
         }
         web.settings.apply {
@@ -89,7 +88,7 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
                 rendererProcessCrashed = true
                 lastCrashTimestampMs = SystemClock.elapsedRealtime()
                 fail(IOException("YouTube attestation renderer stopped"))
-                destroyView()
+                destroyView(processGone = true)
                 return true
             }
         }
@@ -98,8 +97,13 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
     }
 
     private suspend fun evaluate(script: String) = withContext(Dispatchers.Main.immediate) {
-        check(alive)
-        checkNotNull(view).evaluateJavascript(script, null)
+        if (!alive || rendererProcessCrashed) return@withContext
+        val current = view ?: return@withContext
+        runCatching {
+            current.evaluateJavascript(script, null)
+        }.onFailure { e ->
+            fail(if (e is Exception) e else IOException("Failed to evaluate script", e))
+        }
     }
 
     private suspend fun initialize(context: Context, http: OkHttpClient) {
@@ -147,19 +151,21 @@ internal class YouTubeTokenWebView private constructor() : YouTubeTokenBrowser {
         authorized.completeExceptionally(error)
         requests.values.forEach { it.completeExceptionally(error) }
     }
-    private fun destroyView() {
+    private fun destroyView(processGone: Boolean = false) {
         view?.let { web ->
             view = null
             runCatching {
-                web.stopLoading()
-                web.removeJavascriptInterface("Attestation")
+                if (!processGone) {
+                    web.stopLoading()
+                    web.removeJavascriptInterface("Attestation")
+                }
                 web.destroy()
             }
         }
     }
     override suspend fun close() = withContext(NonCancellable + Dispatchers.Main.immediate) {
         fail(IOException("YouTube attestation session closed"))
-        destroyView()
+        destroyView(processGone = false)
     }
 
     companion object {

@@ -521,6 +521,7 @@ object YouTubeAudioStreamService {
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { failure = error; null }
             if (extracted == null) {
+                if (attempt < 2) return@repeat
                 throw PlaybackDiagnostics.Failure(failure?.let(PlaybackDiagnostics::reason) ?: PlaybackDiagnostics.Reason.NO_FORMAT,
                     PlaybackDiagnostics.Stage.EXTRACTION, failure)
             }

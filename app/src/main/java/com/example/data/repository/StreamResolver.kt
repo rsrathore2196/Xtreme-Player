@@ -573,7 +573,7 @@ internal class StreamResolver(
                             PlaybackSourceKind.YOUTUBE -> {
                                 val videoId = selectedVideoId(track)
                                 if (videoId != null) {
-                                    youtubeExact(track)
+                                    youtubeExact(track) ?: youtubeFallback()
                                 } else {
                                     youtubeFallback()
                                 }

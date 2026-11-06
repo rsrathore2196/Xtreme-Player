@@ -151,6 +151,7 @@ import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
@@ -2654,6 +2655,7 @@ internal fun PlayerGlassBackground(
         if (dynamicGlass && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             AsyncImage(
                 model = backdropRequest, contentDescription = null, contentScale = ContentScale.Crop,
+                colorFilter = ColorFilter.tint(dominantColor.value, BlendMode.Modulate),
                 modifier = Modifier.fillMaxSize()
                     .graphicsLayer { scaleX = 1.18f; scaleY = 1.18f; alpha = 0.58f }
                     .playerBackdropBlur(56.dp)
