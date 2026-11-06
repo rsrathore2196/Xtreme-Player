@@ -137,7 +137,7 @@ internal fun playerAppearanceColors(source: AppThemeColors): AppThemeColors = so
 @Suppress("UNUSED_PARAMETER")
 fun playerPaletteKey(track: MusicTrack, dark: Boolean, accent: Color, base: Color,
     artworkIdentity: String = track.coverUrl): String =
-    "album-colors-v3|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
+    "album-bg-colors-v5|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
 
 /** The URL is ready on the first composition; no metadata API or navigation wait. */
 @Composable
@@ -191,22 +191,59 @@ private fun playerArtworkDerivative(artwork: ImageRequest, targetPixels: Int): I
 /** Called on CpuBounded with the small software sample, never with a full-size hardware bitmap. */
 @Suppress("UNUSED_PARAMETER")
 internal fun extractPlayerArtworkColors(bitmap: Bitmap, dark: Boolean): ExtractedTrackColors? {
-    val palette = Palette.from(bitmap)
-        .resizeBitmapArea(ImageConfig.PALETTE_THUMBNAIL_SIZE * ImageConfig.PALETTE_THUMBNAIL_SIZE)
-        .maximumColorCount(24)
-        // White/black artwork is meaningful. Palette's default skin-tone/neutral
-        // filters can otherwise discard most of a cover and exaggerate a tiny logo.
+    val w = bitmap.width
+    val h = bitmap.height
+    if (w <= 0 || h <= 0) return null
+
+    // Extract the outer perimeter / borders of the artwork where the album art background color lives.
+    // This isolates the album art background color and ignores the central subject/foreground figure.
+    val marginX = (w * 0.12f).toInt().coerceIn(2, 24)
+    val marginY = (h * 0.12f).toInt().coerceIn(2, 24)
+
+    val borderHeight = marginY * 2
+    val borderWidth = w
+    val borderBitmap = Bitmap.createBitmap(borderWidth, borderHeight + marginX * 2, Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(borderBitmap)
+    // Top border (highest priority for album art background)
+    canvas.drawBitmap(bitmap, android.graphics.Rect(0, 0, w, marginY), android.graphics.Rect(0, 0, w, marginY), null)
+    // Left border
+    canvas.drawBitmap(bitmap, android.graphics.Rect(0, marginY, marginX, (h - marginY).coerceAtLeast(marginY)), android.graphics.Rect(0, marginY, marginX, (marginY + (h - 2 * marginY)).coerceIn(marginY, borderBitmap.height)), null)
+    // Right border
+    canvas.drawBitmap(bitmap, android.graphics.Rect((w - marginX).coerceAtLeast(0), marginY, w, (h - marginY).coerceAtLeast(marginY)), android.graphics.Rect(marginX, marginY, marginX * 2, (marginY + (h - 2 * marginY)).coerceIn(marginY, borderBitmap.height)), null)
+    // Bottom border
+    canvas.drawBitmap(bitmap, android.graphics.Rect(0, (h - marginY).coerceAtLeast(0), w, h), android.graphics.Rect(0, borderHeight, w, borderHeight + marginY), null)
+
+    val bgPalette = Palette.from(borderBitmap)
+        .maximumColorCount(16)
         .clearFilters()
         .generate()
-    val dominant = palette.dominantSwatch ?: return null
-    val total = palette.swatches.sumOf { it.population }.coerceAtLeast(1)
-    val substantial = palette.swatches.filter {
-        it.population >= dominant.population * 0.20f && it.population >= total * 0.05f
+    borderBitmap.recycle()
+
+    val dominant = bgPalette.dominantSwatch
+        ?: Palette.from(bitmap).clearFilters().generate().dominantSwatch
+        ?: return null
+
+    val substantial = bgPalette.swatches.filter {
+        it.population >= dominant.population * 0.15f
     }
-    // Use real, sufficiently populated swatches. Target getters can manufacture
-    // light/dark vibrant colors or return an unrelated theme accent on neutral art.
     val accent = substantial.maxByOrNull { it.population * (0.25f + 0.75f * it.hsl[1]) } ?: dominant
     val vibrant = substantial.maxByOrNull { it.population * (0.50f + 0.50f * it.hsl[1]) } ?: dominant
-    // Keep actual artwork colors. Color mode must not lighten or darken the player.
-    return ExtractedTrackColors(Color(dominant.rgb), Color(accent.rgb), Color(vibrant.rgb))
+
+    val domColor = Color(dominant.rgb)
+    val accColor = if (accent != dominant) Color(accent.rgb) else {
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(dominant.rgb, hsv)
+        hsv[1] = (hsv[1] * 1.15f).coerceIn(0f, 1f)
+        hsv[2] = (hsv[2] * 1.10f).coerceIn(0f, 1f)
+        Color(android.graphics.Color.HSVToColor(hsv))
+    }
+    val vibColor = if (vibrant != dominant) Color(vibrant.rgb) else {
+        val hsv = FloatArray(3)
+        android.graphics.Color.colorToHSV(dominant.rgb, hsv)
+        hsv[1] = (hsv[1] * 1.25f).coerceIn(0f, 1f)
+        hsv[2] = (hsv[2] * 0.90f).coerceIn(0f, 1f)
+        Color(android.graphics.Color.HSVToColor(hsv))
+    }
+
+    return ExtractedTrackColors(domColor, accColor, vibColor)
 }
