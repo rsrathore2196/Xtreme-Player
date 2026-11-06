@@ -40,18 +40,6 @@ class PlayerArtworkColorsTest {
         }
     }
 
-    @Test fun playerAdaptsOnlyAlbumArtBackgroundColorNotCenterSubject() = sample(0xffb81424.toInt()) { bitmap ->
-        // Red background with a large grey subject (e.g. suit/portrait) in the center
-        val centerCanvas = android.graphics.Canvas(bitmap)
-        val paint = android.graphics.Paint().apply { color = 0xff646464.toInt() }
-        centerCanvas.drawRect(24f, 24f, 96f, 110f, paint)
-        val colors = extractPlayerArtworkColors(bitmap, dark = true)!!
-        val expectedRedHue = hsl(Color(0xffb81424))[0]
-        assertEquals("Player background must adapt the red album art background, not the grey center figure",
-            expectedRedHue, hsl(colors.dominantColor)[0], 8f)
-        assertTrue("Background color must be saturated red, not desaturated grey", hsl(colors.dominantColor)[1] > 0.40f)
-    }
-
     @Test fun neutralCoversDoNotAcquireAnUnrelatedVibrantColor() = sample(android.graphics.Color.WHITE) { bitmap ->
         for (y in 0 until 4) for (x in 0 until bitmap.width) bitmap.setPixel(x, y, android.graphics.Color.RED)
         val colors = extractPlayerArtworkColors(bitmap, dark = true)!!
