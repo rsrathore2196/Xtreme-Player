@@ -118,7 +118,7 @@ object TrackPaletteCache {
 
     fun initialize(context: android.content.Context) {
         if (file != null) return
-        val storage = android.util.AtomicFile(java.io.File(context.applicationContext.filesDir, "track_palettes_v1.json"))
+        val storage = android.util.AtomicFile(java.io.File(context.applicationContext.filesDir, "track_palettes_v2.json"))
         file = storage
         val readGeneration = synchronized(memoryCache) { clearGeneration }
         scope.launch {

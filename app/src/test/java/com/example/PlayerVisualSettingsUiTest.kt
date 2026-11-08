@@ -32,7 +32,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [36], application = Application::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PlayerVisualSettingsUiTest {
     @get:Rule val compose = createComposeRule()

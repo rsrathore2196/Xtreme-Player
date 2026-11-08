@@ -448,9 +448,9 @@ fun ExpandedPlayerScreen(
             appColors.cardBackgroundElevated, highResCoverUrl)
     }
     val cachedColors = remember(paletteKey) { TrackPaletteCache.get(paletteKey) }
-    var dominantColor by remember(track.id) { mutableStateOf(cachedColors?.dominantColor ?: appColors.cardBackgroundElevated) }
-    var accentColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.accentColor ?: appColors.primaryAccent) }
-    var vibrantColor by remember(track.id, appColors.primaryAccent) { mutableStateOf(cachedColors?.vibrantColor ?: appColors.primaryAccent) }
+    var dominantColor by remember(paletteKey) { mutableStateOf(cachedColors?.dominantColor ?: appColors.cardBackgroundElevated) }
+    var accentColor by remember(paletteKey) { mutableStateOf(cachedColors?.accentColor ?: appColors.primaryAccent) }
+    var vibrantColor by remember(paletteKey) { mutableStateOf(cachedColors?.vibrantColor ?: appColors.primaryAccent) }
 
     LaunchedEffect(paletteKey, resolvedArtworkRequest, isScreenVisible, appColors.dynamicAlbumGlow, lyricsPresentationAnimating) {
         if (!isScreenVisible || !appColors.dynamicAlbumGlow || lyricsPresentationAnimating) return@LaunchedEffect
@@ -479,7 +479,6 @@ fun ExpandedPlayerScreen(
                         val resolvedKey = com.example.ui.util.playerPaletteKey(track, isDark,
                             appColors.primaryAccent, appColors.cardBackgroundElevated, result.request.data.toString())
                         TrackPaletteCache.put(resolvedKey, extracted)
-                        TrackPaletteCache.put(track.id, extracted)
                         TrackPaletteCache.put(paletteKey, extracted)
                         withContext(Dispatchers.Main) {
                             dominantColor = extracted.dominantColor
@@ -2611,6 +2610,32 @@ internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean, imageAspectRatio:
             }
         }
 
+internal fun Modifier.headerArtworkEdgeBlend(
+    topFade: Float = 0.18f,
+    bottomFade: Float = 0.04f,
+    topMargin: Float = 0f,
+    bottomMargin: Float = 0f
+): Modifier = graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+    .drawWithCache {
+        val stops = ArrayList<Pair<Float, Color>>(52)
+        for (i in 0..24) {
+            val t = i / 24f
+            val alpha = t * t * (3f - 2f * t)
+            stops += (topMargin + t * topFade) to Color.White.copy(alpha = alpha)
+        }
+        for (i in 0..24) {
+            val t = i / 24f
+            val alpha = 1f - t * t * (3f - 2f * t)
+            stops += (1f - bottomMargin - bottomFade + t * bottomFade) to Color.White.copy(alpha = alpha)
+        }
+        val edges = Brush.verticalGradient(*stops.toTypedArray(), startY = 0f, endY = size.height)
+        onDrawWithContent {
+            drawContent()
+            drawRect(edges, blendMode = BlendMode.DstIn)
+        }
+    }
+
+
 @Composable
 internal fun PlayerGlassBackground(
     artworkUrl: String,
@@ -2658,9 +2683,8 @@ internal fun PlayerGlassBackground(
         if (dynamicGlass && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
             AsyncImage(
                 model = backdropRequest, contentDescription = null, contentScale = ContentScale.Crop,
-                colorFilter = ColorFilter.tint(dominantColor.value, BlendMode.Modulate),
                 modifier = Modifier.fillMaxSize()
-                    .graphicsLayer { scaleX = 1.18f; scaleY = 1.18f; alpha = 0.58f }
+                    .graphicsLayer { scaleX = 1.18f; scaleY = 1.18f; alpha = 0.42f }
                     .playerBackdropBlur(56.dp)
             )
         }

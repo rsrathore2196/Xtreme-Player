@@ -28,6 +28,10 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import com.example.data.model.MusicTrack
 import com.example.data.repository.CatalogDestination
 import com.example.data.repository.CatalogAlbum
@@ -37,6 +41,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import com.example.playback.PlayerUiState
 import com.example.ui.components.ArtistPortrait
 import com.example.ui.components.playerArtworkEdgeBlend
+import com.example.ui.components.headerArtworkEdgeBlend
 import com.example.ui.components.TrackListItem
 import com.example.ui.components.bouncyOverscroll
 import com.example.ui.theme.LocalAppColors
@@ -216,24 +221,51 @@ private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit) {
     val configuration = LocalConfiguration.current
     val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val height = if (landscape) (configuration.screenHeightDp * .72f).dp.coerceIn(220.dp, 360.dp)
-        else (configuration.screenHeightDp * .44f).dp.coerceIn(260.dp, 400.dp)
+        else (configuration.screenHeightDp * .46f).dp.coerceIn(280.dp, 420.dp)
+    val topSpacing = if (landscape) 8.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 20.dp
     Column(Modifier.fillMaxWidth()) {
         Box(Modifier.fillMaxWidth().height(height).testTag("album_profile_header")) {
-        AsyncImage(
-            model = rememberOptimizedImageRequest(album.image, targetSize = 1200),
-            contentDescription = album.title,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.matchParentSize().playerArtworkEdgeBlend(true)
-        )
-        Box(
-            Modifier.align(Alignment.TopStart).statusBarsPadding().padding(horizontal = 20.dp, vertical = 8.dp)
-                .size(38.dp).liquidGlassButton(colors, shape = CircleShape, elevation = 4.dp)
-                .bouncyClickable(onClick = onBack),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = colors.textPrimary, modifier = Modifier.size(19.dp))
+            if (!album.image.isNullOrBlank()) {
+                AsyncImage(
+                    model = rememberOptimizedImageRequest(album.image, targetSize = 300),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .matchParentSize()
+                        .blur(48.dp)
+                        .graphicsLayer { scaleX = 1.15f; scaleY = 1.15f; alpha = 0.55f }
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(
+                        Brush.verticalGradient(
+                            0.0f to colors.scaffoldBackground.copy(alpha = 0.40f),
+                            0.25f to Color.Transparent,
+                            0.70f to colors.scaffoldBackground.copy(alpha = 0.45f),
+                            1.0f to colors.scaffoldBackground
+                        )
+                    )
+            )
+            AsyncImage(
+                model = rememberOptimizedImageRequest(album.image, targetSize = 1200),
+                contentDescription = album.title,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .matchParentSize()
+                    .padding(top = topSpacing)
+                    .headerArtworkEdgeBlend(topFade = 0.18f, bottomFade = 0.04f)
+            )
+            Box(
+                Modifier.align(Alignment.TopStart).statusBarsPadding().padding(horizontal = 20.dp, vertical = 8.dp)
+                    .size(38.dp).liquidGlassButton(colors, shape = CircleShape, elevation = 4.dp)
+                    .bouncyClickable(onClick = onBack),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = colors.textPrimary, modifier = Modifier.size(19.dp))
+            }
         }
-    }
     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
         Text("ALBUM", color = colors.textMuted, style = MaterialTheme.typography.labelMedium)
             Text(

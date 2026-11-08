@@ -114,7 +114,6 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
                     TrackPaletteCache.put(key, colors)
                     TrackPaletteCache.put(playerPaletteKey(artworkTrack, true, Color.White, Color.Black,
                         result.request.data.toString()), colors)
-                    TrackPaletteCache.put(track.id, colors)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* A failed prefetch never prevents normal on-demand image loading. */ }
@@ -137,7 +136,7 @@ internal fun playerAppearanceColors(source: AppThemeColors): AppThemeColors = so
 @Suppress("UNUSED_PARAMETER")
 fun playerPaletteKey(track: MusicTrack, dark: Boolean, accent: Color, base: Color,
     artworkIdentity: String = track.coverUrl): String =
-    "album-bg-colors-v6|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
+    "album-bg-colors-v7|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
 
 /** The URL is ready on the first composition; no metadata API or navigation wait. */
 @Composable
@@ -199,95 +198,164 @@ internal fun extractPlayerArtworkColors(bitmap: Bitmap, dark: Boolean): Extracte
     val pixels = IntArray(w * h)
     bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
 
-    val marginX = (w * 0.14f).toInt().coerceIn(2, 24)
-    val marginY = (h * 0.14f).toInt().coerceIn(2, 24)
+    // Spatial Multi-Region Analysis:
+    // Partition into a 3x3 grid (9 zones):
+    // 0: Top-Left (Corner)      1: Top-Center (Edge)       2: Top-Right (Corner)
+    // 3: Mid-Left (Edge)        4: Mid-Center (Subject)    5: Mid-Right (Edge)
+    // 6: Bottom-Left (Corner)   7: Bottom-Center (Edge)    8: Bottom-Right (Corner)
+    val zoneWeights = floatArrayOf(
+        2.2f, 1.8f, 2.2f,
+        1.5f, 0.05f, 1.5f,
+        1.8f, 1.2f, 1.8f
+    )
 
-    // Bins for 5-bit RGB quantization (32x32x32 = 32768)
     val binWeights = FloatArray(32768)
     val binSumR = FloatArray(32768)
     val binSumG = FloatArray(32768)
     val binSumB = FloatArray(32768)
     val binTotalW = FloatArray(32768)
+    val binZoneMask = ShortArray(32768)
 
-    // Sample perimeter / border pixels where the album art background color lives.
-    // The subject/figure is in the center, while the background fills the top, sides, and corners.
+    val xDiv1 = w / 3
+    val xDiv2 = (2 * w) / 3
+    val yDiv1 = h / 3
+    val yDiv2 = (2 * h) / 3
+
     for (y in 0 until h) {
-        val isTop = y < marginY
-        val isBottom = y >= h - marginY
+        val rowZone = if (y < yDiv1) 0 else if (y < yDiv2) 3 else 6
         val rowOffset = y * w
         for (x in 0 until w) {
-            val isLeft = x < marginX
-            val isRight = x >= w - marginX
+            val colZone = if (x < xDiv1) 0 else if (x < xDiv2) 1 else 2
+            val zone = rowZone + colZone
 
-            if (isTop || isBottom || isLeft || isRight) {
-                val pixel = pixels[rowOffset + x]
-                val a = (pixel ushr 24) and 0xFF
-                if (a < 128) continue // Ignore transparent pixels
+            val pixel = pixels[rowOffset + x]
+            val a = (pixel ushr 24) and 0xFF
+            if (a < 128) continue
 
-                val r = (pixel ushr 16) and 0xFF
-                val g = (pixel ushr 8) and 0xFF
-                val b = pixel and 0xFF
+            val r = (pixel ushr 16) and 0xFF
+            val g = (pixel ushr 8) and 0xFF
+            val b = pixel and 0xFF
 
-                // Weight based on location:
-                // Top corners and top border are almost always 100% background color.
-                val locWeight = when {
-                    isTop && (isLeft || isRight) -> 4.0f // Top corners
-                    isTop -> 3.0f                        // Top edge
-                    isLeft || isRight -> 2.5f            // Side edges
-                    isBottom && (isLeft || isRight) -> 2.0f // Bottom corners
-                    else -> 1.0f                         // Bottom edge
-                }
+            val weight = zoneWeights[zone]
+            val bin = ((r shr 3) shl 10) or ((g shr 3) shl 5) or (b shr 3)
 
-                // Saturation: prioritize vivid background color over desaturated suits/text/greys
-                val maxC = maxOf(r, maxOf(g, b))
-                val minC = minOf(r, minOf(g, b))
-                val sat = if (maxC == 0) 0f else (maxC - minC).toFloat() / maxC
-                val adjustedWeight = locWeight * (1.0f + 2.5f * sat)
-
-                val bin = ((r shr 3) shl 10) or ((g shr 3) shl 5) or (b shr 3)
-                binWeights[bin] += adjustedWeight
-                binSumR[bin] += r * adjustedWeight
-                binSumG[bin] += g * adjustedWeight
-                binSumB[bin] += b * adjustedWeight
-                binTotalW[bin] += adjustedWeight
-            }
+            binWeights[bin] += weight
+            binSumR[bin] += r * weight
+            binSumG[bin] += g * weight
+            binSumB[bin] += b * weight
+            binTotalW[bin] += weight
+            binZoneMask[bin] = (binZoneMask[bin].toInt() or (1 shl zone)).toShort()
         }
     }
 
-    // Find the highest-weighted bin (dominant background color)
+    // Evaluate candidate bins:
+    // Outer zone contiguity is paramount: true backgrounds occupy multiple outer zones.
+    // Localized logos, watermarks, or text occupy only 1 or 2 outer zones.
     var bestBin = -1
-    var maxWeight = 0f
+    var bestScore = -1f
+
     for (i in 0 until 32768) {
-        if (binWeights[i] > maxWeight) {
-            maxWeight = binWeights[i]
+        val totalW = binTotalW[i]
+        if (totalW <= 0f) continue
+
+        val mask = binZoneMask[i].toInt()
+        val outerMask = mask and 0b111011111 // Exclude center zone 4
+        val outerCount = Integer.bitCount(outerMask)
+        if (outerCount == 0) continue
+
+        // Spatial scale factor based on number of outer zones spanned:
+        val spatialFactor = when (outerCount) {
+            1 -> 0.25f
+            2 -> 0.70f
+            3 -> 1.40f
+            4 -> 2.20f
+            5 -> 3.00f
+            else -> 4.00f
+        }
+
+        val score = totalW * spatialFactor
+        if (score > bestScore) {
+            bestScore = score
             bestBin = i
         }
     }
 
     if (bestBin == -1 || binTotalW[bestBin] <= 0f) {
-        // Fallback to Palette if image border was completely transparent
         val palette = Palette.from(bitmap).clearFilters().generate()
-        val dom = palette.dominantSwatch ?: return null
-        return ExtractedTrackColors(Color(dom.rgb), Color(dom.rgb), Color(dom.rgb))
+        val swatch = palette.dominantSwatch ?: palette.mutedSwatch ?: palette.vibrantSwatch ?: return null
+        val c = Color(swatch.rgb)
+        return ExtractedTrackColors(c, c, c)
     }
 
-    val domR = (binSumR[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
-    val domG = (binSumG[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
-    val domB = (binSumB[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
+    // Merge adjacent bins (Manhattan distance <= 1 in 5-bit space) to avoid quantization split
+    val bestR5 = (bestBin shr 10) and 0x1F
+    val bestG5 = (bestBin shr 5) and 0x1F
+    val bestB5 = bestBin and 0x1F
+
+    var mergedSumR = 0f
+    var mergedSumG = 0f
+    var mergedSumB = 0f
+    var mergedTotalW = 0f
+
+    for (dr in -1..1) {
+        val r5 = bestR5 + dr
+        if (r5 !in 0..31) continue
+        for (dg in -1..1) {
+            val g5 = bestG5 + dg
+            if (g5 !in 0..31) continue
+            for (db in -1..1) {
+                if (kotlin.math.abs(dr) + kotlin.math.abs(dg) + kotlin.math.abs(db) > 1) continue
+                val b5 = bestB5 + db
+                if (b5 !in 0..31) continue
+                val neighborBin = (r5 shl 10) or (g5 shl 5) or b5
+                if (binTotalW[neighborBin] > 0f) {
+                    mergedSumR += binSumR[neighborBin]
+                    mergedSumG += binSumG[neighborBin]
+                    mergedSumB += binSumB[neighborBin]
+                    mergedTotalW += binTotalW[neighborBin]
+                }
+            }
+        }
+    }
+
+    val domR = if (mergedTotalW > 0f) (mergedSumR / mergedTotalW).toInt().coerceIn(0, 255)
+        else (binSumR[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
+    val domG = if (mergedTotalW > 0f) (mergedSumG / mergedTotalW).toInt().coerceIn(0, 255)
+        else (binSumG[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
+    val domB = if (mergedTotalW > 0f) (mergedSumB / mergedTotalW).toInt().coerceIn(0, 255)
+        else (binSumB[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
+
+    // Neutrality Check:
+    // Genuinely neutral, black, white, and grayscale backgrounds must never acquire
+    // artificial saturation or random chromatic hues.
+    val maxC = maxOf(domR, maxOf(domG, domB))
+    val minC = minOf(domR, minOf(domG, domB))
+    val sat = if (maxC == 0) 0f else (maxC - minC).toFloat() / maxC
+    val isNeutral = sat < 0.06f || (maxC - minC) < 14
+
+    if (isNeutral) {
+        val avg = ((domR + domG + domB) / 3).coerceIn(0, 255)
+        val neutral = Color(avg, avg, avg)
+        return ExtractedTrackColors(neutral, neutral, neutral)
+    }
+
     val dominantColor = Color(domR, domG, domB)
 
     // Derive harmonious accent and vibrant variations in the exact background hue
+    // without artificially over-saturating.
     val hsv = FloatArray(3)
     android.graphics.Color.RGBToHSV(domR, domG, domB, hsv)
 
-    val accHsv = hsv.clone().apply {
-        this[1] = (this[1] * 1.08f).coerceIn(0f, 1f)
-        this[2] = (this[2] * 1.15f).coerceIn(0f, 1f)
-    }
-    val vibHsv = hsv.clone().apply {
-        this[1] = (this[1] * 1.20f).coerceIn(0f, 1f)
-        this[2] = (this[2] * 0.90f).coerceIn(0f, 1f)
-    }
+    val accHsv = floatArrayOf(
+        hsv[0],
+        hsv[1],
+        (hsv[2] * 1.12f).coerceIn(0f, 1f)
+    )
+    val vibHsv = floatArrayOf(
+        hsv[0],
+        hsv[1],
+        (hsv[2] * 0.90f).coerceIn(0f, 1f)
+    )
 
     val accentColor = Color(android.graphics.Color.HSVToColor(accHsv))
     val vibrantColor = Color(android.graphics.Color.HSVToColor(vibHsv))

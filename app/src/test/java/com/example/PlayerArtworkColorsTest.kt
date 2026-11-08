@@ -22,7 +22,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34], application = Application::class)
+@Config(sdk = [36], application = Application::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PlayerArtworkColorsTest {
     private fun hsl(color: Color) = FloatArray(3).also { ColorUtils.colorToHSL(color.toArgb(), it) }
@@ -115,5 +115,35 @@ class PlayerArtworkColorsTest {
         assertNotEquals(key(), key(track.copy(album = "Corrected album")))
         assertEquals(key(), key(track.copy(audioUrl = "refreshed-signed-url", bitrateKbps = 320)))
         assertEquals(key(), playerPaletteKey(track, false, Color.Red, Color.White, "resolved-cover"))
+    }
+
+    @Test fun gradientBackgroundExtractsCoherentDominantTone() = sample(0xff6a1b9a.toInt()) { bitmap ->
+        // Top half purple (0xff6a1b9a), bottom half orange (0xffef6c00)
+        for (y in 60 until 120) for (x in 0 until 120) bitmap.setPixel(x, y, 0xffef6c00.toInt())
+        val purpleHue = hsl(Color(0xff6a1b9a))[0]
+        val orangeHue = hsl(Color(0xffef6c00))[0]
+        val colors = extractPlayerArtworkColors(bitmap, dark = true)!!
+        val domHue = hsl(colors.dominantColor)[0]
+        val matchesPurple = kotlin.math.abs(domHue - purpleHue) < 15f
+        val matchesOrange = kotlin.math.abs(domHue - orangeHue) < 15f
+        assertTrue("Dominant color must match one of the background gradient tones", matchesPurple || matchesOrange)
+    }
+
+    @Test fun subjectTouchingBottomEdgeDoesNotOverpowerTopAndCornerBackground() = sample(0xff00796b.toInt()) { bitmap ->
+        // Teal background with subject touching the bottom center edge
+        val canvas = android.graphics.Canvas(bitmap)
+        val paint = android.graphics.Paint().apply { color = 0xff3e2723.toInt() }
+        canvas.drawRect(30f, 65f, 90f, 120f, paint)
+        val expectedTealHue = hsl(Color(0xff00796b))[0]
+        val colors = extractPlayerArtworkColors(bitmap, dark = true)!!
+        assertEquals("Background must adapt teal background despite subject touching bottom edge",
+            expectedTealHue, hsl(colors.dominantColor)[0], 8f)
+    }
+
+    @Test fun cacheKeyFormatUsesV7VersionPrefix() {
+        val track = MusicTrack("track_1", "Song", "Artist", "Album", 200_000, "cover_url", "audio_url")
+        val key = playerPaletteKey(track, true, Color.White, Color.Black, "cover_url")
+        assertTrue("Key must start with album-bg-colors-v7", key.startsWith("album-bg-colors-v7|"))
+        assertFalse("Key must not contain old v6 prefix", key.startsWith("album-bg-colors-v6|"))
     }
 }

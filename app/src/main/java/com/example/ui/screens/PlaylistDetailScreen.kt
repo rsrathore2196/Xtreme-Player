@@ -18,6 +18,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -53,11 +56,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import com.example.ui.components.TrackListItem
 import com.example.ui.components.playerArtworkEdgeBlend
+import com.example.ui.components.headerArtworkEdgeBlend
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -393,7 +399,8 @@ fun PlaylistDetailScreen(
             } else {
                 item("portrait_playlist_header") {
                     val configuration = LocalConfiguration.current
-                    val headerHeight = (configuration.screenHeightDp * .44f).dp.coerceIn(260.dp, 400.dp)
+                    val headerHeight = (configuration.screenHeightDp * .46f).dp.coerceIn(280.dp, 420.dp)
+                    val topSpacing = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 20.dp
                     Column(Modifier.fillMaxWidth()) {
                         Box(
                             Modifier
@@ -401,25 +408,51 @@ fun PlaylistDetailScreen(
                                 .height(headerHeight)
                                 .testTag("playlist_profile_header")
                         ) {
-                        AsyncImage(
-                            model = rememberPlaylistCoverRequest(playlist.coverUrl, 1200),
-                            contentDescription = playlist.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.matchParentSize().playerArtworkEdgeBlend(true)
-                        )
-                        Box(
-                            Modifier
-                                .align(Alignment.TopStart)
-                                .statusBarsPadding()
-                                .padding(horizontal = 20.dp, vertical = 8.dp)
-                                .size(38.dp)
-                                .liquidGlassButton(appColors, shape = CircleShape, elevation = 4.dp)
-                                .bouncyClickable { onBackClick() }
-                                .testTag("playlist_back_button"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = appColors.textPrimary, modifier = Modifier.size(19.dp))
-                        }
+                            if (!playlist.coverUrl.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = rememberPlaylistCoverRequest(playlist.coverUrl, 300),
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .matchParentSize()
+                                        .blur(48.dp)
+                                        .graphicsLayer { scaleX = 1.15f; scaleY = 1.15f; alpha = 0.55f }
+                                )
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .matchParentSize()
+                                    .background(
+                                        Brush.verticalGradient(
+                                            0.0f to appColors.scaffoldBackground.copy(alpha = 0.40f),
+                                            0.25f to Color.Transparent,
+                                            0.70f to appColors.scaffoldBackground.copy(alpha = 0.45f),
+                                            1.0f to appColors.scaffoldBackground
+                                        )
+                                    )
+                            )
+                            AsyncImage(
+                                model = rememberPlaylistCoverRequest(playlist.coverUrl, 1200),
+                                contentDescription = playlist.title,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .matchParentSize()
+                                    .padding(top = topSpacing)
+                                    .headerArtworkEdgeBlend(topFade = 0.18f, bottomFade = 0.04f)
+                            )
+                            Box(
+                                Modifier
+                                    .align(Alignment.TopStart)
+                                    .statusBarsPadding()
+                                    .padding(horizontal = 20.dp, vertical = 8.dp)
+                                    .size(38.dp)
+                                    .liquidGlassButton(appColors, shape = CircleShape, elevation = 4.dp)
+                                    .bouncyClickable { onBackClick() }
+                                    .testTag("playlist_back_button"),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = appColors.textPrimary, modifier = Modifier.size(19.dp))
+                            }
 
                         if (!readOnly) {
                             Row(
