@@ -216,8 +216,9 @@ private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit) {
     val configuration = LocalConfiguration.current
     val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val height = if (landscape) (configuration.screenHeightDp * .72f).dp.coerceIn(220.dp, 360.dp)
-        else (configuration.screenHeightDp * .54f).dp.coerceIn(320.dp, 520.dp)
-    Box(Modifier.fillMaxWidth().height(height).testTag("album_profile_header")) {
+        else (configuration.screenHeightDp * .44f).dp.coerceIn(260.dp, 400.dp)
+    Column(Modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth().height(height).testTag("album_profile_header")) {
         AsyncImage(
             model = rememberOptimizedImageRequest(album.image, targetSize = 1200),
             contentDescription = album.title,
@@ -232,8 +233,9 @@ private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit) {
         ) {
             Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = colors.textPrimary, modifier = Modifier.size(19.dp))
         }
-        Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 24.dp, vertical = 12.dp)) {
-            Text("ALBUM", color = colors.textMuted, style = MaterialTheme.typography.labelMedium)
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
+        Text("ALBUM", color = colors.textMuted, style = MaterialTheme.typography.labelMedium)
             Text(
                 album.title,
                 color = colors.textPrimary,

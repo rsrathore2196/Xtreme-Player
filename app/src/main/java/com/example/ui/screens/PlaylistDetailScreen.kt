@@ -393,13 +393,14 @@ fun PlaylistDetailScreen(
             } else {
                 item("portrait_playlist_header") {
                     val configuration = LocalConfiguration.current
-                    val headerHeight = (configuration.screenHeightDp * .54f).dp.coerceIn(320.dp, 520.dp)
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(headerHeight)
-                            .testTag("playlist_profile_header")
-                    ) {
+                    val headerHeight = (configuration.screenHeightDp * .44f).dp.coerceIn(260.dp, 400.dp)
+                    Column(Modifier.fillMaxWidth()) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .height(headerHeight)
+                                .testTag("playlist_profile_header")
+                        ) {
                         AsyncImage(
                             model = rememberPlaylistCoverRequest(playlist.coverUrl, 1200),
                             contentDescription = playlist.title,
@@ -465,37 +466,38 @@ fun PlaylistDetailScreen(
                                 }
                             }
                         }
+                    }
 
-                        Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 24.dp, vertical = 12.dp)) {
-                            Text("PLAYLIST", color = appColors.textMuted, style = MaterialTheme.typography.labelMedium)
+                    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
+                        Text("PLAYLIST", color = appColors.textMuted, style = MaterialTheme.typography.labelMedium)
+                        Text(
+                            text = playlist.title,
+                            color = appColors.textPrimary,
+                            style = MaterialTheme.typography.headlineLarge,
+                            fontWeight = FontWeight.ExtraBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.testTag("playlist_profile_name")
+                        )
+                        if (playlist.description.isNotBlank()) {
                             Text(
-                                text = playlist.title,
-                                color = appColors.textPrimary,
-                                style = MaterialTheme.typography.headlineLarge,
-                                fontWeight = FontWeight.ExtraBold,
+                                text = playlist.description,
+                                color = appColors.textSecondary,
+                                style = MaterialTheme.typography.titleMedium,
                                 maxLines = 2,
                                 overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.testTag("playlist_profile_name")
-                            )
-                            if (playlist.description.isNotBlank()) {
-                                Text(
-                                    text = playlist.description,
-                                    color = appColors.textSecondary,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    maxLines = 2,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.padding(top = 2.dp)
-                                )
-                            }
-                            Text(
-                                text = "${tracks.size} tracks",
-                                color = appColors.primaryAccent,
-                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                                modifier = Modifier.padding(top = 4.dp)
+                                modifier = Modifier.padding(top = 2.dp)
                             )
                         }
+                        Text(
+                            text = "${tracks.size} tracks",
+                            color = appColors.primaryAccent,
+                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
                     }
                 }
+            }
 
                 if (!pinPlaybackActions) {
                     item("portrait_playlist_actions") {
