@@ -2611,8 +2611,8 @@ internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean, imageAspectRatio:
         }
 
 internal fun Modifier.headerArtworkEdgeBlend(
-    topFade: Float = 0.22f,
-    bottomFade: Float = 0.28f,
+    topFade: Float = 0.10f,
+    bottomFade: Float = 0.10f,
     topMargin: Float = 0.01f,
     bottomMargin: Float = 0.02f
 ): Modifier = graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }

@@ -416,7 +416,7 @@ fun PlaylistDetailScreen(
                                 modifier = Modifier
                                     .matchParentSize()
                                     .padding(top = topSpacing)
-                                    .headerArtworkEdgeBlend(topFade = 0.22f, bottomFade = 0.28f, topMargin = 0.01f, bottomMargin = 0.02f)
+                                    .headerArtworkEdgeBlend(topFade = 0.10f, bottomFade = 0.10f, topMargin = 0.01f, bottomMargin = 0.02f)
                             )
                             Box(
                                 Modifier
