@@ -2611,22 +2611,31 @@ internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean, imageAspectRatio:
         }
 
 internal fun Modifier.headerArtworkEdgeBlend(
-    topFade: Float = 0.18f,
-    bottomFade: Float = 0.04f,
-    topMargin: Float = 0f,
-    bottomMargin: Float = 0f
+    topFade: Float = 0.22f,
+    bottomFade: Float = 0.28f,
+    topMargin: Float = 0.01f,
+    bottomMargin: Float = 0.02f
 ): Modifier = graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
     .drawWithCache {
-        val stops = ArrayList<Pair<Float, Color>>(52)
+        val stops = ArrayList<Pair<Float, Color>>(56)
+        if (topMargin > 0f) {
+            stops += 0f to Color.Transparent
+            stops += topMargin to Color.Transparent
+        }
         for (i in 0..24) {
             val t = i / 24f
             val alpha = t * t * (3f - 2f * t)
             stops += (topMargin + t * topFade) to Color.White.copy(alpha = alpha)
         }
+        val bottomFadeStart = 1f - bottomMargin - bottomFade
         for (i in 0..24) {
             val t = i / 24f
             val alpha = 1f - t * t * (3f - 2f * t)
-            stops += (1f - bottomMargin - bottomFade + t * bottomFade) to Color.White.copy(alpha = alpha)
+            stops += (bottomFadeStart + t * bottomFade) to Color.White.copy(alpha = alpha)
+        }
+        if (bottomMargin > 0f) {
+            stops += (1f - bottomMargin) to Color.Transparent
+            stops += 1f to Color.Transparent
         }
         val edges = Brush.verticalGradient(*stops.toTypedArray(), startY = 0f, endY = size.height)
         onDrawWithContent {

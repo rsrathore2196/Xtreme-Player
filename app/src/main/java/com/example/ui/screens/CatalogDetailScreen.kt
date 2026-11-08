@@ -221,33 +221,16 @@ private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit) {
     val configuration = LocalConfiguration.current
     val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val height = if (landscape) (configuration.screenHeightDp * .72f).dp.coerceIn(220.dp, 360.dp)
-        else (configuration.screenHeightDp * .46f).dp.coerceIn(280.dp, 420.dp)
+        else (configuration.screenHeightDp * .50f).dp.coerceIn(320.dp, 460.dp)
     val topSpacing = if (landscape) 8.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 20.dp
     Column(Modifier.fillMaxWidth()) {
-        Box(Modifier.fillMaxWidth().height(height).testTag("album_profile_header")) {
-            if (!album.image.isNullOrBlank()) {
-                AsyncImage(
-                    model = rememberOptimizedImageRequest(album.image, targetSize = 300),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier
-                        .matchParentSize()
-                        .blur(48.dp)
-                        .graphicsLayer { scaleX = 1.15f; scaleY = 1.15f; alpha = 0.55f }
-                )
-            }
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .background(
-                        Brush.verticalGradient(
-                            0.0f to colors.scaffoldBackground.copy(alpha = 0.40f),
-                            0.25f to Color.Transparent,
-                            0.70f to colors.scaffoldBackground.copy(alpha = 0.45f),
-                            1.0f to colors.scaffoldBackground
-                        )
-                    )
-            )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(height)
+                .background(colors.scaffoldBackground)
+                .testTag("album_profile_header")
+        ) {
             AsyncImage(
                 model = rememberOptimizedImageRequest(album.image, targetSize = 1200),
                 contentDescription = album.title,
@@ -255,7 +238,7 @@ private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit) {
                 modifier = Modifier
                     .matchParentSize()
                     .padding(top = topSpacing)
-                    .headerArtworkEdgeBlend(topFade = 0.18f, bottomFade = 0.04f)
+                    .headerArtworkEdgeBlend(topFade = 0.22f, bottomFade = 0.28f, topMargin = 0.01f, bottomMargin = 0.02f)
             )
             Box(
                 Modifier.align(Alignment.TopStart).statusBarsPadding().padding(horizontal = 20.dp, vertical = 8.dp)

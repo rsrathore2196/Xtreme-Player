@@ -399,38 +399,16 @@ fun PlaylistDetailScreen(
             } else {
                 item("portrait_playlist_header") {
                     val configuration = LocalConfiguration.current
-                    val headerHeight = (configuration.screenHeightDp * .46f).dp.coerceIn(280.dp, 420.dp)
+                    val headerHeight = (configuration.screenHeightDp * .50f).dp.coerceIn(320.dp, 460.dp)
                     val topSpacing = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 20.dp
                     Column(Modifier.fillMaxWidth()) {
                         Box(
                             Modifier
                                 .fillMaxWidth()
                                 .height(headerHeight)
+                                .background(appColors.scaffoldBackground)
                                 .testTag("playlist_profile_header")
                         ) {
-                            if (!playlist.coverUrl.isNullOrBlank()) {
-                                AsyncImage(
-                                    model = rememberPlaylistCoverRequest(playlist.coverUrl, 300),
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .matchParentSize()
-                                        .blur(48.dp)
-                                        .graphicsLayer { scaleX = 1.15f; scaleY = 1.15f; alpha = 0.55f }
-                                )
-                            }
-                            Box(
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .background(
-                                        Brush.verticalGradient(
-                                            0.0f to appColors.scaffoldBackground.copy(alpha = 0.40f),
-                                            0.25f to Color.Transparent,
-                                            0.70f to appColors.scaffoldBackground.copy(alpha = 0.45f),
-                                            1.0f to appColors.scaffoldBackground
-                                        )
-                                    )
-                            )
                             AsyncImage(
                                 model = rememberPlaylistCoverRequest(playlist.coverUrl, 1200),
                                 contentDescription = playlist.title,
@@ -438,7 +416,7 @@ fun PlaylistDetailScreen(
                                 modifier = Modifier
                                     .matchParentSize()
                                     .padding(top = topSpacing)
-                                    .headerArtworkEdgeBlend(topFade = 0.18f, bottomFade = 0.04f)
+                                    .headerArtworkEdgeBlend(topFade = 0.22f, bottomFade = 0.28f, topMargin = 0.01f, bottomMargin = 0.02f)
                             )
                             Box(
                                 Modifier
