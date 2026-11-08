@@ -16,6 +16,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
+import com.example.ui.components.headerArtworkEdgeBlend
 import com.example.ui.components.playerArtworkEdgeBlend
 import com.github.takahirom.roborazzi.*
 import org.junit.Assert.*
@@ -28,7 +29,7 @@ import org.robolectric.annotation.GraphicsMode
 
 @OptIn(ExperimentalRoborazziApi::class)
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [31, 34], application = Application::class)
+@Config(sdk = [36], application = Application::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PlayerArtworkBlendUiTest {
     @get:Rule val compose = createComposeRule()
@@ -76,4 +77,46 @@ class PlayerArtworkBlendUiTest {
                 kotlin.math.abs(a.green - b.green), kotlin.math.abs(a.blue - b.blue)) <= 3 })
         }
     }
+
+    @Test fun headerArtworkEdgeBlendPreservesCentralEightyPercentAndFadesOnlyTopAndBottomTenPercent() {
+        var cover by mutableStateOf(false)
+        val backdrop = Color.Black
+        compose.setContent {
+            Box(Modifier.size(200.dp, 400.dp).background(backdrop).testTag("header_blend")) {
+                if (cover) Canvas(Modifier.matchParentSize().headerArtworkEdgeBlend(topFade = 0.10f, bottomFade = 0.10f, topMargin = 0.01f, bottomMargin = 0.02f)) {
+                    drawRect(Color.White)
+                }
+            }
+        }
+        fun capture(): java.awt.image.BufferedImage {
+            val file = java.io.File.createTempFile("header-blend-", ".png")
+            return try {
+                compose.onNodeWithTag("header_blend").captureRoboImage(file.absolutePath,
+                    roborazziOptions = RoborazziOptions(taskType = RoborazziTaskType.Record))
+                javax.imageio.ImageIO.read(file)
+            } finally { file.delete() }
+        }
+        compose.waitForIdle()
+        compose.runOnIdle { cover = true }
+        compose.waitForIdle()
+        val after = capture()
+
+        // 1. Extreme top and bottom edges (0% and 100%) must be completely blended/transparent
+        val topPixel = java.awt.Color(after.getRGB(after.width / 2, 0))
+        val bottomPixel = java.awt.Color(after.getRGB(after.width / 2, after.height - 1))
+        assertEquals(0, topPixel.red)
+        assertEquals(0, bottomPixel.red)
+
+        // 2. Central 80% (from 10% to 90% of height) must be fully opaque
+        val y15 = (after.height * 0.15f).toInt()
+        val y50 = (after.height * 0.50f).toInt()
+        val y85 = (after.height * 0.85f).toInt()
+        for (y in listOf(y15, y50, y85)) {
+            val centerPixel = java.awt.Color(after.getRGB(after.width / 2, y))
+            assertEquals("Central 80% at y=$y must be full white", 255, centerPixel.red)
+            assertEquals("Central 80% at y=$y must be full white", 255, centerPixel.green)
+            assertEquals("Central 80% at y=$y must be full white", 255, centerPixel.blue)
+        }
+    }
 }
+

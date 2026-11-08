@@ -2617,32 +2617,53 @@ internal fun Modifier.headerArtworkEdgeBlend(
     bottomMargin: Float = 0.02f
 ): Modifier = graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
     .drawWithCache {
-        val stops = ArrayList<Pair<Float, Color>>(56)
-        if (topMargin > 0f) {
+        // Confine the upper and lower blending transitions strictly to 10% each,
+        // leaving the central 80% completely unshaded and fully opaque (alpha = 1.0f).
+        val effectiveTopFade = topFade.coerceIn(0.02f, 0.30f)
+        val effectiveBottomFade = bottomFade.coerceIn(0.02f, 0.30f)
+        val mTop = topMargin.coerceIn(0f, effectiveTopFade * 0.3f)
+        val mBottom = bottomMargin.coerceIn(0f, effectiveBottomFade * 0.3f)
+        val fadeTopRange = effectiveTopFade - mTop
+        val fadeBottomRange = effectiveBottomFade - mBottom
+        val bottomFadeStart = 1f - effectiveBottomFade
+
+        val stops = ArrayList<Pair<Float, Color>>(60)
+        // 1. Upper blend: 0f to effectiveTopFade (0.00f -> 0.10f)
+        if (mTop > 0f) {
             stops += 0f to Color.Transparent
-            stops += topMargin to Color.Transparent
+            stops += mTop to Color.Transparent
         }
-        for (i in 0..24) {
-            val t = i / 24f
+        for (i in 0..20) {
+            val t = i / 20f
             val alpha = t * t * (3f - 2f * t)
-            stops += (topMargin + t * topFade) to Color.White.copy(alpha = alpha)
+            val pos = mTop + t * fadeTopRange
+            stops += pos to Color.White.copy(alpha = alpha)
         }
-        val bottomFadeStart = 1f - bottomMargin - bottomFade
-        for (i in 0..24) {
-            val t = i / 24f
+
+        // 2. Central 80% plateau: explicitly 100% solid white, no unintended darkening or transparency
+        stops += effectiveTopFade to Color.White
+        stops += bottomFadeStart to Color.White
+
+        // 3. Lower blend: bottomFadeStart to 1.0f (0.90f -> 1.00f)
+        for (i in 0..20) {
+            val t = i / 20f
             val alpha = 1f - t * t * (3f - 2f * t)
-            stops += (bottomFadeStart + t * bottomFade) to Color.White.copy(alpha = alpha)
+            val pos = bottomFadeStart + t * fadeBottomRange
+            stops += pos to Color.White.copy(alpha = alpha)
         }
-        if (bottomMargin > 0f) {
-            stops += (1f - bottomMargin) to Color.Transparent
+        if (mBottom > 0f) {
+            val bottomMarginStart = 1f - mBottom
+            stops += bottomMarginStart to Color.Transparent
             stops += 1f to Color.Transparent
         }
+
         val edges = Brush.verticalGradient(*stops.toTypedArray(), startY = 0f, endY = size.height)
         onDrawWithContent {
             drawContent()
             drawRect(edges, blendMode = BlendMode.DstIn)
         }
     }
+
 
 
 @Composable
