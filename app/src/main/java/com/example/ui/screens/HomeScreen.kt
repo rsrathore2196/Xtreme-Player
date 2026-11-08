@@ -989,6 +989,7 @@ fun ShelfTrackCard(
     textMutedColor: Color = if (LocalAppColors.current.isDark) Color(0xFFA1A1AA) else Color(0xFF71717A),
     artworkRequest: coil.request.ImageRequest? = null,
     landscapeCard: Boolean = false,
+    modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
     val title = homeTrackTitle(track)
@@ -998,20 +999,21 @@ fun ShelfTrackCard(
         cardBg, cardBorderColor, textPrimaryColor, textMutedColor, artworkDescription = title,
         artworkContentScale = artworkRequest?.let { com.example.ui.util.nativeSongArtworkContentScale(it) } ?: ContentScale.Crop,
         landscapeCard = landscapeCard,
+        modifier = modifier,
         onClick = onClick)
 }
 
 @Composable
-private fun ShelfContentCard(title: String, subtitle: String, artwork: coil.request.ImageRequest, isPlaying: Boolean,
+internal fun ShelfContentCard(title: String, subtitle: String, artwork: coil.request.ImageRequest, isPlaying: Boolean,
     cardBg: Color, cardBorderColor: Color, textPrimaryColor: Color, textMutedColor: Color,
     artworkDescription: String = title, artworkContentScale: ContentScale = ContentScale.Crop,
-    landscapeCard: Boolean = false, onClick: () -> Unit) {
+    landscapeCard: Boolean = false, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val appColors = LocalAppColors.current
     val artworkWidth = if (landscapeCard) 224.dp else 163.2.dp
     val artworkHeight = if (landscapeCard) 126.dp else 163.2.dp
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .width(artworkWidth)
             .clip(RoundedCornerShape(14.dp))
             .clickable(onClick = onClick)
@@ -1061,7 +1063,12 @@ private fun ShelfContentCard(title: String, subtitle: String, artwork: coil.requ
             fontWeight = FontWeight.Bold,
             color = if (isPlaying) appColors.primaryAccent else textPrimaryColor,
             maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.clickable(
+                interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                indication = null,
+                onClick = onClick
+            )
         )
         Spacer(modifier = Modifier.height(2.dp))
         Text(

@@ -84,35 +84,18 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
         is CatalogDestination.Playlist -> target.playlist.title
     }
     LazyColumn(state = list, modifier = Modifier.fillMaxSize().testTag("catalog_detail_list").background(colors.scaffoldBackground)
-        .then(if (state.destination is CatalogDestination.Artist) Modifier
+        .then(if (state.destination is CatalogDestination.Artist || state.destination is CatalogDestination.Album) Modifier
             else Modifier.landscapeContentBounds(landscape).statusBarsPadding()).bouncyOverscroll(),
         contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 180.dp)) {
         item("header") {
-            if (state.destination is CatalogDestination.Artist) {
-                ArtistProfileHeader(state.artistProfile?.artist ?: state.destination.artist, onBack)
-            } else {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(38.dp).liquidGlassButton(colors, shape = CircleShape, elevation = 4.dp)
-                    .bouncyClickable(onClick = onBack), contentAlignment = Alignment.Center) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = colors.textPrimary, modifier = Modifier.size(19.dp))
+            when (val dest = state.destination) {
+                is CatalogDestination.Artist -> {
+                    ArtistProfileHeader(state.artistProfile?.artist ?: dest.artist, onBack)
                 }
-                Spacer(Modifier.width(12.dp))
-                Text(title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = colors.textPrimary)
-            }
-            Column(Modifier.fillMaxWidth().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                when (val target = state.destination) {
-                    is CatalogDestination.Artist -> Unit
-                    is CatalogDestination.Album -> {
-                        AsyncImage(target.album.image, target.album.title, contentScale = ContentScale.Crop,
-                            modifier = Modifier.size(if (landscape) 112.dp else 180.dp).clip(RoundedCornerShape(18.dp)))
-                        Spacer(Modifier.height(12.dp))
-                        Text(target.album.artists.joinToString { it.name }, color = colors.textMuted)
-                        Text(target.album.year, color = colors.textMuted, style = MaterialTheme.typography.bodySmall)
-                    }
-                    is CatalogDestination.Playlist -> AsyncImage(target.playlist.image, target.playlist.title,
-                        contentScale = ContentScale.Crop, modifier = Modifier.size(180.dp).clip(RoundedCornerShape(18.dp)))
+                is CatalogDestination.Album -> {
+                    AlbumProfileHeader(dest.album, onBack)
                 }
-            }
+                is CatalogDestination.Playlist -> Unit
             }
         }
         state.artistProfile?.let { profile ->
@@ -223,5 +206,58 @@ private fun ArtistStatistic(label: String, rawValue: String, modifier: Modifier)
         Text(label, color = colors.textMuted, style = MaterialTheme.typography.labelMedium)
         Text(value.ifBlank { "Not provided" }, color = colors.textPrimary,
             style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** Full-bleed official album artwork; alpha edges reveal the same page canvas. */
+@Composable
+private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit) {
+    val colors = LocalAppColors.current
+    val configuration = LocalConfiguration.current
+    val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val height = if (landscape) (configuration.screenHeightDp * .72f).dp.coerceIn(220.dp, 360.dp)
+        else (configuration.screenHeightDp * .54f).dp.coerceIn(320.dp, 520.dp)
+    Box(Modifier.fillMaxWidth().height(height).testTag("album_profile_header")) {
+        AsyncImage(
+            model = rememberOptimizedImageRequest(album.image, targetSize = 1200),
+            contentDescription = album.title,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.matchParentSize().playerArtworkEdgeBlend(true)
+        )
+        Box(
+            Modifier.align(Alignment.TopStart).statusBarsPadding().padding(horizontal = 20.dp, vertical = 8.dp)
+                .size(38.dp).liquidGlassButton(colors, shape = CircleShape, elevation = 4.dp)
+                .bouncyClickable(onClick = onBack),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = colors.textPrimary, modifier = Modifier.size(19.dp))
+        }
+        Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 24.dp, vertical = 12.dp)) {
+            Text("ALBUM", color = colors.textMuted, style = MaterialTheme.typography.labelMedium)
+            Text(
+                album.title,
+                color = colors.textPrimary,
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("album_profile_name")
+            )
+            val artistNames = album.artists.joinToString { it.name }
+            if (artistNames.isNotBlank() || album.year.isNotBlank()) {
+                val subtitle = buildString {
+                    if (artistNames.isNotBlank()) append(artistNames)
+                    if (artistNames.isNotBlank() && album.year.isNotBlank()) append(" • ")
+                    if (album.year.isNotBlank()) append(album.year)
+                }
+                Text(
+                    subtitle,
+                    color = colors.textSecondary,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
     }
 }

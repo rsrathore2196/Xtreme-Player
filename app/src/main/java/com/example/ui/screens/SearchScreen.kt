@@ -119,7 +119,14 @@ private fun GenreResultsPage(
     val colors = LocalAppColors.current
     val list = rememberLazyListState()
     val tracks = state.result.songs
+    val playlists = state.result.catalogPlaylists
+    val albums = state.result.catalogAlbums
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val cardBg = if (colors.isDark) Color(0xFF18181B) else Color(0xFFFFFFFF)
+    val cardBorderColor = if (colors.isDark) Color(0xFF27272A) else Color(0xFFE4E4E7)
+    val textPrimaryColor = if (colors.isDark) Color(0xFFFFFFFF) else Color(0xFF09090B)
+    val textMutedColor = if (colors.isDark) Color(0xFFA1A1AA) else Color(0xFF71717A)
+
     LazyColumn(state = list, modifier = modifier.fillMaxSize().background(colors.scaffoldBackground)
         .landscapeContentBounds(landscape, maxWidthDp = null).statusBarsPadding().bouncyOverscroll().testTag("genre_results_page"),
         contentPadding = PaddingValues(bottom = if (landscape) 192.dp else 150.dp)) {
@@ -138,40 +145,117 @@ private fun GenreResultsPage(
         }
         if (tracks.isNotEmpty()) {
             item("genre_songs_header", contentType = "header") { CatalogSectionTitle("Songs") }
-            items(tracks, key = { "genre_song:${it.id}" }, contentType = { "track" }) { track ->
-                TrackListItem(track = track, isPlaying = playingId == track.id && isPlaying,
-                    isLoading = pendingTrackId == track.id || playingId == track.id && isLoading,
-                    onClick = { onPlay(track, tracks) }, onToggleFavorite = { onFavorite(track) },
-                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp))
-            }
-        }
-        val playlists = state.result.catalogPlaylists
-        if (playlists.isNotEmpty()) {
-            item("genre_playlists_header", contentType = "header") { CatalogSectionTitle("Playlists") }
-            items(playlists, key = { "genre_playlist:${com.example.data.repository.CatalogDestination.Playlist(it).key}" },
-                contentType = { "catalog_entity" }) { playlist ->
-                Box(Modifier.padding(horizontal = 20.dp).testTag("playlist_item_${playlist.id}")) {
-                    CatalogEntityRow(playlist.title, "Playlist • Tap to view songs", playlist.image) {
-                        onOpenCatalog(com.example.data.repository.CatalogDestination.Playlist(playlist))
+            item("genre_songs_row", contentType = "shelf") {
+                val rowState = rememberLazyListState()
+                LazyRow(
+                    state = rowState,
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                ) {
+                    items(tracks, key = { "genre_song:${it.id}" }, contentType = { "track" }) { track ->
+                        ShelfTrackCard(
+                            track = track,
+                            isPlaying = playingId == track.id && isPlaying,
+                            cardBg = cardBg,
+                            cardBorderColor = cardBorderColor,
+                            textPrimaryColor = textPrimaryColor,
+                            textMutedColor = textMutedColor,
+                            modifier = Modifier.testTag("track_item_${track.id}"),
+                            onClick = { onPlay(track, tracks) }
+                        )
                     }
                 }
             }
         }
-        val albums = state.result.catalogAlbums
-        if (albums.isNotEmpty() || state.result.albums.isNotEmpty()) {
+        if (playlists.isNotEmpty()) {
+            item("genre_playlists_header", contentType = "header") { CatalogSectionTitle("Playlists") }
+            item("genre_playlists_row", contentType = "shelf") {
+                val rowState = rememberLazyListState()
+                LazyRow(
+                    state = rowState,
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                ) {
+                    items(playlists, key = { "genre_playlist:${com.example.data.repository.CatalogDestination.Playlist(it).key}" },
+                        contentType = { "catalog_entity" }) { playlist ->
+                        ShelfContentCard(
+                            title = playlist.title,
+                            subtitle = "Playlist",
+                            artwork = rememberOptimizedImageRequest(
+                                playlist.image,
+                                targetSize = ImageConfig.RECOMMENDATION_CARD_SIZE,
+                                crossfadeEnabled = false,
+                                preferStableArtwork = true
+                            ),
+                            isPlaying = false,
+                            cardBg = cardBg,
+                            cardBorderColor = cardBorderColor,
+                            textPrimaryColor = textPrimaryColor,
+                            textMutedColor = textMutedColor,
+                            modifier = Modifier.testTag("playlist_item_${playlist.id}"),
+                            onClick = { onOpenCatalog(com.example.data.repository.CatalogDestination.Playlist(playlist)) }
+                        )
+                    }
+                }
+            }
+        }
+        val stringAlbums = state.result.albums
+        if (albums.isNotEmpty() || stringAlbums.isNotEmpty()) {
             item("genre_albums_header", contentType = "header") {
                 Box(Modifier.testTag("genre_albums_section")) { CatalogSectionTitle("Albums") }
             }
-            if (albums.isNotEmpty()) items(albums, key = { "genre_album:${it.id.ifBlank { it.title }}" },
-                contentType = { "catalog_entity" }) { album ->
-                Box(Modifier.padding(horizontal = 20.dp).testTag("album_item_${album.id.ifBlank { album.title.lowercase() }}")) {
-                    CatalogEntityRow(album.title, album.artists.joinToString { it.name }, album.image) {
-                        onOpenCatalog(com.example.data.repository.CatalogDestination.Album(album))
+            item("genre_albums_row", contentType = "shelf") {
+                val rowState = rememberLazyListState()
+                LazyRow(
+                    state = rowState,
+                    contentPadding = PaddingValues(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                ) {
+                    if (albums.isNotEmpty()) {
+                        items(albums, key = { "genre_album:${it.id.ifBlank { it.title }}" },
+                            contentType = { "catalog_entity" }) { album ->
+                            ShelfContentCard(
+                                title = album.title,
+                                subtitle = album.artists.joinToString { it.name }.ifBlank { album.year.ifBlank { "Album" } },
+                                artwork = rememberOptimizedImageRequest(
+                                    album.image,
+                                    targetSize = ImageConfig.RECOMMENDATION_CARD_SIZE,
+                                    crossfadeEnabled = false,
+                                    preferStableArtwork = true
+                                ),
+                                isPlaying = false,
+                                cardBg = cardBg,
+                                cardBorderColor = cardBorderColor,
+                                textPrimaryColor = textPrimaryColor,
+                                textMutedColor = textMutedColor,
+                                modifier = Modifier.testTag("album_item_${album.id.ifBlank { album.title.lowercase() }}"),
+                                onClick = { onOpenCatalog(com.example.data.repository.CatalogDestination.Album(album)) }
+                            )
+                        }
+                    } else {
+                        items(stringAlbums, key = { "genre_album:$it" }, contentType = { "catalog_entity" }) { name ->
+                            ShelfContentCard(
+                                title = name,
+                                subtitle = "Album",
+                                artwork = rememberOptimizedImageRequest(
+                                    "",
+                                    targetSize = ImageConfig.RECOMMENDATION_CARD_SIZE,
+                                    crossfadeEnabled = false,
+                                    preferStableArtwork = true
+                                ),
+                                isPlaying = false,
+                                cardBg = cardBg,
+                                cardBorderColor = cardBorderColor,
+                                textPrimaryColor = textPrimaryColor,
+                                textMutedColor = textMutedColor,
+                                modifier = Modifier.testTag("album_item_${name.lowercase()}"),
+                                onClick = { onOpenAlbumByName(name) }
+                            )
+                        }
                     }
-                }
-            } else items(state.result.albums, key = { "genre_album:$it" }, contentType = { "catalog_entity" }) { name ->
-                Box(Modifier.padding(horizontal = 20.dp)) {
-                    CatalogEntityRow(name, "Album • Tap to view songs", null) { onOpenAlbumByName(name) }
                 }
             }
         }
@@ -183,7 +267,7 @@ private fun GenreResultsPage(
             item("genre_error", contentType = "error") {
                 Text(state.genreError, color = colors.textMuted, modifier = Modifier.padding(20.dp))
             }
-        } else if (tracks.isEmpty() && albums.isEmpty() && playlists.isEmpty() && state.result.albums.isEmpty()) {
+        } else if (tracks.isEmpty() && albums.isEmpty() && playlists.isEmpty() && stringAlbums.isEmpty()) {
             item("genre_empty", contentType = "empty") {
                 Text("No results found", color = colors.textMuted, modifier = Modifier.padding(20.dp))
             }
@@ -289,13 +373,14 @@ fun SearchScreen(
         // here first would replace/reflow the whole list when its index arrives.
         val raw = if (searchState.exploreCategories.isNotEmpty()) searchState.exploreCategories.map { it.title to it }
         else emptyList()
-        raw.mapNotNull { (title, cat) ->
+        val cleaned = raw.mapNotNull { (title, cat) ->
             if (com.example.data.remote.YouTubeExploreParser.isExcludedGenre(title)) null
             else {
                 val cleanTitle = com.example.data.remote.YouTubeExploreParser.normalizeGenreTitle(title)
                 cleanTitle to (cat?.copy(title = cleanTitle) ?: cat)
             }
         }
+        orderExplorePills(cleaned)
     }
     var wasScreenActive by remember { mutableStateOf(isScreenActive) }
     LaunchedEffect(isScreenActive) {
@@ -1444,4 +1529,59 @@ fun SearchScreen(
         }
     }
 }
+}
+
+private fun topGenreRank(title: String): Int {
+    val clean = title.trim().lowercase()
+    return when {
+        clean == "hindi" || clean.startsWith("hindi") -> 0
+        clean == "punjabi" || clean.startsWith("punjabi") -> 1
+        else -> -1
+    }
+}
+
+private fun bottomGenreRank(title: String): Int {
+    val clean = title.trim().lowercase()
+    return when {
+        clean == "chill" || clean.startsWith("chill") -> 0
+        clean == "commute" || clean.startsWith("commute") -> 1
+        clean == "diwali" || clean.startsWith("diwali") -> 2
+        clean == "energize" || clean.startsWith("energize") -> 3
+        clean == "feel good" || clean.startsWith("feel good") -> 4
+        clean == "focus" || clean.startsWith("focus") -> 5
+        clean == "gaming" || clean.startsWith("gaming") -> 6
+        clean == "party" || clean.startsWith("party") -> 7
+        clean == "romance" || clean.startsWith("romance") || clean.contains("romantic") -> 8
+        clean == "sad" || clean.startsWith("sad") -> 9
+        clean == "sleep" || clean.startsWith("sleep") -> 10
+        clean == "workout" || clean.startsWith("workout") -> 11
+        clean == "african" || clean.startsWith("african") -> 12
+        clean == "arabic" || clean.startsWith("arabic") -> 13
+        clean == "bengali" || clean.startsWith("bengali") -> 14
+        clean == "bhojpuri" || clean.startsWith("bhojpuri") -> 15
+        else -> -1
+    }
+}
+
+private fun <T> orderExplorePills(items: List<Pair<String, T>>): List<Pair<String, T>> {
+    val topItems = mutableListOf<Pair<String, T>>()
+    val middleItems = mutableListOf<Pair<String, T>>()
+    val bottomItems = mutableListOf<Pair<String, T>>()
+
+    for (item in items) {
+        val top = topGenreRank(item.first)
+        val bottom = bottomGenreRank(item.first)
+        if (top != -1) {
+            topItems.add(item)
+        } else if (bottom != -1) {
+            bottomItems.add(item)
+        } else {
+            middleItems.add(item)
+        }
+    }
+
+    val sortedTop = topItems.sortedBy { topGenreRank(it.first) }
+    val sortedBottom = bottomItems.sortedBy { bottomGenreRank(it.first) }
+
+    return sortedTop + middleItems + sortedBottom
 }

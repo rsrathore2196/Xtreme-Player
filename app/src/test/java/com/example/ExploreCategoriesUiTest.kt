@@ -179,4 +179,29 @@ class ExploreCategoriesUiTest {
         compose.onNodeWithText("Dance").assertExists()
         compose.onNodeWithText("Pop Hits").assertExists()
     }
+
+    @Test fun exploreGenresOrderPlacesHindiAndPunjabiAtTopAndSpecifiedGenresAtBottom() {
+        val focus = ExploreCategory("Focus", "cat_focus", null, ExploreCategoryKind.MOOD)
+        val rock = ExploreCategory("Rock", "cat_rock", null, ExploreCategoryKind.GENRE)
+        val punjabi = ExploreCategory("Punjabi", "cat_punjabi", null, ExploreCategoryKind.GENRE)
+        val pop = ExploreCategory("Pop Hits", "cat_pop", null, ExploreCategoryKind.GENRE)
+        val hindi = ExploreCategory("Hindi", "cat_hindi", null, ExploreCategoryKind.GENRE)
+        val chill = ExploreCategory("Chill", "cat_chill", null, ExploreCategoryKind.MOOD)
+        val bhojpuri = ExploreCategory("Bhojpuri", "cat_bhojpuri", null, ExploreCategoryKind.GENRE)
+
+        val categories = listOf(focus, rock, punjabi, pop, hindi, chill, bhojpuri)
+        content {
+            SearchScreen(SearchUiState(exploreCategories = categories), onQueryChange = {}, onSelectGenre = {},
+                onTrackClick = { _, _ -> }, onToggleFavorite = {})
+        }
+
+        val hindiBounds = compose.onNodeWithText("Hindi").fetchSemanticsNode().boundsInRoot
+        val punjabiBounds = compose.onNodeWithText("Punjabi").fetchSemanticsNode().boundsInRoot
+        val rockBounds = compose.onNodeWithText("Rock").fetchSemanticsNode().boundsInRoot
+
+        assertEquals(hindiBounds.top, punjabiBounds.top, 2f)
+        assertTrue(hindiBounds.left < punjabiBounds.left)
+        assertTrue(rockBounds.top >= hindiBounds.bottom)
+    }
 }
+

@@ -57,6 +57,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import com.example.ui.components.TrackListItem
+import com.example.ui.components.playerArtworkEdgeBlend
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -272,17 +273,18 @@ fun PlaylistDetailScreen(
                 .fillMaxSize()
                 .widthIn(max = 640.dp)
                 .landscapeContentBounds(landscape)
-                .statusBarsPadding()
+                .then(if (landscape) Modifier.statusBarsPadding() else Modifier)
                 .testTag("playlist_detail_screen")
         ) {
-        // TOP NAVIGATION BAR
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        // TOP NAVIGATION BAR (Landscape only; portrait header has overlaid controls)
+        if (landscape) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
             // Liquid Glass Circle Back Button
             Box(
                 modifier = Modifier
@@ -340,6 +342,7 @@ fun PlaylistDetailScreen(
                 }
             }
         }
+    }
 
         if (pinPlaybackActions) PlaylistPlaybackActions(tracks, onPlayTrack)
         LazyColumn(
@@ -387,67 +390,119 @@ fun PlaylistDetailScreen(
                         }
                     }
                 }
-            } else item {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 8.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    AsyncImage(
-                        model = rememberPlaylistCoverRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier
-                            .size(160.dp)
-                            .shadow(
-                                elevation = 20.dp,
-                                shape = RoundedCornerShape(16.dp),
-                                spotColor = appColors.primaryAccent.copy(alpha = 0.4f)
-                            )
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(appColors.cardBackgroundElevated)
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Text(
-                        text = playlist.title,
-                        style = MaterialTheme.typography.headlineMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = appColors.textPrimary
-                        ),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-
-                    if (playlist.description.isNotBlank()) {
-                        Text(
-                            text = playlist.description,
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                color = appColors.textSecondary
-                            ),
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(top = 4.dp)
+            } else {
+                item("portrait_playlist_header") {
+                    val configuration = LocalConfiguration.current
+                    val headerHeight = (configuration.screenHeightDp * .54f).dp.coerceIn(320.dp, 520.dp)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(headerHeight)
+                            .testTag("playlist_profile_header")
+                    ) {
+                        AsyncImage(
+                            model = rememberPlaylistCoverRequest(playlist.coverUrl, 1200),
+                            contentDescription = playlist.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.matchParentSize().playerArtworkEdgeBlend(true)
                         )
+                        Box(
+                            Modifier
+                                .align(Alignment.TopStart)
+                                .statusBarsPadding()
+                                .padding(horizontal = 20.dp, vertical = 8.dp)
+                                .size(38.dp)
+                                .liquidGlassButton(appColors, shape = CircleShape, elevation = 4.dp)
+                                .bouncyClickable { onBackClick() }
+                                .testTag("playlist_back_button"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = appColors.textPrimary, modifier = Modifier.size(19.dp))
+                        }
+
+                        if (!readOnly) {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .statusBarsPadding()
+                                    .padding(horizontal = 20.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .liquidGlassButton(appColors, shape = CircleShape, elevation = 3.dp)
+                                        .bouncyClickable {
+                                            newTitleInput = playlist.title
+                                            showRenameDialog = true
+                                        }
+                                        .testTag("edit_playlist_name_button"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = "Edit Playlist Name",
+                                        tint = appColors.primaryAccent,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .liquidGlassButton(appColors, shape = CircleShape, elevation = 3.dp)
+                                        .bouncyClickable { showDeletePlaylistDialog = true }
+                                        .testTag("delete_playlist_button"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.DeleteOutline,
+                                        contentDescription = "Delete Playlist",
+                                        tint = appColors.textMuted,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Column(Modifier.align(Alignment.BottomStart).padding(horizontal = 24.dp, vertical = 12.dp)) {
+                            Text("PLAYLIST", color = appColors.textMuted, style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                text = playlist.title,
+                                color = appColors.textPrimary,
+                                style = MaterialTheme.typography.headlineLarge,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("playlist_profile_name")
+                            )
+                            if (playlist.description.isNotBlank()) {
+                                Text(
+                                    text = playlist.description,
+                                    color = appColors.textSecondary,
+                                    style = MaterialTheme.typography.titleMedium,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.padding(top = 2.dp)
+                                )
+                            }
+                            Text(
+                                text = "${tracks.size} tracks",
+                                color = appColors.primaryAccent,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                                modifier = Modifier.padding(top = 4.dp)
+                            )
+                        }
                     }
+                }
 
-                    Text(
-                        text = "${tracks.size} tracks",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = appColors.primaryAccent,
-                            fontWeight = FontWeight.SemiBold
-                        ),
-                        modifier = Modifier.padding(top = 6.dp)
-                    )
-
-                    if (!pinPlaybackActions) {
-                        Spacer(modifier = Modifier.height(18.dp))
-
-                        // ACTION BUTTONS (PLAY ALL & SHUFFLE)
+                if (!pinPlaybackActions) {
+                    item("portrait_playlist_actions") {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 24.dp, vertical = 14.dp),
                             horizontalArrangement = Arrangement.Center
                         ) {
                             Button(
@@ -498,8 +553,6 @@ fun PlaylistDetailScreen(
                                 Text("SHUFFLE", color = appColors.textPrimary, fontWeight = FontWeight.Bold)
                             }
                         }
-
-                        Spacer(modifier = Modifier.height(20.dp))
                     }
                 }
             }

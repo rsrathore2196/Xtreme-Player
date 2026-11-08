@@ -32,6 +32,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.Easing
+import androidx.compose.animation.core.FastOutLinearInEasing
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
@@ -329,7 +332,7 @@ fun ExpandedPlayerScreen(
     }
     var isFlipped by remember(track.id) { mutableStateOf(false) }
     var showLyrics by remember(track.id) { mutableStateOf(false) }
-    val lyricsArtworkDurationMs = if (showLyrics) LYRICS_ENTRANCE_MS else LYRICS_ARTWORK_TRANSITION_MS
+    val lyricsArtworkDurationMs = if (showLyrics) LYRICS_ENTRANCE_MS else LYRICS_EXIT_MS
     val lyricsContentTransition = rememberPlayerLyricsTransition(showLyrics, isScreenVisible)
     val lyricsContentAnimating = lyricsContentTransition.currentState != showLyrics ||
         lyricsContentTransition.isRunning
@@ -642,7 +645,7 @@ fun ExpandedPlayerScreen(
                                             modifier = Modifier.size(44.dp)
                                                 .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                     animatedVisibilityScope = this@AnimatedContent,
-                                                    boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) })
+                                                    boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = LyricsSharedEasing) })
                                                 .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK,
                                                     track.id, 10.dp, active = isLyricsActive == showLyrics, ready = morphArtworkReady)
                                                 .clip(RoundedCornerShape(10.dp)))
@@ -713,7 +716,7 @@ fun ExpandedPlayerScreen(
                                             .aspectRatio(1f)
                                             .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                 animatedVisibilityScope = this@AnimatedContent,
-                                                boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) })
+                                                boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = LyricsSharedEasing) })
                                             .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK, track.id,
                                                 22.dp, active = isLyricsActive == showLyrics,
                                                 presentation = if (showArtworkFront) 0 else 2,
@@ -1530,7 +1533,7 @@ fun ExpandedPlayerScreen(
                                     .sharedElement(
                                         rememberSharedContentState("lyrics_artwork_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = LyricsSharedEasing) }
                                     ).playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK,
                                         track.id, 12.dp, active = isLyricsActive == showLyrics, ready = morphArtworkReady)
                                         .clip(RoundedCornerShape(12.dp))
@@ -1538,7 +1541,7 @@ fun ExpandedPlayerScreen(
                                 Column(Modifier.weight(1f).sharedBounds(
                                         rememberSharedContentState("lyrics_metadata_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = LyricsSharedEasing) }
                                 )) {
                                     Text(track.cleanTitle, color = appColors.textPrimary,
                                         fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1,
@@ -1562,7 +1565,7 @@ fun ExpandedPlayerScreen(
                                     .sharedElement(
                                         rememberSharedContentState("lyrics_favorite_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = LyricsSharedEasing) }
                                     )
                                     .liquidGlassButton(
                                         colors = appColors,
@@ -1637,7 +1640,7 @@ fun ExpandedPlayerScreen(
                                             .sharedElement(
                                                 rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                 animatedVisibilityScope = this@AnimatedContent,
-                                                boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
+                                                boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = LyricsSharedEasing) }
                                             )
                                             .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK,
                                                 track.id, 0.dp, active = isLyricsActive == showLyrics,
@@ -1664,7 +1667,7 @@ fun ExpandedPlayerScreen(
                                             .sharedElement(
                                                 rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                 animatedVisibilityScope = this@AnimatedContent,
-                                                boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
+                                                boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = LyricsSharedEasing) }
                                             )
                                             .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK,
                                                 track.id, 24.dp, active = isLyricsActive == showLyrics,
@@ -1808,7 +1811,7 @@ fun ExpandedPlayerScreen(
                                 Column(modifier = Modifier.weight(1f).sharedBounds(
                                         rememberSharedContentState("lyrics_metadata_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = LyricsSharedEasing) }
                                 )) {
                                     Text(
                                         text = track.cleanTitle,
@@ -1847,7 +1850,7 @@ fun ExpandedPlayerScreen(
                                     .sharedElement(
                                         rememberSharedContentState("lyrics_favorite_${track.id}"),
                                         animatedVisibilityScope = this@AnimatedContent,
-                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = FastOutSlowInEasing) }
+                                        boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = LyricsSharedEasing) }
                                     )
                                     .liquidGlassButton(
                                         colors = appColors,
@@ -1888,8 +1891,8 @@ fun ExpandedPlayerScreen(
 
             AnimatedVisibility(
                 visible = showLyrics,
-                enter = fadeIn(tween(260, easing = FastOutSlowInEasing)) + expandVertically(tween(LYRICS_ENTRANCE_MS, easing = FastOutSlowInEasing)),
-                exit = fadeOut(tween(180)) + shrinkVertically(tween(LYRICS_EXPANSION_MS))
+                enter = fadeIn(tween(260, easing = LyricsSharedEasing)) + expandVertically(tween(LYRICS_ENTRANCE_MS, easing = LyricsSharedEasing)),
+                exit = fadeOut(tween(280, easing = LyricsSharedEasing)) + shrinkVertically(tween(LYRICS_EXIT_MS, easing = LyricsSharedEasing))
             ) {
                 Row(
                     modifier = Modifier
@@ -2983,9 +2986,10 @@ private fun PlayerTimelineSection(
     }
 }
 
-private const val LYRICS_ENTRANCE_MS = 480
-private const val LYRICS_ARTWORK_TRANSITION_MS = 420
+private const val LYRICS_ENTRANCE_MS = 460
+private const val LYRICS_EXIT_MS = 440
 private const val LYRICS_EXPANSION_MS = 420
+private val LyricsSharedEasing: Easing = CubicBezierEasing(0.22f, 0.0f, 0.18f, 1.0f)
 
 /** One transition owns foreground admission until its existing content/shared bounds settle. */
 @Composable
@@ -3001,13 +3005,36 @@ internal fun rememberPlayerLyricsTransition(lyricsVisible: Boolean, active: Bool
     return transition
 }
 
-/** Keep the content fade alive for the entire shared artwork/header journey. */
-private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): ContentTransform =
-    (fadeIn(tween(
-        durationMillis = if (targetState) LYRICS_ENTRANCE_MS - 160 else LYRICS_ARTWORK_TRANSITION_MS,
-        delayMillis = if (targetState) 160 else 0,
-        easing = FastOutSlowInEasing
-    )) togetherWith fadeOut(tween(220, easing = FastOutSlowInEasing))).using(null)
+/** Keep the content fade alive and smoothly synchronized for the entire shared artwork/header journey. */
+private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): ContentTransform {
+    return if (targetState) {
+        fadeIn(
+            tween(
+                durationMillis = LYRICS_ENTRANCE_MS - 140,
+                delayMillis = 140,
+                easing = LyricsSharedEasing
+            )
+        ) togetherWith fadeOut(
+            tween(
+                durationMillis = 240,
+                easing = FastOutLinearInEasing
+            )
+        )
+    } else {
+        fadeIn(
+            tween(
+                durationMillis = LYRICS_EXIT_MS - 100,
+                delayMillis = 100,
+                easing = LyricsSharedEasing
+            )
+        ) togetherWith fadeOut(
+            tween(
+                durationMillis = 320,
+                easing = LyricsSharedEasing
+            )
+        )
+    }.using(null)
+}
 
 /** Kept next to the player menu so source selection never becomes a DSP setting. */
 @Composable
