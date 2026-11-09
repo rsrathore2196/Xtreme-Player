@@ -305,9 +305,11 @@ object StreamingAddons {
                     }
                     matched
                 }
-                val tiers = listOf("hi_res", "LOSSLESS", "lossless", "high")
+                // Addons are a lossless-only source at MAX quality. Try the
+                // explicit tiers, but never request generic HIGH or accept a
+                // lossy response as a fallback.
+                val tiers = listOf("hi_res", "LOSSLESS", "CD")
                 val tried = mutableSetOf<HttpUrl>()
-                var lossyFallback: MusicTrack? = null
                 for (tier in tiers) for (candidate in candidates) {
                     val id = providerId(base, candidate.id) ?: continue
                     suspend fun request(atmos: Boolean): MusicTrack? {
@@ -323,13 +325,13 @@ object StreamingAddons {
                     val resolved = (request(policy.allowsDolbyAtmos) ?:
                         if (policy.allowsDolbyAtmos) request(false) else null) ?: continue
                     if (!stillEnabled(context, source, policy)) return@withTimeoutOrNull null
-                    if (resolved.audioUrl !in rejected) {
-                        if (resolved.isLossless || transports[resolved.audioUrl]?.atmos == true) { completed = true; return@withTimeoutOrNull resolved }
-                        if (lossyFallback == null || resolved.bitrateKbps > lossyFallback.bitrateKbps) lossyFallback = resolved
+                    if (resolved.audioUrl !in rejected &&
+                        (resolved.isLossless || transports[resolved.audioUrl]?.atmos == true)) {
+                        completed = true
+                        return@withTimeoutOrNull resolved
                     }
                 }
                 completed = true
-                if (lossyFallback != null) return@withTimeoutOrNull lossyFallback
                 PlaybackDiagnostics.record(track.id, policy, PlaybackSourceKind.ADDON, PlaybackDiagnostics.Stage.RESOLUTION,
                     if (candidates.isEmpty()) PlaybackDiagnostics.Reason.NO_MATCH else PlaybackDiagnostics.Reason.NO_FORMAT, source.id)
                 null
@@ -349,6 +351,12 @@ object StreamingAddons {
         if (!policy.maximum) return null
         val root = JSONObject(body)
         val value = root.optJSONObject("stream") ?: root.optJSONObject("data") ?: root
+        val preview = value.opt("sample")?.toString()?.lowercase(Locale.ROOT) in setOf("true", "1") ||
+            value.optBoolean("isPreview", false) || value.optBoolean("preview", false)
+        if (preview) return null
+        val duration = value.optLong("duration", 0L)
+        val fullDuration = value.optLong("trackDuration", value.optLong("fullDuration", 0L))
+        if (duration > 0L && fullDuration > 0L && duration + 5L < fullDuration) return null
         val encrypted = value.opt("encrypted")
         if (encrypted != null && encrypted != JSONObject.NULL && encrypted.toString().lowercase(Locale.ROOT) !in setOf("false", "0", "none", "")) return null
         val format = value.optString("format").lowercase(Locale.ROOT)
