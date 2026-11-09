@@ -308,7 +308,7 @@ object StreamingAddons {
                 // Addons are a lossless-only source at MAX quality. Try the
                 // explicit tiers, but never request generic HIGH or accept a
                 // lossy response as a fallback.
-                val tiers = listOf("hi_res", "HI_RES_LOSSLESS", "LOSSLESS", "CD")
+                val tiers = listOf("hi_res", "LOSSLESS", "CD")
                 val tried = mutableSetOf<HttpUrl>()
                 for (tier in tiers) for (candidate in candidates) {
                     val id = providerId(base, candidate.id) ?: continue
