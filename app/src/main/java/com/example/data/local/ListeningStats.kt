@@ -75,9 +75,9 @@ internal suspend fun ListeningStatsDao.migrateSongIdentity(row: ListeningTotal, 
 enum class ListeningPeriod(val label: String) {
     WEEKLY("Weekly"), MONTHLY("Monthly"), YEARLY("Yearly"), LIFETIME("Lifetime");
     fun bounds(today: LocalDate): Pair<String, String> = when (this) {
-        WEEKLY -> today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).let { it.toString() to it.plusWeeks(1).toString() }
-        MONTHLY -> YearMonth.from(today).let { it.toString() to it.plusMonths(1).toString() }
-        YEARLY -> "${today.year}-01" to "${today.year + 1}-01"
+        WEEKLY -> today.minusDays(6).toString() to today.plusDays(1).toString()
+        MONTHLY -> today.minusDays(29).toString() to today.plusDays(1).toString()
+        YEARLY -> today.minusDays(364).toString() to today.plusDays(1).toString()
         LIFETIME -> "0000-01" to "9999-12"
     }
 }

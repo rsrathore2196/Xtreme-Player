@@ -93,9 +93,9 @@ class ListeningStatsTest {
         assertEquals(ListeningDay(30_000, 1), out.last().days["2026-11-01"])
     }
     @Test fun calendarRangesCrossMonthsAndIsrcIdentityDoesNotMergeAmbiguousSongs() {
-        assertEquals("2026-09-28" to "2026-10-05", ListeningPeriod.WEEKLY.bounds(LocalDate.of(2026, 10, 1)))
-        assertEquals("2026-10" to "2026-11", ListeningPeriod.MONTHLY.bounds(LocalDate.of(2026, 10, 26)))
-        assertEquals("2026-01" to "2027-01", ListeningPeriod.YEARLY.bounds(LocalDate.of(2026, 10, 26)))
+        assertEquals("2026-09-25" to "2026-10-02", ListeningPeriod.WEEKLY.bounds(LocalDate.of(2026, 10, 1)))
+        assertEquals("2026-09-27" to "2026-10-27", ListeningPeriod.MONTHLY.bounds(LocalDate.of(2026, 10, 26)))
+        assertEquals("2025-10-27" to "2026-10-27", ListeningPeriod.YEARLY.bounds(LocalDate.of(2026, 10, 26)))
         assertNotEquals(ListeningClock.songKey(song), ListeningClock.songKey(song.copy(id = "other")))
         assertEquals(ListeningClock.songKey(song.copy(isrc = "USABC2600001")),
             ListeningClock.songKey(song.copy(id = "other", isrc = "US-ABC-26-00001")))

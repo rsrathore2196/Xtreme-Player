@@ -33,8 +33,14 @@ class ListeningCalendarRolloverTest {
             val track = MusicTrack("yt_abcdefghijk", "Song", "Artist", "Album", 120_000, "", "")
             val observed = Channel<Long>(Channel.UNLIMITED)
             var collector: Job? = null
+            val oldDate = when (period) {
+                ListeningPeriod.WEEKLY -> date.minusDays(6)
+                ListeningPeriod.MONTHLY -> date.minusDays(29)
+                ListeningPeriod.YEARLY -> date.minusDays(364)
+                else -> date
+            }
             try {
-                repo.record(ListeningSnapshot("old", track, mapOf(date.toString() to ListeningDay(60_000, 1)), 60_000, true))
+                repo.record(ListeningSnapshot("old", track, mapOf(oldDate.toString() to ListeningDay(60_000, 1)), 60_000, true))
                 repo.record(ListeningSnapshot("new", track, mapOf(next.toString() to ListeningDay(90_000, 1)), 90_000, true))
                 withTimeout(5_000) { repo.flush() }
                 val lifetime = repo.summary(ListeningPeriod.LIFETIME)
