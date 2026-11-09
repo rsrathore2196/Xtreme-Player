@@ -67,7 +67,11 @@ object StreamingAddons {
         if (quality != null) builder.setQueryParameter("quality", quality).setQueryParameter("atmos", "none")
         return builder.build()
     }
-    private suspend fun get(url: HttpUrl): String = permits.withPermit {
+    private const val MAX_MANIFEST_BYTES = 256 * 1024L
+    private const val MAX_SEARCH_BYTES = 1024 * 1024L
+    private const val MAX_STREAM_BYTES = 4 * 1024 * 1024L
+
+    private suspend fun get(url: HttpUrl, responseType: String, maxBytes: Long): String = permits.withPermit {
         val call = client.newCall(Request.Builder().url(url).header("X-LW-Intent", "stream")
             .header("User-Agent", "XtremePlayer/${com.example.BuildConfig.VERSION_NAME}").build())
         suspendCancellableCoroutine { continuation ->
@@ -81,10 +85,17 @@ object StreamingAddons {
                         response.use {
                             if (!it.isSuccessful) throw IOException("Add-on returned HTTP ${it.code}")
                             val body = it.body ?: throw IOException("Empty add-on response")
-                            // Bounded even when a server omits Content-Length.
+                            val declaredLength = body.contentLength()
+                            val contentType = body.contentType()?.toString() ?: "unknown"
+                            if (declaredLength > maxBytes) {
+                                throw IOException("Add-on $responseType response exceeds the ${maxBytes / 1024} KB limit (Content-Length: $declaredLength; Content-Type: $contentType)")
+                            }
+                            // Read at most limit + 1 bytes, including chunked/unknown-length responses.
                             val source = body.source()
-                            source.request(262_145L)
-                            if (source.buffer.size > 262_144L) throw IOException("Add-on response is too large")
+                            source.request(maxBytes + 1L)
+                            if (source.buffer.size > maxBytes) {
+                                throw IOException("Add-on $responseType response exceeds the ${maxBytes / 1024} KB limit (received more than $maxBytes bytes; Content-Type: $contentType)")
+                            }
                             val result = source.readUtf8()
                             if (continuation.isActive) continuation.resume(result)
                         }
@@ -101,7 +112,7 @@ object StreamingAddons {
         lock.lock()
         try {
             configurations[base]?.takeIf { it.expires > System.currentTimeMillis() }?.let { return@withContext it }
-            val body = get(endpoint(base, "manifest.json"))
+            val body = get(endpoint(base, "manifest.json"), "manifest", MAX_MANIFEST_BYTES)
             withContext(AppDispatchers.CpuBounded) {
                 val root = JSONObject(body)
                 require(root.optString("name").isNotBlank() || root.optString("id").isNotBlank()) {
@@ -192,7 +203,7 @@ object StreamingAddons {
     }
     private suspend fun search(base: String, name: String, query: String, ceiling: AudioQualityCeiling,
         tier: String = quality(ceiling)): List<MusicTrack> {
-        val body = get(configuredEndpoint(base, "search", query.trim(), tier))
+        val body = get(configuredEndpoint(base, "search", query.trim(), tier), "search", MAX_SEARCH_BYTES)
         return withContext(AppDispatchers.CpuBounded) {
             val rows = array(body)
             (0 until minOf(rows.length(), 20)).mapNotNull { index ->
@@ -302,7 +313,7 @@ object StreamingAddons {
                     suspend fun request(atmos: Boolean): MusicTrack? {
                         val url = configuredEndpoint(base, "stream", tier = tier, dolbyAtmos = atmos).newBuilder().addPathSegment(id).build()
                         if (!tried.add(url)) return null
-                        val body = try { get(url) } catch (e: CancellationException) { throw e }
+                        val body = try { get(url, "stream", MAX_STREAM_BYTES) } catch (e: CancellationException) { throw e }
                             catch (_: IOException) { return null }
                         return withContext(AppDispatchers.CpuBounded) {
                             try { parseStream(body, base, track, candidate, policy.copy(dolbyAtmos = atmos), source.id) }
