@@ -267,11 +267,10 @@ class StreamingAddonIntegrationTest {
         assertEquals(2, requests.count { it.contains("stream/right") })
     }
 
-    @Test fun manualUpgradeRechecksCachedLossyFallbackWhileKeepingSuccessfulLosslessCache() = runBlocking {
+    @Test fun lossyPreviewIsRejectedAndManualRetryCanResolveTheFullLosslessTrack() = runBlocking {
         enable()
-        stream = { """{"url":"$base/temporary.m4a","codec":"aac","bitrate":320000}""" }
-        val first = StreamingAddons.resolve(context, song, maximum)!!
-        assertFalse(first.isLossless)
+        stream = { """{"url":"$base/preview.mp3","codec":"mp3","format":"mp3","sample":true,"bitrate":128000}""" }
+        assertNull(StreamingAddons.resolve(context, song, maximum))
         val previous = requests.size
         stream = { """{"url":"$base/now-available.flac","format":"flac","bitrate":900000}""" }
         val explicit = maximum.copy(enhancer = true, requestTrackId = song.id, requestRevision = 1)
