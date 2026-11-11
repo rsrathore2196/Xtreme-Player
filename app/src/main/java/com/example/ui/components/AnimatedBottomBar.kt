@@ -233,12 +233,14 @@ fun AnimatedBottomBar(
                     val selectionEffect = remember(motion, compactProgress) {
                         derivedStateOf { motion.indicatorAlpha.value * (1f - (compactProgress?.value ?: 0f).coerceIn(0f, 1f)) }
                     }
-                    val onClick = {
-                        // Pointer-down/drag selection already navigated. A normal
-                        // click on the active tab or a semantics/key click still works.
-                        if (!pointerHandled.value) {
-                            BackgroundWorkCoordinator.cancelNonEssentialWork()
-                            onTabSelected(item.index)
+                    val onClick = remember(item.index, onTabSelected) {
+                        {
+                            // Pointer-down/drag selection already navigated. A normal
+                            // click on the active tab or a semantics/key click still works.
+                            if (!pointerHandled.value) {
+                                BackgroundWorkCoordinator.cancelNonEssentialWork()
+                                onTabSelected(item.index)
+                            }
                         }
                     }
                     Box(

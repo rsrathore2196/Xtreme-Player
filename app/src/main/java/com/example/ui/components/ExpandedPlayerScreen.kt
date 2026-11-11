@@ -2980,22 +2980,27 @@ private fun PlayerTimelineSection(
         if (isEffectivelyDark) Color.White else Color.Black
     } else if (isEffectivelyDark) Color.White.copy(alpha = 0.65f) else Color.Black.copy(alpha = 0.65f)
 
+    val seekStarted = remember { { isUserScrubbing = true } }
+    val seekProgress = remember { { fraction: Float -> scrubPosition = fraction } }
+    val seekFinished = remember(trackDuration, onSeekTo) {
+        { fraction: Float ->
+            val seekPos = (fraction * trackDuration).toLong()
+            livePosition = seekPos
+            onSeekTo(seekPos)
+            isUserScrubbing = false
+        }
+    }
+    val currentSeconds = currentPosition / 1000L
+    val formattedCurrentTime = remember(currentSeconds) { formatTime(currentPosition) }
+    val formattedDuration = remember(trackDuration) { formatTime(trackDuration) }
+
     Column(modifier = modifier.fillMaxWidth().graphicsLayer()) {
         WavyScrubberBar(
             progress = sliderValue,
             isPlaying = isPlaying,
-            onSeekStarted = {
-                isUserScrubbing = true
-            },
-            onSeekProgress = { fraction ->
-                scrubPosition = fraction
-            },
-            onSeekFinished = { fraction ->
-                val seekPos = (fraction * trackDuration).toLong()
-                livePosition = seekPos
-                onSeekTo(seekPos)
-                isUserScrubbing = false
-            },
+            onSeekStarted = seekStarted,
+            onSeekProgress = seekProgress,
+            onSeekFinished = seekFinished,
             isDark = isEffectivelyDark,
             barColor = liveProgressColor,
             inactiveBarColor = inactiveProgressColor,
@@ -3012,7 +3017,7 @@ private fun PlayerTimelineSection(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = formatTime(currentPosition),
+                text = formattedCurrentTime,
                 style = MaterialTheme.typography.bodySmall.copy(
                     color = timeLabelColor,
                     fontSize = 12.sp
@@ -3030,7 +3035,7 @@ private fun PlayerTimelineSection(
             }
 
             Text(
-                text = formatTime(trackDuration),
+                text = formattedDuration,
                 style = MaterialTheme.typography.bodySmall.copy(
                     color = timeLabelColor,
                     fontSize = 12.sp

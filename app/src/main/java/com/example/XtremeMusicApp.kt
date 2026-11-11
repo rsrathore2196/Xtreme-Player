@@ -120,6 +120,7 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
     override fun onCreate() {
         super.onCreate()
         _instance = this
+        com.example.performance.DisplayRefreshRatePolicy.applyAdaptiveRefreshRatePolicy()
         // Coil remains a lazy singleton; the first visible image owns cache creation.
         coil.Coil.setImageLoader(asynchronousImageLoader)
         // Registration only: the client is initialized by an actual request.

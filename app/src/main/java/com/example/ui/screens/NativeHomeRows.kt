@@ -51,7 +51,7 @@ internal fun QuickPicksGrid(tracks: List<MusicTrack>, state: LazyListState, play
         val pageWidth = (maxWidth - 40.dp).coerceAtLeast(200.dp)
         LazyRow(state = state, flingBehavior = rememberSnapFlingBehavior(state), modifier = Modifier.testTag("native_quick_picks_grid"),
             contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(pages, key = { it.first().id }) { page ->
+            items(pages, key = { it.firstOrNull()?.id ?: it.hashCode().toString() }, contentType = { "quick_picks_page" }) { page ->
                 VisibleItemArtwork(state, page.first().id) {
                     Column(Modifier.width(pageWidth), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         repeat(3) { row ->
@@ -78,7 +78,7 @@ internal fun NativeMusicVideoRow(items: List<ServerHomeItem.Song>, queue: List<M
     val pixels = with(LocalDensity.current) { IntSize(224.dp.roundToPx(), 126.dp.roundToPx()) }
     LazyRow(state = state, contentPadding = PaddingValues(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.testTag("native_music_video_row")) {
-        items(items, key = { it.key }) { item ->
+        items(items, key = { it.key }, contentType = { "native_music_video" }) { item ->
             val selected = item.track.id == playing
             val title = homeTrackTitle(item.track)
             VisibleItemArtwork(state, item.key) {

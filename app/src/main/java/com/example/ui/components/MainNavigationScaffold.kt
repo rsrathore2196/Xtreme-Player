@@ -157,11 +157,13 @@ fun MainNavigationScaffold(
     // The three primary pages stay mounted. Visibility still controls optional
     // data preparation and effects; tab motion does not reconstruct their trees.
     val previousTabIndex = remember { mutableIntStateOf(selectedTabIndex) }
-    val selectTab: (Int) -> Unit = { index ->
-        if (index == 2) viewModel.retryLocalLibrary()
-        if (selectedTabIndex != index) {
-            com.example.performance.BackgroundWorkCoordinator.navigationInteraction()
-            selectedTabIndex = index
+    val selectTab: (Int) -> Unit = remember(viewModel) {
+        { index ->
+            if (index == 2) viewModel.retryLocalLibrary()
+            if (selectedTabIndex != index) {
+                com.example.performance.BackgroundWorkCoordinator.navigationInteraction()
+                selectedTabIndex = index
+            }
         }
     }
     // Retarget a single cancellable page animation on rapid taps. Keep optional
@@ -332,6 +334,12 @@ fun MainNavigationScaffold(
                 CompositionLocalProvider(LocalVisualEffectsActive provides (!playerCoversContent && catalogDetail == null)) {
                 // If playlist detail is open, show it with a smooth animated transition
                 val currentPlaylist = selectedPlaylistWithTracks
+                val onHomeOpenArtist = remember(viewModel) { { artist: com.example.data.repository.CatalogArtist -> viewModel.catalogBrowser.open(com.example.data.repository.CatalogDestination.Artist(artist)) } }
+                val onHomeTrackClick = remember(viewModel) { { track: com.example.data.model.MusicTrack, queue: List<com.example.data.model.MusicTrack> -> viewModel.playTrack(track, queue) } }
+                val onHomeToggleFavorite = remember(viewModel) { { track: com.example.data.model.MusicTrack -> viewModel.toggleLike(track) } }
+                val onHomeOpenSettings = remember(selectTab) { { selectTab(3) } }
+                val onHomePlayInfiniteRadio = remember(viewModel) { { seed: com.example.data.model.MusicTrack? -> viewModel.playInfiniteRadio(seed) } }
+                val onHomeAddToQueue = remember(viewModel) { { track: com.example.data.model.MusicTrack -> viewModel.addToQueue(track) } }
 
                 run {
                     val tabContent: @Composable (Int) -> Unit = { tabIndex ->
@@ -341,13 +349,13 @@ fun MainNavigationScaffold(
                                 player = playerUiState,
                                 isVisible = homeIsVisible,
                                 listState = homeListState,
-                                onOpenArtist = { viewModel.catalogBrowser.open(com.example.data.repository.CatalogDestination.Artist(it)) },
+                                onOpenArtist = onHomeOpenArtist,
                                 onOpenCatalog = viewModel.catalogBrowser::open,
-                                onTrackClick = { track, queue -> viewModel.playTrack(track, queue) },
-                                onToggleFavorite = { track -> viewModel.toggleLike(track) },
-                                onOpenSettings = { selectTab(3) },
-                                onPlayInfiniteRadio = { seed -> viewModel.playInfiniteRadio(seed) },
-                                onAddToQueue = { track -> viewModel.addToQueue(track) },
+                                onTrackClick = onHomeTrackClick,
+                                onToggleFavorite = onHomeToggleFavorite,
+                                onOpenSettings = onHomeOpenSettings,
+                                onPlayInfiniteRadio = onHomePlayInfiniteRadio,
+                                onAddToQueue = onHomeAddToQueue,
                                 prepareCoreTabs = viewModel::prepareStartupTabs
                             )
                             1 -> {
@@ -497,14 +505,22 @@ fun MainNavigationScaffold(
 
                 // Floating Overlaid Container (MiniPlayer + Floating Pill Bottom Bar)
                 // Merges with the tab screen seamlessly and floats elevated above the content
-                val onDockTabSelected: (Int) -> Unit = { index ->
-                    AppHaptics.performTap(context)
-                    scrollDock.expand()
-                    isSettingsSubpageOpen = false
-                    selectTab(index)
-                    viewModel.catalogBrowser.close()
-                    viewModel.closePlaylist()
+                val onDockTabSelected: (Int) -> Unit = remember(selectTab, viewModel, scrollDock, context) {
+                    { index ->
+                        AppHaptics.performTap(context)
+                        scrollDock.expand()
+                        isSettingsSubpageOpen = false
+                        selectTab(index)
+                        viewModel.catalogBrowser.close()
+                        viewModel.closePlaylist()
+                    }
                 }
+                val onMiniPlayPause = remember(viewModel) { { viewModel.togglePlayPause() } }
+                val onMiniSkipNext = remember(viewModel) { { viewModel.skipNext() } }
+                val onMiniSkipPrevious = remember(viewModel) { { viewModel.skipPrevious() } }
+                val onMiniClick = remember { { isPlayerExpanded = true } }
+                val miniPositionProvider = remember(viewModel) { { viewModel.currentPosition } }
+
                 AdaptiveBottomControls(
                     landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE,
                     collapseProgress = dockProgress,
@@ -543,11 +559,11 @@ fun MainNavigationScaffold(
                             MiniPlayer(
                                 modifier = Modifier.playerMiniTransition(playerMotion),
                                 uiState = playerUiState.copy(currentTrack = playerVisualTrack),
-                                onPlayPauseClick = { viewModel.togglePlayPause() },
-                                onSkipNext = { viewModel.skipNext() },
-                                onSkipPrevious = { viewModel.skipPrevious() },
-                                onClick = { isPlayerExpanded = true },
-                                currentPositionProvider = { viewModel.currentPosition },
+                                onPlayPauseClick = onMiniPlayPause,
+                                onSkipNext = onMiniSkipNext,
+                                onSkipPrevious = onMiniSkipPrevious,
+                                onClick = onMiniClick,
+                                currentPositionProvider = miniPositionProvider,
                                 compactProgress = dockProgress,
                                 compact = scrollDock.isCompact
                             )
@@ -599,30 +615,48 @@ fun MainNavigationScaffold(
             val currentLyrics by viewModel.currentLyrics.collectAsStateWithLifecycle()
             val availableAudioDevices by viewModel.availableAudioDevices.collectAsStateWithLifecycle()
             val expandedPlayer by viewModel.playbackPresentationState.collectAsStateWithLifecycle()
+            val onExpandedMinimize = remember { { isPlayerExpanded = false } }
+            val onExpandedPlayPause = remember(viewModel) { { viewModel.togglePlayPause() } }
+            val onExpandedSeekTo = remember(viewModel) { { pos: Long -> viewModel.seekTo(pos) } }
+            val onExpandedSkipNext = remember(viewModel) { { viewModel.skipNext() } }
+            val onExpandedSkipPrevious = remember(viewModel) { { viewModel.skipPrevious() } }
+            val onExpandedToggleShuffle = remember(viewModel) { { viewModel.toggleShuffle() } }
+            val onExpandedToggleRepeat = remember(viewModel) { { viewModel.toggleRepeat() } }
+            val onExpandedToggleFavorite = remember(viewModel) { { track: com.example.data.model.MusicTrack -> viewModel.toggleLike(track) } }
+            val onExpandedOpenQueue = remember { { isQueueOpen = true } }
+            val onExpandedOpenEqualizer = remember { { isEqualizerOpen = true } }
+            val onExpandedAddToPlaylist = remember { { track: com.example.data.model.MusicTrack -> trackToAddToPlaylist = track } }
+            val onExpandedAddToQueue = remember(viewModel) { { track: com.example.data.model.MusicTrack -> viewModel.addToQueue(track) } }
+            val onExpandedRetryLyrics = remember(viewModel) { { viewModel.retryLyrics() } }
+            val onExpandedSelectAudioDevice = remember(viewModel) { { deviceId: Int -> viewModel.selectAudioOutputDevice(deviceId) } }
+            val expandedPositionProvider = remember(viewModel) { { viewModel.currentPosition } }
+            val expandedTrackDurationProvider = remember(viewModel) { { viewModel.trackDuration.value } }
+            val expandedBufferedPositionProvider = remember(viewModel) { { viewModel.bufferedPosition.value } }
+
             ExpandedPlayerScreen(
                 uiState = expandedPlayer.copy(currentTrack = playerVisualTrack ?: expandedPlayer.currentTrack),
-                onMinimize = { isPlayerExpanded = false },
-                onPlayPause = { viewModel.togglePlayPause() },
-                onSeekTo = { viewModel.seekTo(it) },
-                onSkipNext = { viewModel.skipNext() },
-                onSkipPrevious = { viewModel.skipPrevious() },
-                onToggleShuffle = { viewModel.toggleShuffle() },
-                onToggleRepeat = { viewModel.toggleRepeat() },
-                onToggleFavorite = { track -> viewModel.toggleLike(track) },
-                onOpenQueue = { isQueueOpen = true },
-                onOpenEqualizer = { isEqualizerOpen = true },
-                onAddToPlaylist = { track -> trackToAddToPlaylist = track },
-                onAddToQueue = { track -> viewModel.addToQueue(track) },
+                onMinimize = onExpandedMinimize,
+                onPlayPause = onExpandedPlayPause,
+                onSeekTo = onExpandedSeekTo,
+                onSkipNext = onExpandedSkipNext,
+                onSkipPrevious = onExpandedSkipPrevious,
+                onToggleShuffle = onExpandedToggleShuffle,
+                onToggleRepeat = onExpandedToggleRepeat,
+                onToggleFavorite = onExpandedToggleFavorite,
+                onOpenQueue = onExpandedOpenQueue,
+                onOpenEqualizer = onExpandedOpenEqualizer,
+                onAddToPlaylist = onExpandedAddToPlaylist,
+                onAddToQueue = onExpandedAddToQueue,
                 lyrics = currentLyrics,
-                onRetryLyrics = { viewModel.retryLyrics() },
+                onRetryLyrics = onExpandedRetryLyrics,
                 onLyricsVisibilityChanged = viewModel::setLyricsVisible,
                 isScreenVisible = isPlayerExpanded,
                 availableAudioDevices = availableAudioDevices,
-                onSelectAudioDevice = { deviceId -> viewModel.selectAudioOutputDevice(deviceId) },
+                onSelectAudioDevice = onExpandedSelectAudioDevice,
                 playbackPositionFlow = viewModel.playbackPosition,
-                currentPositionProvider = { viewModel.currentPosition },
-                trackDurationProvider = { viewModel.trackDuration.value },
-                bufferedPositionProvider = { viewModel.bufferedPosition.value }
+                currentPositionProvider = expandedPositionProvider,
+                trackDurationProvider = expandedTrackDurationProvider,
+                bufferedPositionProvider = expandedBufferedPositionProvider
             )
         }
 
@@ -701,6 +735,12 @@ private fun PlayerPresentationHost(viewModel: PlayerViewModel,
     content(state)
 }
 
+private val DEFAULT_BOTTOM_BAR_TABS = listOf(
+    AnimatedBottomBarItem(0, "Home", Icons.Default.Home, Icons.Outlined.Home),
+    AnimatedBottomBarItem(1, "Search", Icons.Default.Search, Icons.Outlined.Search),
+    AnimatedBottomBarItem(2, "Library", Icons.Default.LibraryMusic, Icons.Outlined.LibraryMusic)
+)
+
 /**
  * Floating Pill Navigation Bar
  * - Rounded from left and right sides (CircleShape / Pill).
@@ -718,18 +758,10 @@ fun FloatingPillBottomBar(
     compactProgress: State<Float>? = null,
     compact: Boolean = false
 ) {
-    val items = remember {
-        listOf(
-            AnimatedBottomBarItem(0, "Home", Icons.Default.Home, Icons.Outlined.Home),
-            AnimatedBottomBarItem(1, "Search", Icons.Default.Search, Icons.Outlined.Search),
-            AnimatedBottomBarItem(2, "Library", Icons.Default.LibraryMusic, Icons.Outlined.LibraryMusic)
-        )
-    }
-
     AnimatedBottomBar(
         selectedTabIndex = selectedTabIndex,
         onTabSelected = onTabSelected,
-        items = items,
+        items = DEFAULT_BOTTOM_BAR_TABS,
         modifier = modifier,
         ambientGlowColor = ambientGlowColor,
         compactProgress = compactProgress,

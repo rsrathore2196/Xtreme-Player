@@ -44,7 +44,9 @@ internal fun MainTabPager(
     val parentEffectsActive = LocalVisualEffectsActive.current
     var mounted by remember { mutableStateOf(setOf(state.currentPage)) }
     LaunchedEffect(state.currentPage, state.targetPage) {
-        mounted = mounted + state.currentPage + state.targetPage
+        if (state.currentPage !in mounted || state.targetPage !in mounted) {
+            mounted = mounted + state.currentPage + state.targetPage
+        }
     }
     HorizontalPager(state = state, beyondViewportPageCount = 2, userScrollEnabled = false,
         key = { it }, modifier = Modifier.fillMaxSize()) { index ->
@@ -52,8 +54,10 @@ internal fun MainTabPager(
             derivedStateOf { !pageCovered && state.layoutInfo.visiblePagesInfo.any { it.index == index } }
         }
         val settled by remember(state, index, pageCovered) {
-            derivedStateOf { !pageCovered && state.settledPage == index && !state.isScrollInProgress &&
-                kotlin.math.abs(state.currentPageOffsetFraction) < 0.001f }
+            derivedStateOf {
+                !pageCovered && state.settledPage == index && !state.isScrollInProgress &&
+                    (state.currentPage == index && kotlin.math.abs(state.currentPageOffsetFraction) < 0.001f)
+            }
         }
         val parent = LocalLifecycleOwner.current.lifecycle
         val page = remember(parent) { RetainedPageLifecycle(parent) }

@@ -473,8 +473,9 @@ fun HomeScreenContent(
             if (hasRecent && !landscape) {
                 artworkItem(state = listState, key = "card_1_recently_played_grid", contentType = "recent_grid") {
                     val history = homeViewModel?.listeningHistoryCard?.collectAsStateWithLifecycle()?.value
-                    val pillsTracks = (history?.tracks ?: pillsCardTracks)
-                        .take(com.example.ui.viewmodel.RECENTLY_PLAYED_CARD_LIMIT)
+                    val pillsTracks = remember(history?.tracks, pillsCardTracks) {
+                        (history?.tracks ?: pillsCardTracks).take(com.example.ui.viewmodel.RECENTLY_PLAYED_CARD_LIMIT)
+                    }
                     if (pillsTracks.isEmpty()) return@artworkItem
                     Column(
                         modifier = Modifier
@@ -677,7 +678,7 @@ private fun LandscapeHomeOverview(seed: MusicTrack?, currentPlayingId: String?, 
         .testTag("landscape_home_overview")) {
         val heroWidth = ((maxWidth - 16.dp).coerceAtLeast(0.dp) / 3f)
         val recentColumns = if (maxWidth - heroWidth - 16.dp >= 412.dp) 3 else 2
-        val visibleRecents = recentTracks.take(recentColumns * 3)
+        val visibleRecents = remember(recentTracks, recentColumns) { recentTracks.take(recentColumns * 3) }
         val radio: @Composable () -> Unit = {
             InfiniteRadioHeroCard(seed, currentPlayingId, isPlaying, isLoading, onPlayRadio,
                 modifier = Modifier.width(heroWidth), isRadioSession = isRadioSession,
