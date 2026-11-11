@@ -106,6 +106,8 @@ fun SettingsScreen(
     onUiScaleChanged: (Int) -> Unit = {},
     isDynamicGlassEnabled: Boolean = true,
     onToggleDynamicGlass: (Boolean) -> Unit = {},
+    liquidGlassProfile: com.example.performance.LiquidGlassProfileSetting = com.example.performance.LiquidGlassProfileSetting.AUTO,
+    onSelectLiquidGlassProfile: (com.example.performance.LiquidGlassProfileSetting) -> Unit = {},
     onSubpageStateChanged: (Boolean) -> Unit = {},
     onNavigateBackToHome: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -252,6 +254,8 @@ fun SettingsScreen(
                             onApplyPreset = onApplyPreset,
                             isDynamicGlassEnabled = isDynamicGlassEnabled,
                             onToggleDynamicGlass = onToggleDynamicGlass,
+                            liquidGlassProfile = liquidGlassProfile,
+                            onSelectLiquidGlassProfile = onSelectLiquidGlassProfile,
                             onNestedPageChanged = { title, subtitle, back ->
                                 if (selectedCategory == SettingsCategory.THEMES_APP_UI) {
                                     subPageTitle = title; subPageSubtitle = subtitle; subPageBackAction = back

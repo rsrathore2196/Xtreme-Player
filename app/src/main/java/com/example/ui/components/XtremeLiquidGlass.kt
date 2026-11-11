@@ -38,7 +38,11 @@ import com.example.ui.components.backdrop.effects.lens
 import com.example.ui.theme.AppThemeColors
 import com.example.ui.theme.LocalAppColors
 
+import com.example.performance.LiquidGlassProfile
+import com.example.performance.LiquidGlassProfileSetting
+
 val LocalDynamicGlassEnabled = compositionLocalOf { true }
+val LocalLiquidGlassProfile = compositionLocalOf { LiquidGlassProfile.BALANCED }
 
 /**
  * One shared RenderNode source, using vendored Kyant backdrop renderer.
@@ -77,14 +81,15 @@ object XtremeLiquidGlassDefaults {
 @Composable
 fun Modifier.xtremeSharedBackdropSource(
     enabled: Boolean = true,
-    sampleScale: Float = XtremeLiquidGlassDefaults.BackdropSampleScale,
+    sampleScale: Float? = null,
     backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current
 ): Modifier {
+    val profile = LocalLiquidGlassProfile.current
     if (!enabled || !LocalDynamicGlassEnabled.current || backdrop == null ||
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
-    val processingScale = sampleScale.takeIf { it.isFinite() }?.coerceIn(0.1f, 1f)
-        ?: XtremeLiquidGlassDefaults.BackdropSampleScale
-    SideEffect { backdrop.sampleScale = processingScale }
+    val effectiveScale = (sampleScale ?: profile.backdropSampleScale).takeIf { it.isFinite() }?.coerceIn(0.1f, 1f)
+        ?: profile.backdropSampleScale
+    SideEffect { backdrop.sampleScale = effectiveScale }
     return layerBackdrop(backdrop.source)
 }
 
@@ -112,6 +117,7 @@ fun Modifier.xtremeLiquidGlassBackground(
     neutralFinish: Boolean = false,
     innerWhiteTintAlpha: Float = 0f
 ): Modifier {
+    val profile = LocalLiquidGlassProfile.current
     if (!enabled || !LocalDynamicGlassEnabled.current) return this
         .shadow(elevation, shape)
         .clip(shape)
@@ -122,26 +128,25 @@ fun Modifier.xtremeLiquidGlassBackground(
             else Modifier.border(borderWidth, appColors.cardBorder, shape))
 
     val density = LocalDensity.current
-    val radius = with(density) { blurRadius.toPx() }
-    val processingScale = backdrop?.sampleScale ?: XtremeLiquidGlassDefaults.BackdropSampleScale
+    val effectiveBlurRadius = blurRadius * profile.blurRadiusMultiplier
+    val radius = with(density) { effectiveBlurRadius.toPx() }
+    val processingScale = backdrop?.sampleScale ?: profile.backdropSampleScale
     val useBackdrop = backdrop != null && radius > 0f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val lensSize = with(density) { 24.dp.toPx() } * processingScale
     val pressDepth = with(density) { 2.dp.toPx() } * processingScale
     val effects: com.example.ui.components.backdrop.BackdropEffectScope.() -> Unit =
-        remember(radius, processingScale, lensSize, pressDepth, shape, interaction) {
+        remember(radius, processingScale, lensSize, pressDepth, shape, interaction, profile) {
             {
-                // Small touch response; at rest the
-                // existing blur/lens recipe is unchanged. These reads belong
-                // to the backdrop node, not the screen's composition.
+                // Touch response; reads belong to the backdrop node, not the screen's composition.
                 val press = interaction?.pressProgress?.coerceAtLeast(0f) ?: 0f
                 blur(radius * processingScale + pressDepth * press)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && shape is CornerBasedShape) {
+                if (profile.enableLens && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && shape is CornerBasedShape) {
                     try {
                         lens(
                             refractionHeight = lensSize + pressDepth * press,
                             refractionAmount = lensSize,
-                            depthEffect = true,
-                            chromaticAberration = true
+                            depthEffect = profile.enableDepthEffect,
+                            chromaticAberration = profile.enableChromaticAberration
                         )
                     } catch (_: Throwable) {
                         // Gracefully ignored if size is unspecified or shader unavailable
@@ -150,7 +155,6 @@ fun Modifier.xtremeLiquidGlassBackground(
             }
         }
     // Floating chrome uses the same restrained finish in both color modes.
-    // Foreground colors and the glass-disabled surface still follow the app theme.
     val dark = appColors.isDark || neutralFinish
     val rim = rimBrush ?: remember(dark) {
         Brush.linearGradient(listOf(
@@ -160,18 +164,25 @@ fun Modifier.xtremeLiquidGlassBackground(
             (if (dark) Color.White else Color(0xFF708090)).copy(alpha = 0.30f)
         ))
     }
-    return this
-        .then(if (baseFillAlpha == 0f) Modifier else Modifier.shadow(elevation, shape, clip = false,
+    val effectiveElevation = elevation * profile.shadowElevationMultiplier
+    val shadowModifier = if (profile.enableShadows && effectiveElevation > 0.dp && baseFillAlpha != 0f) {
+        Modifier.shadow(
+            effectiveElevation,
+            shape,
+            clip = false,
             spotColor = Color.Black.copy(alpha = if (dark) 0.42f else 0.14f),
-            ambientColor = Color.Black.copy(alpha = 0.08f)))
+            ambientColor = if (profile.shadowElevationMultiplier >= 1f) Color.Black.copy(alpha = 0.08f) else Color.Transparent
+        )
+    } else Modifier
+
+    return this
+        .then(shadowModifier)
         .clip(shape)
         .then(
             if (useBackdrop) Modifier.drawBackdrop(
                 backdrop = requireNotNull(backdrop).source,
                 shape = { shape },
                 effects = effects,
-                // Preserve the existing finish; do not stack the renderer's
-                // default shadow/highlight over Xtreme's shadow and rim.
                 highlight = null,
                 shadow = null,
                 backdropScale = processingScale,
@@ -186,23 +197,31 @@ fun Modifier.xtremeLiquidGlassBackground(
             val sheen = Brush.verticalGradient(0f to Color.White.copy(alpha = if (dark) 0.10f else 0.36f),
                 0.32f to Color.White.copy(alpha = 0.015f), 0.65f to Color.Transparent,
                 1f to Color.White.copy(alpha = if (dark) 0.055f else 0.14f))
-            val reflection = Brush.radialGradient(
-                listOf(Color.White.copy(alpha = if (dark) 0.065f else 0.18f), Color.Transparent),
-                center = Offset(size.width * 0.72f, size.height * 1.6f), radius = size.width.coerceAtLeast(size.height) * 0.65f)
+            val reflection = if (profile.enableRadialReflections) {
+                Brush.radialGradient(
+                    listOf(Color.White.copy(alpha = if (dark) 0.065f else 0.18f), Color.Transparent),
+                    center = Offset(size.width * 0.72f, size.height * 1.6f),
+                    radius = size.width.coerceAtLeast(size.height) * 0.65f
+                )
+            } else null
             // Cache the brush at the origin. Move the canvas, rather than
             // allocating a radial brush for every pointer/animation frame.
             val touchRadius = size.minDimension * 1.2f
             val touchGlow = if (interaction != null && touchRadius > 0f) Brush.radialGradient(
                 listOf(Color.White, Color.Transparent), center = Offset.Zero, radius = touchRadius
             ) else null
-            val fillAlpha = baseFillAlpha?.coerceIn(0f, 1f) ?: if (useBackdrop || (backdrop == null && enabled)) {
+            val defaultFillAlpha = if (useBackdrop || (backdrop == null && enabled)) {
                 if (dark) 0.50f else 0.64f
             } else 0.90f
+            val fillAlpha = baseFillAlpha?.coerceIn(0f, 1f)
+                ?: profile.baseFillAlphaOverride
+                ?: defaultFillAlpha
+
             onDrawWithContent {
                 if (fillAlpha > 0f) drawRect(base.copy(alpha = fillAlpha))
                 drawRect(colorWash)
                 drawRect(sheen)
-                drawRect(reflection)
+                if (reflection != null) drawRect(reflection)
                 if (innerWhiteTintAlpha > 0f) drawRect(Color.White.copy(alpha = innerWhiteTintAlpha.coerceIn(0f, 1f)))
                 if (touchGlow != null && interaction != null) {
                     val press = interaction.pressProgress.coerceIn(0f, 1f)
@@ -229,14 +248,26 @@ fun Modifier.playerLiquidGlassButton(
     isActive: Boolean = false,
     translucency: Float = 0.75f,
     borderWidth: Dp = 0.8.dp
-): Modifier = xtremeLiquidGlassBackground(
-    shape = shape, elevation = elevation, appColors = com.example.ui.util.playerAppearanceColors(colors),
-    // Sample the shared player backdrop without adding a colored or opaque fill.
-    tintColor = Color.Transparent,
-    surfaceTintAlpha = 0f,
-    borderWidth = borderWidth,
-    baseFillAlpha = 0f
-)
+): Modifier {
+    val profile = LocalLiquidGlassProfile.current
+    return if (!profile.allowSecondaryBackdropSampling) {
+        val dark = colors.isDark
+        val baseFill = if (dark) Color(0xFF1E2024).copy(alpha = 0.55f) else Color(0xFFF0F4F8).copy(alpha = 0.65f)
+        this
+            .then(if (profile.enableShadows) Modifier.shadow(elevation * profile.shadowElevationMultiplier, shape) else Modifier)
+            .clip(shape)
+            .background(baseFill)
+            .border(borderWidth, Color.White.copy(alpha = if (dark) 0.18f else 0.35f), shape)
+    } else {
+        xtremeLiquidGlassBackground(
+            shape = shape, elevation = elevation, appColors = com.example.ui.util.playerAppearanceColors(colors),
+            tintColor = Color.Transparent,
+            surfaceTintAlpha = 0f,
+            borderWidth = borderWidth,
+            baseFillAlpha = 0f
+        )
+    }
+}
 
 @Composable
 fun Modifier.playerPrimaryLiquidGlassButton(
@@ -245,11 +276,24 @@ fun Modifier.playerPrimaryLiquidGlassButton(
     elevation: Dp = 10.dp,
     translucency: Float = 0.82f,
     borderWidth: Dp = 1.dp
-): Modifier = xtremeLiquidGlassBackground(
-    shape = shape, elevation = elevation, appColors = com.example.ui.util.playerAppearanceColors(colors),
-    tintColor = Color.Transparent, surfaceTintAlpha = 0f, borderWidth = borderWidth,
-    baseFillAlpha = 0f
-)
+): Modifier {
+    val profile = LocalLiquidGlassProfile.current
+    return if (!profile.allowSecondaryBackdropSampling) {
+        val dark = colors.isDark
+        val baseFill = if (dark) Color(0xFF252830).copy(alpha = 0.65f) else Color(0xFFFFFFFF).copy(alpha = 0.75f)
+        this
+            .then(if (profile.enableShadows) Modifier.shadow(elevation * profile.shadowElevationMultiplier, shape) else Modifier)
+            .clip(shape)
+            .background(baseFill)
+            .border(borderWidth, Color.White.copy(alpha = if (dark) 0.30f else 0.50f), shape)
+    } else {
+        xtremeLiquidGlassBackground(
+            shape = shape, elevation = elevation, appColors = com.example.ui.util.playerAppearanceColors(colors),
+            tintColor = Color.Transparent, surfaceTintAlpha = 0f, borderWidth = borderWidth,
+            baseFillAlpha = 0f
+        )
+    }
+}
 
 /**
  * Reusable modifier alias for backwards compatibility.

@@ -129,6 +129,7 @@ object OtherSettingsPreferences {
     private const val KEY_CACHE_CLEARED_TIMESTAMP = "cache_cleared_timestamp"
     private const val KEY_HAPTICS_ENABLED = "haptics_enabled"
     private const val KEY_DYNAMIC_GLASS_ENABLED = "dynamic_glass_enabled"
+    private const val KEY_LIQUID_GLASS_PROFILE = "liquid_glass_profile"
     private const val KEY_ALBUM_GLOW = "player_dynamic_album_glow"
     private const val KEY_HIGH_CONTRAST = "player_high_contrast_typography"
     private const val KEY_FULL_SCREEN_ALBUM_ART = "player_full_screen_album_art"
@@ -380,6 +381,19 @@ object OtherSettingsPreferences {
 
     fun setDynamicGlassEnabled(context: Context, enabled: Boolean) {
         getPrefs(context).edit().putBoolean(KEY_DYNAMIC_GLASS_ENABLED, enabled).apply()
+    }
+
+    fun getLiquidGlassProfile(context: Context): com.example.performance.LiquidGlassProfileSetting {
+        val name = getPrefs(context).getString(KEY_LIQUID_GLASS_PROFILE, com.example.performance.LiquidGlassProfileSetting.AUTO.name)
+        return try {
+            com.example.performance.LiquidGlassProfileSetting.valueOf(name ?: com.example.performance.LiquidGlassProfileSetting.AUTO.name)
+        } catch (_: Throwable) {
+            com.example.performance.LiquidGlassProfileSetting.AUTO
+        }
+    }
+
+    fun setLiquidGlassProfile(context: Context, profile: com.example.performance.LiquidGlassProfileSetting) {
+        getPrefs(context).edit().putString(KEY_LIQUID_GLASS_PROFILE, profile.name).apply()
     }
 
     fun isProxyEnabled(context: Context): Boolean {

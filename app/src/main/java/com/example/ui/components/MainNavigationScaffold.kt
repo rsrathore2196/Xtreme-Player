@@ -137,8 +137,12 @@ fun MainNavigationScaffold(
     val isDarkMode = LocalAppColors.current.isDark
     val importDialogOpen by viewModel.isImportDialogOpen.collectAsStateWithLifecycle()
     val isDynamicGlassEnabled by viewModel.isDynamicGlassEnabled.collectAsStateWithLifecycle()
+    val liquidGlassProfileSetting by viewModel.liquidGlassProfile.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
+    val effectiveGlassProfile = remember(context, liquidGlassProfileSetting) {
+        com.example.performance.LiquidGlassDeviceCapability.resolveEffectiveProfile(context, liquidGlassProfileSetting)
+    }
     val messageLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(viewModel, context, messageLifecycle) {
         messageLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
@@ -230,16 +234,23 @@ fun MainNavigationScaffold(
     // Home's nested rows. Observe here without reading scroll state in composition.
     val tabScrollOwner = remember { Any() }
     val tabCovered = isPlayerExpanded || catalogDetail != null || selectedPlaylistWithTracks != null
-    LaunchedEffect(selectedTabIndex, tabCovered, searchListState, libraryListState) {
+    LaunchedEffect(selectedTabIndex, tabCovered, homeListState, searchListState, libraryListState) {
         try {
             androidx.compose.runtime.snapshotFlow {
                 !tabCovered && when (selectedTabIndex) {
+                    0 -> homeListState.isScrollInProgress
                     1 -> searchListState.isScrollInProgress
                     2 -> libraryListState.isScrollInProgress
                     else -> false
                 }
-            }.collect { com.example.performance.BackgroundWorkCoordinator.scrolling(tabScrollOwner, it) }
-        } finally { com.example.performance.BackgroundWorkCoordinator.scrolling(tabScrollOwner, false) }
+            }.collect { scrolling ->
+                com.example.performance.BackgroundWorkCoordinator.scrolling(tabScrollOwner, scrolling)
+                com.example.recommendation.DiscoveryRequestCoordinator.homeScrolling(scrolling)
+            }
+        } finally {
+            com.example.performance.BackgroundWorkCoordinator.scrolling(tabScrollOwner, false)
+            com.example.recommendation.DiscoveryRequestCoordinator.homeScrolling(false)
+        }
     }
 
     // Request notification permission for Android 13+ (API 33)
@@ -316,6 +327,7 @@ fun MainNavigationScaffold(
     val platformOverscroll = LocalOverscrollConfiguration.current
     CompositionLocalProvider(
         LocalDynamicGlassEnabled provides isDynamicGlassEnabled,
+        LocalLiquidGlassProfile provides effectiveGlassProfile,
         LocalPlayerExpansionMotion provides playerMotion,
         LocalAppColors provides appColors,
         LocalLiquidGlassBackdrop provides rememberLiquidGlassBackdrop(captureVisibleRegions = true),
@@ -417,6 +429,8 @@ fun MainNavigationScaffold(
                                     userProfile = userProfile,
                                     isDynamicGlassEnabled = isDynamicGlassEnabled,
                                     onToggleDynamicGlass = { viewModel.setDynamicGlassEnabled(it) },
+                                    liquidGlassProfile = liquidGlassProfileSetting,
+                                    onSelectLiquidGlassProfile = { viewModel.setLiquidGlassProfile(it) },
                                     onSubpageStateChanged = { isOpen -> isSettingsSubpageOpen = isOpen },
                                     onNavigateBackToHome = { selectTab(0) },
                                     onUpdateProfile = { updated -> viewModel.updateUserProfile(updated) },

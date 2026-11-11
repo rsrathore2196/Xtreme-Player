@@ -17,6 +17,7 @@ data class StartupSettings(
     val textSizeIndex: Int = OtherSettingsPreferences.DEFAULT_TEXT_SIZE_INDEX,
     val uiSizeIndex: Int = OtherSettingsPreferences.DEFAULT_UI_SIZE_INDEX,
     val dynamicGlass: Boolean = true,
+    val liquidGlassProfile: com.example.performance.LiquidGlassProfileSetting = com.example.performance.LiquidGlassProfileSetting.AUTO,
     val profile: UserProfile = UserProfile(),
     val quality: AudioQuality = AudioQuality.EXTREME_320
 ) {
@@ -27,7 +28,9 @@ data class StartupSettings(
             return StartupSettings(
                 ThemePreferences.getThemeMode(context), ThemePreferences.getCustomThemeState(context),
                 OtherSettingsPreferences.getTextSizeIndex(context), OtherSettingsPreferences.getUiSizeIndex(context),
-                OtherSettingsPreferences.isDynamicGlassEnabled(context), UserProfilePreferences.getUserProfile(context),
+                OtherSettingsPreferences.isDynamicGlassEnabled(context),
+                OtherSettingsPreferences.getLiquidGlassProfile(context),
+                UserProfilePreferences.getUserProfile(context),
                 AudioQuality.EXTREME_320
             )
         }

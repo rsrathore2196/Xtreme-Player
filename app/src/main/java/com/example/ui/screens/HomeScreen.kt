@@ -596,9 +596,12 @@ fun HomeScreenContent(
                                             modifier = Modifier.size(124.8.dp).clip(CircleShape)
                                         )
                                     }
+                                    val effectsActive = com.example.ui.components.LocalVisualEffectsActive.current
+                                    val marqueeMode = if (effectsActive) androidx.compose.foundation.MarqueeAnimationMode.Immediately
+                                        else androidx.compose.foundation.MarqueeAnimationMode.WhileFocused
                                     Spacer(Modifier.height(8.dp))
                                     Text(artist.name, color = textPrimaryColor, fontWeight = FontWeight.SemiBold,
-                                        modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE),
+                                        modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE, animationMode = marqueeMode),
                                         maxLines = 1, softWrap = false, textAlign = TextAlign.Center)
                                 }
                             }

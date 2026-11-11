@@ -42,8 +42,6 @@ import androidx.compose.animation.core.RepeatMode as AnimationRepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -301,7 +299,7 @@ fun ExpandedPlayerScreen(
     var morphArtworkReady by remember(track.id, track.coverUrl) { mutableStateOf(false) }
     var rectangularArtwork by remember(track.id, track.coverUrl) { mutableStateOf(false) }
     val morphAnimating by remember(playerMorph) { derivedStateOf { playerMorph?.transitioning == true } }
-    val playerMarqueeMode = if (playerMorph?.covered != false) androidx.compose.foundation.MarqueeAnimationMode.Immediately
+    val playerMarqueeMode = if (isScreenVisible && playerMorph?.covered != false) androidx.compose.foundation.MarqueeAnimationMode.Immediately
         else androidx.compose.foundation.MarqueeAnimationMode.WhileFocused
     val singerLabel = remember(track.artist, track.singers) { playerSingerLabel(track) }
     // A preference is a ceiling, never evidence of the format actually playing.

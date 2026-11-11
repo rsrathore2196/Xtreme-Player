@@ -348,6 +348,9 @@ class PlayerViewModel(
     private val _isDynamicGlassEnabled = MutableStateFlow(initialSettings.dynamicGlass)
     val isDynamicGlassEnabled: StateFlow<Boolean> = _isDynamicGlassEnabled.asStateFlow()
 
+    private val _liquidGlassProfile = MutableStateFlow(initialSettings.liquidGlassProfile)
+    val liquidGlassProfile: StateFlow<com.example.performance.LiquidGlassProfileSetting> = _liquidGlassProfile.asStateFlow()
+
     private var searchDataStarted = false
     private var libraryUiSeen = false
     private var catalogFavoritesStarted = false
@@ -412,6 +415,11 @@ class PlayerViewModel(
         _isDynamicGlassEnabled.value = enabled
     }
 
+    fun setLiquidGlassProfile(profile: com.example.performance.LiquidGlassProfileSetting) {
+        com.example.data.local.OtherSettingsPreferences.setLiquidGlassProfile(application, profile)
+        _liquidGlassProfile.value = profile
+    }
+
     fun setTextScaleIndex(index: Int) {
         com.example.data.local.OtherSettingsPreferences.setTextSizeIndex(application, index)
         _textScaleIndex.value = index
@@ -453,6 +461,7 @@ class PlayerViewModel(
                 _uiScaleIndex.value = settings.uiSizeIndex
                 _uiScale.value = settings.uiScale
                 _isDynamicGlassEnabled.value = settings.dynamicGlass
+                _liquidGlassProfile.value = settings.liquidGlassProfile
                 _isDarkMode.value = com.example.data.local.ThemePreferences.isDark(application, settings.themeMode)
                 _userProfile.value = settings.profile
                 _onboardingRestore.value = OnboardingRestoreState(
@@ -610,6 +619,7 @@ class PlayerViewModel(
                 _uiScaleIndex.value = settings.uiSizeIndex
                 _uiScale.value = settings.uiScale
                 _isDynamicGlassEnabled.value = settings.dynamicGlass
+                _liquidGlassProfile.value = settings.liquidGlassProfile
                 _userProfile.value = settings.profile
                 _isOnboardingCompleted.value = settings.profile.isOnboardingCompleted
             } finally { _settingsReady.value = true }

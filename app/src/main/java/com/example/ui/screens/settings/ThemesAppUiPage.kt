@@ -79,6 +79,8 @@ fun ThemesAppUiPage(
     onApplyPreset: (com.example.data.local.AppThemePreset) -> Unit = {},
     isDynamicGlassEnabled: Boolean = true,
     onToggleDynamicGlass: (Boolean) -> Unit = {},
+    liquidGlassProfile: com.example.performance.LiquidGlassProfileSetting = com.example.performance.LiquidGlassProfileSetting.AUTO,
+    onSelectLiquidGlassProfile: (com.example.performance.LiquidGlassProfileSetting) -> Unit = {},
     modifier: Modifier = Modifier,
     onNestedPageChanged: (String?, String?, (() -> Boolean)?) -> Unit = { _, _, _ -> }
 ) {
@@ -117,9 +119,13 @@ fun ThemesAppUiPage(
     ) { destination ->
         stateHolder.SaveableStateProvider(destination.name) {
             when (destination) {
-                ThemeSettingsPage.OVERVIEW -> ThemesAppUiOverview(isDarkMode, themeMode, onSelectThemeMode,
+                ThemeSettingsPage.OVERVIEW -> ThemesAppUiOverview(
+                    isDarkMode, themeMode, onSelectThemeMode,
                     state, onUpdateCustomThemeState, onApplyPreset, isDynamicGlassEnabled, onToggleDynamicGlass,
-                    onOpenPresets = { page = ThemeSettingsPage.PRESETS }, onOpenCustomTheming = { page = ThemeSettingsPage.CUSTOM })
+                    liquidGlassProfile = liquidGlassProfile,
+                    onSelectLiquidGlassProfile = onSelectLiquidGlassProfile,
+                    onOpenPresets = { page = ThemeSettingsPage.PRESETS }, onOpenCustomTheming = { page = ThemeSettingsPage.CUSTOM }
+                )
                 ThemeSettingsPage.PRESETS -> ThemePresetsPage(state, onApplyPreset)
                 ThemeSettingsPage.CUSTOM -> CustomThemingPage(state, onUpdateCustomThemeState)
             }
@@ -137,6 +143,8 @@ private fun ThemesAppUiOverview(
     onApplyPreset: (com.example.data.local.AppThemePreset) -> Unit = {},
     isDynamicGlassEnabled: Boolean = true,
     onToggleDynamicGlass: (Boolean) -> Unit = {},
+    liquidGlassProfile: com.example.performance.LiquidGlassProfileSetting = com.example.performance.LiquidGlassProfileSetting.AUTO,
+    onSelectLiquidGlassProfile: (com.example.performance.LiquidGlassProfileSetting) -> Unit = {},
     modifier: Modifier = Modifier,
     onOpenPresets: () -> Unit = {},
     onOpenCustomTheming: () -> Unit = {}
@@ -547,6 +555,60 @@ private fun ThemesAppUiOverview(
                         colors = liquidGlassSwitchColors(appColors),
                         modifier = Modifier.testTag("switch_dynamic_glass")
                     )
+                }
+
+                if (isDynamicGlassEnabled) {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "Rendering Profile",
+                        fontSize = 12.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = appColors.textPrimary
+                    )
+                    Text(
+                        text = "Adjust blur depth, lens refraction, and shader complexity",
+                        fontSize = 11.sp,
+                        color = appColors.textMuted
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        com.example.performance.LiquidGlassProfileSetting.values().forEach { setting ->
+                            val isSelected = liquidGlassProfile == setting
+                            val label = when (setting) {
+                                com.example.performance.LiquidGlassProfileSetting.AUTO -> "Auto"
+                                com.example.performance.LiquidGlassProfileSetting.PREMIUM -> "Premium"
+                                com.example.performance.LiquidGlassProfileSetting.BALANCED -> "Balanced"
+                                com.example.performance.LiquidGlassProfileSetting.PERFORMANCE -> "Fast"
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(
+                                        if (isSelected) appColors.primaryAccent.copy(alpha = if (appColors.isDark) 0.30f else 0.18f)
+                                        else appColors.cardBackgroundElevated
+                                    )
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) appColors.primaryAccent else appColors.cardBorder,
+                                        RoundedCornerShape(10.dp)
+                                    )
+                                    .bouncyClickable(onClick = { onSelectLiquidGlassProfile(setting) })
+                                    .padding(vertical = 8.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isSelected) appColors.primaryAccent else appColors.textPrimary
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

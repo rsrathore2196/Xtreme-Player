@@ -242,7 +242,10 @@ fun MiniPlayer(
                         )
                         if (uiState.isPlaying) {
                             Spacer(modifier = Modifier.width(6.dp))
-                            MiniAnimatedEqualizerBars(Modifier.playerMorphMiniControls(PlayerMorphPart.EQUALIZER, track.id))
+                            MiniAnimatedEqualizerBars(
+                                modifier = Modifier.playerMorphMiniControls(PlayerMorphPart.EQUALIZER, track.id),
+                                active = uiState.isPlaying
+                            )
                         }
                     }
 
@@ -540,36 +543,41 @@ private fun Modifier.compactHeight(progress: State<Float>?): Modifier =
     }
 
 @Composable
-fun MiniAnimatedEqualizerBars(modifier: Modifier = Modifier) {
-
-    val fraction1 by rememberVisibleInfiniteFloat(
+fun MiniAnimatedEqualizerBars(
+    modifier: Modifier = Modifier,
+    active: Boolean = true
+) {
+    val fraction1 = rememberVisibleInfiniteFloat(
         initialValue = 0.25f,
         targetValue = 1.0f,
         animationSpec = infiniteRepeatable(
             animation = tween(400),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "eq_bar_1"
+        label = "eq_bar_1",
+        active = active
     )
 
-    val fraction2 by rememberVisibleInfiniteFloat(
+    val fraction2 = rememberVisibleInfiniteFloat(
         initialValue = 0.85f,
         targetValue = 0.35f,
         animationSpec = infiniteRepeatable(
             animation = tween(350),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "eq_bar_2"
+        label = "eq_bar_2",
+        active = active
     )
 
-    val fraction3 by rememberVisibleInfiniteFloat(
+    val fraction3 = rememberVisibleInfiniteFloat(
         initialValue = 0.40f,
         targetValue = 0.95f,
         animationSpec = infiniteRepeatable(
             animation = tween(450),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "eq_bar_3"
+        label = "eq_bar_3",
+        active = active
     )
 
     val eqColor = LocalAppColors.current.primaryAccent
@@ -584,7 +592,7 @@ fun MiniAnimatedEqualizerBars(modifier: Modifier = Modifier) {
         val space = 2.dp.toPx()
         val corner = androidx.compose.ui.geometry.CornerRadius(1.dp.toPx())
 
-        val h1 = (totalH * fraction1).coerceIn(3f, totalH)
+        val h1 = (totalH * fraction1.value).coerceIn(3f, totalH)
         drawRoundRect(
             color = eqColor,
             topLeft = androidx.compose.ui.geometry.Offset(0f, totalH - h1),
@@ -592,7 +600,7 @@ fun MiniAnimatedEqualizerBars(modifier: Modifier = Modifier) {
             cornerRadius = corner
         )
 
-        val h2 = (totalH * fraction2).coerceIn(3f, totalH)
+        val h2 = (totalH * fraction2.value).coerceIn(3f, totalH)
         drawRoundRect(
             color = eqColor,
             topLeft = androidx.compose.ui.geometry.Offset(barW + space, totalH - h2),
@@ -600,7 +608,7 @@ fun MiniAnimatedEqualizerBars(modifier: Modifier = Modifier) {
             cornerRadius = corner
         )
 
-        val h3 = (totalH * fraction3).coerceIn(3f, totalH)
+        val h3 = (totalH * fraction3.value).coerceIn(3f, totalH)
         drawRoundRect(
             color = eqColor,
             topLeft = androidx.compose.ui.geometry.Offset((barW + space) * 2f, totalH - h3),

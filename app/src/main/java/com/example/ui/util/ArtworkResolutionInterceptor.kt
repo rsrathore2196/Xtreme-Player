@@ -240,9 +240,10 @@ class ArtworkResolutionInterceptor(private val diskCache: () -> coil.disk.DiskCa
             (if (metadata.visibleThumbnail) originals else emptyList()) +
             (if (metadata.allowVideoFallback) youtubeArtworkAlternatives(metadata.trackId, originals) else emptyList()) + originals).distinct()
         // A smaller view can reuse a larger rendition already fetched by Home or
-        // the player. These alternatives are cache probes, never extra downloads.
+        // the player. Probe high-probability tiers (600, 1200) without generating redundant disk/RAM probes.
+        val probeTiers = if (metadata.visibleThumbnail) listOf(600) else listOf(600, 1200)
         val cacheUrls = if (metadata.landscapeArtwork || metadata.preserveAspectRatio) urls else (urls.take(1) + originals.flatMap { source ->
-            listOf(600, 1200, 2000, 3000, 200).map {
+            probeTiers.map {
                 if (metadata.currentTrack || metadata.requireSquareSongArtwork) aspectPreservingArtworkUrl(source, androidx.compose.ui.unit.IntSize(it, it))
                 else providerArtworkUrl(source, it)
             }
