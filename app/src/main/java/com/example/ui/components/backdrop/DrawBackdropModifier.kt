@@ -367,7 +367,6 @@ private class DrawBackdropNode(
             }
         } else Offset.Zero
         val previousWindow = windowCapture
-        val previousShift = windowShift
         // Android 12 has no runtime input-clamp shader: retain its exact bounds.
         // Opt-in is restricted to the bottom bar's existing blur+lens recipe.
         windowCapture = reusable && stableCaptureWidthPx > 0f && Build.VERSION.SDK_INT >= 33 && padding == 0f
@@ -380,9 +379,13 @@ private class DrawBackdropNode(
         } else windowShift = Offset.Zero
         val newBounds = IntSize((size.width * scale).toInt().coerceAtLeast(1),
             (size.height * scale).toInt().coerceAtLeast(1))
-        val uniformChanged = previousWindow != windowCapture || previousShift != windowShift || windowBounds != newBounds
+        // Only rebuild the RenderEffect chain when its geometry/configuration changes.
+        // The pill's x/y movement is a shader-uniform update, not a reason to recreate
+        // blur/refraction RenderEffects every frame (which caused visible dock shimmer).
+        val effectGeometryChanged = previousWindow != windowCapture || windowBounds != newBounds
         windowBounds = newBounds
-        if (effectScope.update(this, scale) || uniformChanged) updateEffects()
+        if (effectScope.update(this, scale) || effectGeometryChanged) updateEffects()
+        updateStableWindowUniforms()
         val padding = padding
         val requiredSize = IntSize(
             (((if (windowCapture) maxOf(stableCaptureWidthPx, size.width) else size.width) * scale).toInt() + padding.toInt() * 2).coerceAtLeast(1),
@@ -480,17 +483,23 @@ private class DrawBackdropNode(
         observeReads { updateEffects() }
     }
 
+    @androidx.annotation.RequiresApi(33)
+    private fun updateStableWindowUniforms() {
+        if (!windowCapture || !isRuntimeShaderSupported()) return
+        effectScope.obtainRuntimeShader("StableBackdropWindow", StableWindowShader).apply {
+            setFloatUniform("shift", windowShift.x, windowShift.y)
+            setFloatUniform("bounds", windowBounds.width.toFloat(), windowBounds.height.toFloat())
+        }
+    }
+
     private fun updateEffects() {
         if (!isRenderEffectSupported()) return
 
         effectScope.apply {
             if (windowCapture) {
-                // Extend the exact visible input edges before blur, preserving its
-                // original Clamp pixels despite the larger reusable allocation.
-                runtimeShaderEffect("StableBackdropWindow", StableWindowShader, "content") {
-                    setFloatUniform("shift", windowShift.x, windowShift.y)
-                    setFloatUniform("bounds", windowBounds.width.toFloat(), windowBounds.height.toFloat())
-                }
+                // Extend the exact visible input edges before blur. Position uniforms
+                // are updated separately without rebuilding this RenderEffect chain.
+                runtimeShaderEffect("StableBackdropWindow", StableWindowShader, "content") { }
             }
             this@DrawBackdropNode.effects(this)
         }
