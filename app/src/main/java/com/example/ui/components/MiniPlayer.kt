@@ -60,6 +60,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import kotlin.math.roundToInt
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import com.example.util.AppHaptics
@@ -95,6 +97,9 @@ fun MiniPlayer(
     compact: Boolean = false
 ) {
     val track = uiState.currentTrack ?: return
+    val dockCaptureWidthPx = with(LocalDensity.current) {
+        LocalConfiguration.current.screenWidthDp.dp.toPx()
+    }
     val morph = LocalPlayerExpansionMotion.current
     val interactive by remember(morph) { derivedStateOf { morph?.miniInteractive != false } }
     val artworkDensity = androidx.compose.ui.platform.LocalDensity.current.density
@@ -165,6 +170,10 @@ fun MiniPlayer(
                     appColors = appColors,
                     baseFillAlpha = XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha,
                     neutralFinish = true,
+                    // Keep the sampled source window fixed to the display width while
+                    // the mini-player morphs/moves. The shader shifts the sample instead
+                    // of resizing/re-recording the backdrop on every animation frame.
+                    stableCaptureWidthPx = dockCaptureWidthPx,
                     innerWhiteTintAlpha = if (lightTheme) 0.07f else 0f
                 )
         )
