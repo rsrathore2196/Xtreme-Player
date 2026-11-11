@@ -220,41 +220,46 @@ fun OtherSettingsPage(
                     Text("Preferred Refresh Rate", fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold, color = appColors.textPrimary)
                     Text(
-                        "Choose Auto, 60, 90 or 120 Hz. Android may still limit the actual rate.",
+                        "Choose 60, 90 or 120 Hz. Android may still limit the actual rate.",
                         fontSize = 11.sp, color = appColors.textMuted,
                         modifier = Modifier.padding(top = 3.dp, bottom = 10.dp)
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        listOf(0, 60, 90, 120).forEach { rate ->
-                            val selected = performanceSettings.refreshRateHz == rate
-                            val label = if (rate == 0) "Auto" else "$rate"
+                        val chipShape = RoundedCornerShape(14.dp)
+                        listOf(60, 90, 120).forEach { rate ->
+                            val effectiveRate = if (performanceSettings.refreshRateHz in listOf(60, 90, 120)) {
+                                performanceSettings.refreshRateHz
+                            } else 60
+                            val selected = effectiveRate == rate
                             Surface(
                                 modifier = Modifier
                                     .weight(1f)
-                                    .clip(RoundedCornerShape(10.dp))
+                                    .clip(chipShape)
                                     .clickable {
                                         OtherSettingsPreferences.setPerformanceRefreshRate(context, rate)
                                     }
                                     .testTag("refresh_rate_$rate"),
-                                shape = RoundedCornerShape(10.dp),
+                                shape = chipShape,
                                 color = if (selected) accentColor.copy(alpha = 0.18f) else inputBg,
                                 border = BorderStroke(1.dp, if (selected) accentColor else cardBorder)
                             ) {
-                                Column(
-                                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 2.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
+                                Row(
+                                    modifier = Modifier.padding(vertical = 11.dp, horizontal = 4.dp),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        label,
-                                        fontSize = 12.sp,
+                                        text = "$rate Hz",
+                                        fontSize = 12.5.sp,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (selected) accentColor else appColors.textPrimary
+                                        color = if (selected) accentColor else appColors.textPrimary,
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
-                                    if (rate != 0) Text("Hz", fontSize = 9.sp, color = appColors.textMuted)
                                 }
                             }
                         }
