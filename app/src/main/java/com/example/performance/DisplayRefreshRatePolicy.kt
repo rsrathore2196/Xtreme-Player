@@ -4,6 +4,8 @@ import android.content.Context
 import android.os.Build
 import android.util.Log
 import android.view.Display
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Manages evidence-based display refresh-rate policy and Compose adaptive refresh-rate configuration.
@@ -68,39 +70,56 @@ object DisplayRefreshRatePolicy {
     }
 
     /**
-     * Evaluates a display's mode list and determines whether it supports high/variable refresh rates.
-     * Returns a pair of (supportsHighRefresh: Boolean, maxSupportedRate: Float).
+     * Mirrors BitChord's supported-rate discovery: expose rates the active display reports
+     * across its available modes, including API 31+ alternative refresh rates.
      */
-    fun resolveDisplayRefreshCapabilities(display: Display?): Pair<Boolean, Float> {
-        if (display == null) return false to 60f
-        val currentMode = display.mode ?: return false to 60f
-        val modes = display.supportedModes ?: return false to 60f
-
-        var maxRate = 60f
-        var hasHighRefresh = false
-
-        for (mode in modes) {
-            if (mode.physicalWidth == currentMode.physicalWidth && mode.physicalHeight == currentMode.physicalHeight) {
-                val rate = mode.refreshRate
-                if (rate.isFinite() && rate > maxRate) {
-                    maxRate = rate
-                    if (rate > 60.5f) {
-                        hasHighRefresh = true
-                    }
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    for (altRate in mode.alternativeRefreshRates) {
-                        if (altRate.isFinite() && altRate > maxRate) {
-                            maxRate = altRate
-                            if (altRate > 60.5f) {
-                                hasHighRefresh = true
-                            }
-                        }
+    fun supportedPerformanceRefreshRates(display: Display?): List<Int> {
+        val rates = linkedSetOf<Int>()
+        display?.supportedModes?.forEach { mode ->
+            val rate = mode.refreshRate
+            if (rate.isFinite()) {
+                val rounded = rate.roundToInt()
+                if (rounded in 50..240) rates += rounded
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                mode.alternativeRefreshRates.forEach { alternative ->
+                    if (alternative.isFinite()) {
+                        val rounded = alternative.roundToInt()
+                        if (rounded in 50..240) rates += rounded
                     }
                 }
             }
         }
+        if (rates.isEmpty()) {
+            val fallback = display?.refreshRate?.takeIf { it.isFinite() && it > 0f }?.roundToInt() ?: 60
+            rates += fallback.coerceIn(50, 240)
+        }
+        return rates.sorted()
+    }
 
-        return hasHighRefresh to maxRate
+    /**
+     * Resolve a saved fixed-rate choice against the current display. AUTO (0) deliberately
+     * remains automatic. If a setting is restored on another device, choose the nearest
+     * supported rate; on an exact tie prefer the higher rate, matching BitChord's policy.
+     */
+    fun resolvePreferredRefreshRate(preferredHz: Int, supportedRates: List<Int>): Int {
+        if (preferredHz <= 0) return 0
+        val usable = supportedRates.filter { it in 50..240 }.distinct()
+        if (usable.isEmpty()) return preferredHz.coerceIn(50, 240)
+        return usable.minWithOrNull(
+            compareBy<Int> { abs(it - preferredHz) }.thenByDescending { it }
+        ) ?: preferredHz.coerceIn(50, 240)
+    }
+
+    fun resolvePreferredRefreshRate(display: Display?, preferredHz: Int): Int =
+        resolvePreferredRefreshRate(preferredHz, supportedPerformanceRefreshRates(display))
+
+    /**
+     * Returns whether the display has a supported rate above 60Hz and its highest reported rate.
+     * Used by the Liquid Glass AUTO profile; refresh selection itself is handled separately.
+     */
+    fun resolveDisplayRefreshCapabilities(display: Display?): Pair<Boolean, Float> {
+        val maximum = supportedPerformanceRefreshRates(display).maxOrNull()?.toFloat() ?: 60f
+        return (maximum > 60.5f) to maximum
     }
 }
