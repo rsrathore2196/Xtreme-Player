@@ -117,6 +117,22 @@ data class LiquidGlassProfile(
  * Analyzes RAM class, available hardware acceleration, Android version, display refresh rate,
  * processor count, and system power-save mode rather than relying on an arbitrary device blacklist.
  */
+/**
+ * Snapshot of coarse device/runtime capabilities used by the AUTO glass profile.
+ *
+ * Android does not expose a portable GPU-performance score. These values are conservative
+ * heuristics only; actual profile quality must be validated with frame/GPU measurements.
+ */
+internal data class LiquidGlassDeviceCapabilities(
+    val sdkInt: Int,
+    val powerSaveMode: Boolean,
+    val lowRamDevice: Boolean,
+    val memoryClassMb: Int,
+    val availableProcessors: Int,
+    val hasHighRefresh: Boolean,
+    val maxRefreshRateHz: Float
+)
+
 object LiquidGlassDeviceCapability {
 
     fun resolveEffectiveProfile(
@@ -132,71 +148,76 @@ object LiquidGlassDeviceCapability {
     }
 
     fun evaluateAutomaticProfile(context: Context): LiquidGlassProfile {
-        // 1. Android version check: Below Android 12 (API 31), RenderEffect is not natively supported
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            return LiquidGlassProfile.PERFORMANCE
-        }
-
-        // 2. Power-Save Mode: If system battery saver is active, step down to reduce GPU cycles and thermal load
         val powerManager = try {
             context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        } catch (_: Throwable) {
+        } catch (_: RuntimeException) {
             null
         }
-        if (powerManager?.isPowerSaveMode == true) {
-            return LiquidGlassProfile.PERFORMANCE
-        }
-
-        // 3. Low-RAM Device check
         val activityManager = try {
             context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
-        } catch (_: Throwable) {
+        } catch (_: RuntimeException) {
             null
         }
-        if (activityManager?.isLowRamDevice == true) {
+
+        val display = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                context.display
+            } else {
+                val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+                @Suppress("DEPRECATION")
+                windowManager?.defaultDisplay
+            }
+        } catch (_: RuntimeException) {
+            null
+        }
+        val (hasHighRefresh, maxRefreshRate) =
+            DisplayRefreshRatePolicy.resolveDisplayRefreshCapabilities(display)
+
+        return selectAutomaticProfile(
+            LiquidGlassDeviceCapabilities(
+                sdkInt = Build.VERSION.SDK_INT,
+                // Missing service information is treated conservatively rather than assuming
+                // that battery saver is off or the device has a large memory budget.
+                powerSaveMode = powerManager?.isPowerSaveMode ?: true,
+                lowRamDevice = activityManager?.isLowRamDevice ?: true,
+                memoryClassMb = activityManager?.memoryClass ?: 0,
+                availableProcessors = Runtime.getRuntime().availableProcessors().coerceAtLeast(1),
+                hasHighRefresh = hasHighRefresh,
+                maxRefreshRateHz = maxRefreshRate
+            )
+        )
+    }
+
+    /** Pure policy function so AUTO selection is covered by deterministic unit tests. */
+    internal fun selectAutomaticProfile(capabilities: LiquidGlassDeviceCapabilities): LiquidGlassProfile {
+        if (capabilities.sdkInt < Build.VERSION_CODES.S) {
+            return LiquidGlassProfile.PERFORMANCE
+        }
+        if (capabilities.powerSaveMode || capabilities.lowRamDevice) {
             return LiquidGlassProfile.PERFORMANCE
         }
 
-        val memoryClass = activityManager?.memoryClass ?: 192
-        val availableProcessors = try {
-            Runtime.getRuntime().availableProcessors()
-        } catch (_: Throwable) {
-            4
-        }
-
-        // 4. Android 12/12L (API 31/32) does not support AGSL RuntimeShader (introduced in API 33/Android 13)
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            return if (memoryClass >= 256 && availableProcessors >= 6) {
+        // Android 12/12L supports platform blur but not AGSL RuntimeShader. Balanced
+        // keeps the lens path gracefully disabled by the API guard in XtremeLiquidGlass.
+        if (capabilities.sdkInt < Build.VERSION_CODES.TIRAMISU) {
+            return if (capabilities.memoryClassMb >= 256 && capabilities.availableProcessors >= 6) {
                 LiquidGlassProfile.BALANCED
             } else {
                 LiquidGlassProfile.PERFORMANCE
             }
         }
 
-        // 5. Display Refresh Rate & Frame Budget Evaluation
-        val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                context.display
-            } catch (_: Throwable) {
-                val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-                @Suppress("DEPRECATION")
-                wm?.defaultDisplay
-            }
-        } else {
-            val wm = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
-            @Suppress("DEPRECATION")
-            wm?.defaultDisplay
-        }
-
-        val (hasHighRefresh, maxRate) = DisplayRefreshRatePolicy.resolveDisplayRefreshCapabilities(display)
-
-        // On displays with high refresh rates (>= 90Hz or 120Hz), the frame budget is 8.3ms or 11.1ms.
-        // Unless the device has generous memory and processors (flagship tier), BALANCED delivers
-        // zero dropped frames while preserving the full Liquid Glass visual identity.
         return when {
-            memoryClass >= 512 && availableProcessors >= 8 -> LiquidGlassProfile.PREMIUM
-            memoryClass >= 256 && availableProcessors >= 6 && (!hasHighRefresh || maxRate <= 90f) -> LiquidGlassProfile.PREMIUM
-            memoryClass >= 192 && availableProcessors >= 4 -> LiquidGlassProfile.BALANCED
+            capabilities.memoryClassMb >= 512 && capabilities.availableProcessors >= 8 ->
+                LiquidGlassProfile.PREMIUM
+
+            capabilities.memoryClassMb >= 256 && capabilities.availableProcessors >= 6 &&
+                (!capabilities.hasHighRefresh || capabilities.maxRefreshRateHz <= 90f) ->
+                LiquidGlassProfile.PREMIUM
+
+            capabilities.memoryClassMb >= 192 && capabilities.availableProcessors >= 4 ->
+                LiquidGlassProfile.BALANCED
+
             else -> LiquidGlassProfile.PERFORMANCE
         }
     }
