@@ -57,6 +57,7 @@ class MainActivity : ComponentActivity() {
     private var lastAppliedLegacyRate = -1f
     private var lastAppliedCategory = -1f
     private var lastAppliedBoost: Boolean? = null
+    private var lastAppliedPowerSavingsBalanced: Boolean? = null
     private val displayManager by lazy { getSystemService(DisplayManager::class.java) }
     private val powerManager by lazy { getSystemService(PowerManager::class.java) }
     private val refreshPolicyReceiver = object : BroadcastReceiver() {
@@ -394,10 +395,15 @@ class MainActivity : ComponentActivity() {
                 window.frameRateBoostOnTouchEnabled = active
                 lastAppliedBoost = active
             }
-            window.setFrameRatePowerSavingsBalanced(!settings.highPerformanceEnabled)
+            val powerSavingsBalanced = !settings.highPerformanceEnabled
+            if (lastAppliedPowerSavingsBalanced != powerSavingsBalanced) {
+                window.setFrameRatePowerSavingsBalanced(powerSavingsBalanced)
+                lastAppliedPowerSavingsBalanced = powerSavingsBalanced
+            }
         }
 
-        // On Android 6–14, preferredRefreshRate is the platform window hint. Zero means Auto.
+        // preferredRefreshRate is the platform window hint on supported Android versions.
+        // API 35+ also receives the exact numeric View.requestedFrameRate hint above. Zero means Auto.
         if (lastAppliedLegacyRate != targetRate) {
             val attributes = window.attributes
             if (attributes.preferredDisplayModeId != 0 || attributes.preferredRefreshRate != targetRate) {
