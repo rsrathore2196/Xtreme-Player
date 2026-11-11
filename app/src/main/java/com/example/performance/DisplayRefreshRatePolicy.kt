@@ -19,9 +19,9 @@ object DisplayRefreshRatePolicy {
      * adaptive refresh-rate voting bug where repeated frame-rate voting on the main thread causes
      * micro-stuttering and verbose main-thread stack-trace generation.
      *
-     * Targeted primarily at Samsung Galaxy S22 series (SM-S901x, SM-S906x, SM-S908x) and Samsung
-     * devices on Android 12 through Android 14 (One UI 4 - One UI 6) where SurfaceFlinger/SecDisplay
-     * exhibits this behavior.
+     * This workaround is deliberately limited to the Samsung Galaxy S22 family on Android 12–14,
+     * the combination for which the issue was identified during the BitChord comparison. Do not
+     * generalize it to every Samsung model without device-specific reproduction evidence.
      */
     fun isAffectedSamsungDevice(
         manufacturer: String? = try { Build.MANUFACTURER } catch (_: Throwable) { null },
@@ -37,7 +37,7 @@ object DisplayRefreshRatePolicy {
             upperModel.startsWith("SM-S908")
 
         val isAffectedAndroidVersion = sdkInt in Build.VERSION_CODES.S..Build.VERSION_CODES.UPSIDE_DOWN_CAKE
-        return isS22Series || isAffectedAndroidVersion
+        return isS22Series && isAffectedAndroidVersion
     }
 
     /**
