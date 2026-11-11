@@ -50,6 +50,13 @@ data class PlaybackIntegrationSettings(
 }
 
 @Immutable
+data class PerformanceSettings(
+    val highPerformanceEnabled: Boolean = false,
+    /** 0 = Android Auto; otherwise one of 60, 90 or 120 Hz. */
+    val refreshRateHz: Int = 0
+)
+
+@Immutable
 data class PlayerExperienceSettings(
     val dynamicAlbumGlow: Boolean = true,
     val highContrastTypography: Boolean = false,
@@ -72,6 +79,9 @@ object OtherSettingsPreferences {
     private const val KEY_LYRICS_PROVIDER = "lyrics_provider"
     private const val KEY_LYRICS_TEXT_SIZE = "lyrics_text_size_sp"
     private const val KEY_LYRICS_TRANSLATION_LANGUAGE = "lyrics_translation_language"
+    private const val KEY_HIGH_PERFORMANCE_ENABLED = "high_performance_enabled"
+    private const val KEY_PERFORMANCE_REFRESH_RATE = "performance_refresh_rate_hz"
+    val PERFORMANCE_REFRESH_RATE_OPTIONS: List<Int> = listOf(0, 60, 90, 120)
 
     val LYRICS_PROVIDERS: List<String> = listOf(
         "Auto",
@@ -373,6 +383,41 @@ object OtherSettingsPreferences {
 
     fun setOutputPrecision(context: Context, precision: OutputPrecision) {
         getPrefs(context).edit().putString(KEY_OUTPUT_PRECISION, precision.name).apply()
+    }
+
+    fun performanceSettings(context: Context): PerformanceSettings {
+        val prefs = getPrefs(context)
+        val savedRate = prefs.getInt(KEY_PERFORMANCE_REFRESH_RATE, 0)
+        return PerformanceSettings(
+            highPerformanceEnabled = prefs.getBoolean(KEY_HIGH_PERFORMANCE_ENABLED, false),
+            refreshRateHz = savedRate.takeIf { it in PERFORMANCE_REFRESH_RATE_OPTIONS } ?: 0
+        )
+    }
+
+    fun observePerformanceSettings(context: Context): Flow<PerformanceSettings> {
+        val keys = setOf(KEY_HIGH_PERFORMANCE_ENABLED, KEY_PERFORMANCE_REFRESH_RATE)
+        return callbackFlow {
+            val app = context.applicationContext
+            val prefs = getPrefs(app)
+            val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+                if (key == null || key in keys) trySend(Unit)
+            }
+            prefs.registerOnSharedPreferenceChangeListener(listener)
+            trySend(Unit)
+            awaitClose { prefs.unregisterOnSharedPreferenceChangeListener(listener) }
+        }.conflate()
+            .map { performanceSettings(context.applicationContext) }
+            .distinctUntilChanged()
+            .flowOn(AppDispatchers.Io)
+    }
+
+    fun setHighPerformanceEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_HIGH_PERFORMANCE_ENABLED, enabled).apply()
+    }
+
+    fun setPerformanceRefreshRate(context: Context, refreshRateHz: Int) {
+        val normalized = refreshRateHz.takeIf { it in PERFORMANCE_REFRESH_RATE_OPTIONS } ?: 0
+        getPrefs(context).edit().putInt(KEY_PERFORMANCE_REFRESH_RATE, normalized).apply()
     }
 
     fun isDynamicGlassEnabled(context: Context): Boolean {
