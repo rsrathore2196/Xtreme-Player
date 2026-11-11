@@ -195,6 +195,9 @@ class MainActivity : ComponentActivity() {
             // normal Android launch window. Player/network/tab data never gates it.
             val launchSettings by app.launchSettings.collectAsStateWithLifecycle()
             if (launchSettings == null) return@setContent
+            androidx.compose.runtime.LaunchedEffect(launchSettings) {
+                updateRefreshRate()
+            }
             androidx.compose.runtime.SideEffect { initialContentReady = true }
             val themeSelection by playerViewModel.themeSelection.collectAsStateWithLifecycle()
             val themeMode = themeSelection.mode
