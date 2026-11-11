@@ -4,6 +4,10 @@ import android.os.Build
 import android.os.SystemClock
 import androidx.benchmark.macro.CompilationMode
 import androidx.benchmark.macro.FrameTimingMetric
+import androidx.benchmark.macro.MemoryUsageMetric
+import androidx.benchmark.macro.PowerCategory
+import androidx.benchmark.macro.PowerCategoryDisplayLevel
+import androidx.benchmark.macro.PowerMetric
 import androidx.benchmark.macro.MacrobenchmarkScope
 import androidx.benchmark.macro.StartupMode
 import androidx.benchmark.macro.TraceSectionMetric
@@ -50,9 +54,37 @@ class StartupResponsivenessBenchmark {
     @Test fun optionalWorkWakeupAndInteraction() = opening(StartupMode.WARM, observeOptionalWakeup = true)
 
     private fun opening(mode: StartupMode, observeOptionalWakeup: Boolean = false, rapidRetargeting: Boolean = false,
-        idleBeforeFirstInteractionMs: Long = 0L) = benchmark.measureRepeated(
+        idleBeforeFirstInteractionMs: Long = 0L) {
+        // MemoryUsageMetric captures peak target-process anonymous/file RSS, ART heap and GPU
+        // allocations. High-precision PowerMetric is only available on supported physical devices
+        // (notably Pixel 6+); its CPU/GPU values are system-wide, not app-only CPU utilization.
+        val powerMetrics = if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+            PowerMetric.deviceSupportsHighPrecisionTracking()
+        ) {
+            listOf(
+                PowerMetric(
+                    PowerMetric.Type.Power(
+                        mapOf(
+                            PowerCategory.CPU to PowerCategoryDisplayLevel.TOTAL,
+                            PowerCategory.GPU to PowerCategoryDisplayLevel.TOTAL,
+                            PowerCategory.MEMORY to PowerCategoryDisplayLevel.TOTAL,
+                            PowerCategory.DISPLAY to PowerCategoryDisplayLevel.TOTAL
+                        )
+                    )
+                )
+            )
+        } else {
+            emptyList()
+        }
+
+        benchmark.measureRepeated(
         packageName = TARGET,
-        metrics = listOf(StartupTimingMetric(), FrameTimingMetric()) + listOf(
+        metrics = listOf(
+            StartupTimingMetric(),
+            FrameTimingMetric(),
+            MemoryUsageMetric(MemoryUsageMetric.Mode.Max)
+        ) + powerMetrics + listOf(
             "Xtreme/Foreground first draw",
             "Xtreme/Settings restore",
             "Xtreme/Baseline profile install",
