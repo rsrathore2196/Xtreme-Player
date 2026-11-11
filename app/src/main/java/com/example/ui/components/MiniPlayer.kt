@@ -97,9 +97,8 @@ fun MiniPlayer(
     compact: Boolean = false
 ) {
     val track = uiState.currentTrack ?: return
-    val dockCaptureWidthPx = with(LocalDensity.current) {
-        LocalConfiguration.current.screenWidthDp.dp.toPx()
-    }
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val dockCaptureWidthPx = with(LocalDensity.current) { screenWidthDp.dp.toPx() }
     val morph = LocalPlayerExpansionMotion.current
     val interactive by remember(morph) { derivedStateOf { morph?.miniInteractive != false } }
     val artworkDensity = androidx.compose.ui.platform.LocalDensity.current.density
