@@ -18,7 +18,8 @@ class PerformanceRefreshRatePolicyTest {
     @Test
     fun unsupported120HzPreferenceFallsBackToNearestSupportedMode() {
         assertEquals(90, DisplayRefreshRatePolicy.resolvePreferredRefreshRate(120, listOf(60, 90)))
-        assertEquals(90, DisplayRefreshRatePolicy.resolvePreferredRefreshRate(120, listOf(60, 90, 144)))
+        assertEquals(90, DisplayRefreshRatePolicy.resolvePreferredRefreshRate(120, listOf(60, 90, 160)))
+        assertEquals(144, DisplayRefreshRatePolicy.resolvePreferredRefreshRate(120, listOf(60, 90, 144)))
     }
 
     @Test

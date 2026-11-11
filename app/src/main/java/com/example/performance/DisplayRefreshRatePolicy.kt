@@ -22,7 +22,7 @@ object DisplayRefreshRatePolicy {
      * micro-stuttering and verbose main-thread stack-trace generation.
      *
      * This workaround is deliberately limited to the Samsung Galaxy S22 family on Android 12–14,
-     * the combination for which the issue was identified during the BitChord comparison. Do not
+     * the combination for which the issue was identified during performance testing. Do not
      * generalize it to every Samsung model without device-specific reproduction evidence.
      */
     fun isAffectedSamsungDevice(
@@ -70,7 +70,7 @@ object DisplayRefreshRatePolicy {
     }
 
     /**
-     * Mirrors BitChord's supported-rate discovery: expose rates the active display reports
+     * Supported-rate discovery: expose rates the active display reports
      * across its available modes, including API 31+ alternative refresh rates.
      */
     fun supportedPerformanceRefreshRates(display: Display?): List<Int> {
@@ -100,7 +100,7 @@ object DisplayRefreshRatePolicy {
     /**
      * Resolve a saved fixed-rate choice against the current display. AUTO (0) deliberately
      * remains automatic. If a setting is restored on another device, choose the nearest
-     * supported rate; on an exact tie prefer the higher rate, matching BitChord's policy.
+     * supported rate; on an exact tie prefer the higher rate.
      */
     fun resolvePreferredRefreshRate(preferredHz: Int, supportedRates: List<Int>): Int {
         if (preferredHz <= 0) return 0

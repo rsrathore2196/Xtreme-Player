@@ -61,7 +61,7 @@ object BackgroundWorkCoordinator {
         finally { if (enabled) androidx.tracing.Trace.endSection() }
     }
     private val foregroundDrawPending = AtomicBoolean(false)
-    private val firstFrame = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private var firstFrame = kotlinx.coroutines.CompletableDeferred<Unit>()
     fun expectForegroundDraw() {
         if (!foregroundDrawPending.getAndSet(true))
             androidx.tracing.Trace.beginAsyncSection("Xtreme/Foreground first draw", 0)
@@ -75,6 +75,33 @@ object BackgroundWorkCoordinator {
         firstFrame.complete(Unit)
     }
     suspend fun awaitFirstFrame() { firstFrame.await() }
+
+    @androidx.annotation.VisibleForTesting
+    fun resetForTesting() {
+        foregroundDrawPending.set(false)
+        firstFrame = kotlinx.coroutines.CompletableDeferred()
+        touching.set(false)
+        focused.set(true)
+        foreground.set(false)
+        _uiForeground.value = false
+        scrolling.set(false)
+        synchronized(scrollOwners) { scrollOwners.clear() }
+        jobs.set(0)
+        navigationJobs.set(0)
+        navigationUntil.set(0L)
+        corePreparations.set(0)
+        val now = SystemClock.elapsedRealtime()
+        lastInteraction.set(now - 1000L)
+        lastSlowFrame.set(now - 1000L)
+        lastWork.set(now - 1000L)
+        lastOptionalCompleted.set(0L)
+        synchronized(admissionLock) {
+            waiting.clear()
+            essentialActive = false
+            optionalActive = false
+            cardActive = false
+        }
+    }
 
     private val _interactions = MutableStateFlow(0L)
     val interactions = _interactions.asStateFlow()

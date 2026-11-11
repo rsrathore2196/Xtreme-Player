@@ -20,6 +20,7 @@ class PlaybackColdRestoreIndependenceTest {
     @Test fun headlessPlaybackRestorationDoesNotNeedAHomeOrActivityFrame() = runBlocking {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         val coordinator = BackgroundWorkCoordinator
+        coordinator.resetForTesting()
         coordinator.foreground(false)
         val firstFrame = coordinator.javaClass.getDeclaredField("firstFrame").apply { isAccessible = true }
             .get(null) as CompletableDeferred<*>

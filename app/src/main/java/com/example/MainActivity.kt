@@ -374,7 +374,7 @@ class MainActivity : ComponentActivity() {
         val actualRate = display.refreshRate.takeIf { it.isFinite() && it > 0f } ?: 60f
         frameBudgetNanos = (1_000_000_000L / actualRate).toLong()
 
-        // Match BitChord: High Performance opts out of Android's frame-rate power-saving
+        // High Performance opts out of Android's frame-rate power-saving
         // balancing on API 35+, while still allowing thermal/system safety throttling.
         val active = uiResumed && decor.hasWindowFocus()
         val requestedHz = if (settings.highPerformanceEnabled) {

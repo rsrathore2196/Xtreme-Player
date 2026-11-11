@@ -177,7 +177,7 @@ fun OtherSettingsPage(
         PlaybackIntegrationsSection(onOpenSourcesScreen = { showSourcesScreen = true })
         Spacer(Modifier.height(16.dp))
 
-        // High Performance mirrors BitChord's sustained refresh-rate request and
+        // High Performance enables sustained refresh-rate request and
         // power-saving-balance opt-out. It deliberately leaves Xtreme's visual
         // profile and user-selected animation/glass preferences untouched.
         Box(

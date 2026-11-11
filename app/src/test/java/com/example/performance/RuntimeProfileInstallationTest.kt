@@ -22,6 +22,7 @@ class RuntimeProfileInstallationTest {
     @Before fun setup() {
         (DeferredLibraryInitialization::class.java.getDeclaredField("profileStarted").apply { isAccessible = true }
             .get(null) as AtomicBoolean).set(false)
+        BackgroundWorkCoordinator.resetForTesting()
         scope = CoroutineScope(SupervisorJob() + AppDispatchers.Io)
         BackgroundWorkCoordinator.foreground(false); BackgroundWorkCoordinator.touch(false)
         BackgroundWorkCoordinator.scrolling(false); BackgroundWorkCoordinator.windowFocus(true)
