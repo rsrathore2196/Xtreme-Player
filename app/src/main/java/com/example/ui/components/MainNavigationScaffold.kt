@@ -95,6 +95,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.layout.boundsInRoot
@@ -140,9 +141,7 @@ fun MainNavigationScaffold(
     val liquidGlassProfileSetting by viewModel.liquidGlassProfile.collectAsStateWithLifecycle()
 
     val context = LocalContext.current
-    val effectiveGlassProfile = remember(context, liquidGlassProfileSetting) {
-        com.example.performance.LiquidGlassDeviceCapability.resolveEffectiveProfile(context, liquidGlassProfileSetting)
-    }
+    val effectiveGlassProfile = rememberEffectiveLiquidGlassProfile(liquidGlassProfileSetting)
     val messageLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(viewModel, context, messageLifecycle) {
         messageLifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.STARTED) {
@@ -804,4 +803,69 @@ private fun ImportDialogHost(viewModel: PlayerViewModel, isDarkMode: Boolean) {
         onOpenPlaylist = { playlistId -> viewModel.openPlaylist(playlistId) },
         onRetryUnmatched = viewModel::retryUnmatchedOnYouTube
     )
+}
+
+
+/**
+ * Re-evaluates AUTO rendering capability when the runtime conditions that influence it change.
+ * Explicit user-selected profiles remain stable and do not register unnecessary observers.
+ */
+@Composable
+private fun rememberEffectiveLiquidGlassProfile(
+    setting: com.example.performance.LiquidGlassProfileSetting
+): com.example.performance.LiquidGlassProfile {
+    val context = LocalContext.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    var capabilityRevision by remember(context, lifecycleOwner) { mutableIntStateOf(0) }
+
+    DisposableEffect(context, lifecycleOwner, setting) {
+        if (setting != com.example.performance.LiquidGlassProfileSetting.AUTO) {
+            onDispose { }
+        } else {
+            val appContext = context.applicationContext
+            val powerReceiver = object : android.content.BroadcastReceiver() {
+                override fun onReceive(receiverContext: android.content.Context?, intent: android.content.Intent?) {
+                    capabilityRevision++
+                }
+            }
+            var receiverRegistered = false
+            try {
+                ContextCompat.registerReceiver(
+                    appContext,
+                    powerReceiver,
+                    android.content.IntentFilter(android.os.PowerManager.ACTION_POWER_SAVE_MODE_CHANGED),
+                    ContextCompat.RECEIVER_NOT_EXPORTED
+                )
+                receiverRegistered = true
+            } catch (_: SecurityException) {
+                // Lifecycle and display callbacks still trigger a refresh if broadcasts are unavailable.
+            }
+
+            val displayManager = appContext.getSystemService(android.hardware.display.DisplayManager::class.java)
+            val displayListener = object : android.hardware.display.DisplayManager.DisplayListener {
+                override fun onDisplayAdded(displayId: Int) { capabilityRevision++ }
+                override fun onDisplayRemoved(displayId: Int) { capabilityRevision++ }
+                override fun onDisplayChanged(displayId: Int) { capabilityRevision++ }
+            }
+            displayManager?.registerDisplayListener(
+                displayListener,
+                android.os.Handler(android.os.Looper.getMainLooper())
+            )
+
+            val lifecycleObserver = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) capabilityRevision++
+            }
+            lifecycleOwner.lifecycle.addObserver(lifecycleObserver)
+
+            onDispose {
+                lifecycleOwner.lifecycle.removeObserver(lifecycleObserver)
+                if (receiverRegistered) appContext.unregisterReceiver(powerReceiver)
+                displayManager?.unregisterDisplayListener(displayListener)
+            }
+        }
+    }
+
+    return remember(context, setting, capabilityRevision) {
+        com.example.performance.LiquidGlassDeviceCapability.resolveEffectiveProfile(context, setting)
+    }
 }
