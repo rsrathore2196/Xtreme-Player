@@ -113,9 +113,10 @@ data class LiquidGlassProfile(
 }
 
 /**
- * Evidence-based device capability evaluator for dynamic Liquid Glass profile selection.
- * Analyzes RAM class, available hardware acceleration, Android version, display refresh rate,
- * processor count, and system power-save mode rather than relying on an arbitrary device blacklist.
+ * Conservative heuristic for dynamic Liquid Glass profile selection.
+ * Uses Android version, low-RAM status, memory class, processor count, display refresh rate,
+ * and power-save state. Android exposes no portable GPU-performance score, so AUTO is a starting
+ * point rather than a guarantee of a particular frame rate; validate it with device benchmarks.
  */
 /**
  * Snapshot of coarse device/runtime capabilities used by the AUTO glass profile.
