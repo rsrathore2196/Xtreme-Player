@@ -26,6 +26,7 @@ import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.getValue
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
     private var mediaSearchIntentJob: Job? = null
     private var mediaSearchRequestId: String? = null
     private var mediaSearchDispatched = false
+    private var performanceSettingsJob: Job? = null
     private var initialContentReady = false
     private var firstDrawListener: android.view.ViewTreeObserver.OnDrawListener? = null
     private var lastInteractionMs = 0L
@@ -98,6 +100,12 @@ class MainActivity : ComponentActivity() {
                 IntentFilter(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED)
             powerReceiverRegistered = true
         }
+        performanceSettingsJob?.cancel()
+        performanceSettingsJob = lifecycleScope.launch {
+            com.example.data.local.OtherSettingsPreferences
+                .observePerformanceSettings(applicationContext)
+                .collect { updateRefreshRate() }
+        }
         updateRefreshRate()
         if (supportsHighRefresh && !displayListenerRegistered) {
             displayManager?.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
@@ -107,6 +115,8 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        performanceSettingsJob?.cancel()
+        performanceSettingsJob = null
         if (powerReceiverRegistered) {
             try { unregisterReceiver(refreshPolicyReceiver) } catch (_: IllegalArgumentException) {}
             powerReceiverRegistered = false
@@ -344,8 +354,8 @@ class MainActivity : ComponentActivity() {
     private fun updateRefreshRate() {
         val decor = window.decorView
         val display = decor.display ?: return
+        val settings = com.example.data.local.OtherSettingsPreferences.performanceSettings(applicationContext)
 
-        // Resolve and cache display capabilities to eliminate continuous supportedModes sequence allocations
         if (cachedDisplayId != display.displayId) {
             cachedDisplayId = display.displayId
             val (highRefresh, maxRate) = com.example.performance.DisplayRefreshRatePolicy.resolveDisplayRefreshCapabilities(display)
@@ -360,41 +370,42 @@ class MainActivity : ComponentActivity() {
         val actualRate = display.refreshRate.takeIf { it.isFinite() && it > 0f } ?: 60f
         frameBudgetNanos = (1_000_000_000L / actualRate).toLong()
 
-        val isPowerSave = powerManager?.isPowerSaveMode == true
-        val active = uiResumed && decor.hasWindowFocus() && !isPowerSave
+        // Match BitChord: High Performance opts out of Android's frame-rate power-saving
+        // balancing on API 35+, while still allowing thermal/system safety throttling.
+        val active = uiResumed && decor.hasWindowFocus()
+        val requestedHz = if (settings.highPerformanceEnabled) {
+            com.example.performance.DisplayRefreshRatePolicy.resolvePreferredRefreshRate(
+                display,
+                settings.refreshRateHz
+            )
+        } else {
+            0
+        }
+        val targetRate = if (active) requestedHz.toFloat() else 0f
 
-        // Android 15+ (VanillaIceCream) Adaptive Frame Rate API
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            val targetCategory = if (active) View.REQUESTED_FRAME_RATE_CATEGORY_HIGH
-                else View.REQUESTED_FRAME_RATE_CATEGORY_NO_PREFERENCE
-            if (lastAppliedCategory != targetCategory) {
-                decor.requestedFrameRate = targetCategory
-                lastAppliedCategory = targetCategory
+            if (lastAppliedCategory != targetRate) {
+                // Numeric request is important: CATEGORY_HIGH alone may resolve to 90Hz
+                // even when the panel exposes a 120Hz mode.
+                decor.requestedFrameRate = targetRate
+                lastAppliedCategory = targetRate
             }
             if (lastAppliedBoost != active) {
                 window.frameRateBoostOnTouchEnabled = active
                 lastAppliedBoost = active
             }
+            window.setFrameRatePowerSavingsBalanced(!settings.highPerformanceEnabled)
         }
 
-        // Android 11-14 legacy preferredRefreshRate API
-        // Guarded: only request high refresh rate on Android < 15 when hardware actually supports it
-        val targetLegacyRate = if (active && supportsHighRefresh &&
-            Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            cachedHighRefreshRate
-        } else {
-            0f
-        }
-
-        // Deduplicate window layout attributes updates to prevent repeated IPC and relayout passes
-        if (lastAppliedLegacyRate != targetLegacyRate) {
+        // On Android 6–14, preferredRefreshRate is the platform window hint. Zero means Auto.
+        if (lastAppliedLegacyRate != targetRate) {
             val attributes = window.attributes
-            if (attributes.preferredDisplayModeId != 0 || attributes.preferredRefreshRate != targetLegacyRate) {
+            if (attributes.preferredDisplayModeId != 0 || attributes.preferredRefreshRate != targetRate) {
                 attributes.preferredDisplayModeId = 0
-                attributes.preferredRefreshRate = targetLegacyRate
+                attributes.preferredRefreshRate = targetRate
                 window.attributes = attributes
             }
-            lastAppliedLegacyRate = targetLegacyRate
+            lastAppliedLegacyRate = targetRate
         }
     }
 
