@@ -154,6 +154,12 @@ fun OtherSettingsPage(
         }
     }
 
+    val performancePreferences = remember(context) { OtherSettingsPreferences.observePerformanceSettings(context) }
+    val performanceSettings by performancePreferences.collectAsStateWithLifecycle(
+        initialValue = OtherSettingsPreferences.performanceSettings(context)
+    )
+    var showHighPerformanceConfirmation by remember { mutableStateOf(false) }
+
     val lyricsPreferences = remember(context) { OtherSettingsPreferences.observeLyricsSettings(context) }
     val lyricsSettings by lyricsPreferences.collectAsStateWithLifecycle()
     var showLyricsProviders by remember { mutableStateOf(false) }
@@ -169,6 +175,93 @@ fun OtherSettingsPage(
             .padding(16.dp)
     ) {
         PlaybackIntegrationsSection(onOpenSourcesScreen = { showSourcesScreen = true })
+        Spacer(Modifier.height(16.dp))
+
+        // High Performance mirrors BitChord's sustained refresh-rate request and
+        // power-saving-balance opt-out. It deliberately leaves Xtreme's visual
+        // profile and user-selected animation/glass preferences untouched.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .liquidGlassCard(appColors, shape = RoundedCornerShape(22.dp), elevation = 6.dp, translucency = 0.82f, tintAccent = true)
+                .testTag("card_performance_settings")
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.AutoAwesome,
+                        contentDescription = null,
+                        tint = LiquidGlass.lightContentColor(appColors, accentColor),
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("Performance & Refresh Rate", fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold, color = appColors.textPrimary)
+                        Text(
+                            if (performanceSettings.highPerformanceEnabled)
+                                "High performance is enabled"
+                            else "Request a higher display refresh rate",
+                            fontSize = 11.5.sp, color = appColors.textMuted
+                        )
+                    }
+                    Switch(
+                        checked = performanceSettings.highPerformanceEnabled,
+                        onCheckedChange = { enabled ->
+                            if (enabled) showHighPerformanceConfirmation = true
+                            else OtherSettingsPreferences.setHighPerformanceEnabled(context, false)
+                        },
+                        colors = liquidGlassSwitchColors(appColors),
+                        modifier = Modifier.testTag("switch_high_performance")
+                    )
+                }
+                if (performanceSettings.highPerformanceEnabled) {
+                    HorizontalDivider(Modifier.padding(vertical = 12.dp), color = dividerColor)
+                    Text("Preferred Refresh Rate", fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold, color = appColors.textPrimary)
+                    Text(
+                        "Choose Auto, 60, 90 or 120 Hz. Android may still limit the actual rate.",
+                        fontSize = 11.sp, color = appColors.textMuted,
+                        modifier = Modifier.padding(top = 3.dp, bottom = 10.dp)
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        listOf(0, 60, 90, 120).forEach { rate ->
+                            val selected = performanceSettings.refreshRateHz == rate
+                            val label = if (rate == 0) "Auto" else "$rate"
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .clickable {
+                                        OtherSettingsPreferences.setPerformanceRefreshRate(context, rate)
+                                    }
+                                    .testTag("refresh_rate_$rate"),
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (selected) accentColor.copy(alpha = 0.18f) else inputBg,
+                                border = BorderStroke(1.dp, if (selected) accentColor else cardBorder)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(vertical = 10.dp, horizontal = 2.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    Text(
+                                        label,
+                                        fontSize = 12.sp,
+                                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (selected) accentColor else appColors.textPrimary
+                                    )
+                                    if (rate != 0) Text("Hz", fontSize = 9.sp, color = appColors.textMuted)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Spacer(Modifier.height(16.dp))
         // 1. Smart Storage & Cache Management Card
         Box(
@@ -575,6 +668,25 @@ fun OtherSettingsPage(
         )
 
         Spacer(modifier = Modifier.height(24.dp))
+    }
+
+    if (showHighPerformanceConfirmation) {
+        AlertDialog(
+            onDismissRequest = { showHighPerformanceConfirmation = false },
+            title = { Text("Enable High Performance?") },
+            text = {
+                Text("Xtreme Player will request your selected display refresh rate and disable Android's frame-rate power-saving balance where supported. Higher refresh rates can increase battery use, heat and CPU/GPU load. Android may still reduce the rate for thermal, battery or system limits.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showHighPerformanceConfirmation = false
+                    OtherSettingsPreferences.setHighPerformanceEnabled(context, true)
+                }) { Text("Enable") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showHighPerformanceConfirmation = false }) { Text("Cancel") }
+            }
+        )
     }
 
     if (showLyricsProviders) {
