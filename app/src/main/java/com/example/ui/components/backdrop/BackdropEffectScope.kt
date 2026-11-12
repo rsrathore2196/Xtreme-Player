@@ -11,6 +11,7 @@
 package com.example.ui.components.backdrop
 
 import androidx.annotation.RequiresApi
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.RenderEffect
 import androidx.compose.ui.graphics.Shape
@@ -21,6 +22,9 @@ import androidx.compose.ui.unit.LayoutDirection
 sealed interface BackdropEffectScope : Density, RuntimeShaderCache {
 
     val size: Size
+
+    /** Subpixel origin of the surface inside the screen-aligned capture. */
+    val contentOffset: Offset
 
     val layoutDirection: LayoutDirection
 
@@ -36,6 +40,7 @@ internal abstract class BackdropEffectScopeImpl : BackdropEffectScope, RuntimeSh
     override var density: Float = 1f
     override var fontScale: Float = 1f
     override var size: Size = Size.Unspecified
+    override var contentOffset: Offset = Offset.Zero
     override var layoutDirection: LayoutDirection = LayoutDirection.Ltr
     override var padding: Float = 0f
     override var renderEffect: RenderEffect? = null
@@ -50,21 +55,24 @@ internal abstract class BackdropEffectScopeImpl : BackdropEffectScope, RuntimeSh
     // Vendored change: [contentScale] reports the size the effects actually operate
     // on when the backdrop layer is recorded at a reduced resolution, so shader
     // geometry (e.g. the lens size uniform) matches the layer's pixel grid.
-    fun update(scope: DrawScope, contentScale: Float = 1f): Boolean {
+    fun update(scope: DrawScope, contentScale: Float = 1f,
+        contentSize: Size = scope.size * contentScale, contentOffset: Offset = Offset.Zero): Boolean {
         val newDensity = scope.density
         val newFontScale = scope.fontScale
-        val newSize = if (contentScale != 1f) scope.size * contentScale else scope.size
+        val newSize = contentSize
         val newLayoutDirection = scope.layoutDirection
 
         val changed = newDensity != density ||
                 newFontScale != fontScale ||
                 newSize != size ||
+                contentOffset != this.contentOffset ||
                 newLayoutDirection != layoutDirection
 
         if (changed) {
             density = newDensity
             fontScale = newFontScale
             size = newSize
+            this.contentOffset = contentOffset
             layoutDirection = newLayoutDirection
         }
 
@@ -81,6 +89,7 @@ internal abstract class BackdropEffectScopeImpl : BackdropEffectScope, RuntimeSh
         density = 1f
         fontScale = 1f
         size = Size.Unspecified
+        contentOffset = Offset.Zero
         layoutDirection = LayoutDirection.Ltr
         padding = 0f
         renderEffect = null

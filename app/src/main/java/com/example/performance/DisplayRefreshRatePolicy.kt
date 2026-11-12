@@ -7,6 +7,14 @@ import android.view.Display
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+internal data class DisplayModeRefreshRates(
+    val width: Int, val height: Int, val rate: Float, val alternatives: List<Float> = emptyList()
+)
+
+internal data class WindowRefreshRateRequest(
+    val rate: Float, val touchBoost: Boolean, val powerSavingsBalanced: Boolean
+)
+
 /**
  * Manages evidence-based display refresh-rate policy and Compose adaptive refresh-rate configuration.
  *
@@ -71,27 +79,37 @@ object DisplayRefreshRatePolicy {
 
     /**
      * Supported-rate discovery: expose rates the active display reports
-     * across its available modes, including API 31+ alternative refresh rates.
+     * at the current resolution, including API 31+ alternative refresh rates.
      */
     fun supportedPerformanceRefreshRates(display: Display?): List<Int> {
+        val current = display?.mode
+        val modes = display?.supportedModes.orEmpty().map { mode ->
+            DisplayModeRefreshRates(mode.physicalWidth, mode.physicalHeight, mode.refreshRate,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) mode.alternativeRefreshRates.toList() else emptyList())
+        }
+        return supportedPerformanceRefreshRates(current?.physicalWidth ?: 0, current?.physicalHeight ?: 0,
+            modes, display?.refreshRate ?: 60f)
+    }
+
+    internal fun supportedPerformanceRefreshRates(
+        width: Int, height: Int, modes: List<DisplayModeRefreshRates>, fallbackHz: Float
+    ): List<Int> {
         val rates = linkedSetOf<Int>()
-        display?.supportedModes?.forEach { mode ->
-            val rate = mode.refreshRate
+        modes.filter { it.width == width && it.height == height }.forEach { mode ->
+            val rate = mode.rate
             if (rate.isFinite()) {
                 val rounded = rate.roundToInt()
                 if (rounded in 50..240) rates += rounded
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                mode.alternativeRefreshRates.forEach { alternative ->
-                    if (alternative.isFinite()) {
-                        val rounded = alternative.roundToInt()
-                        if (rounded in 50..240) rates += rounded
-                    }
+            mode.alternatives.forEach { alternative ->
+                if (alternative.isFinite()) {
+                    val rounded = alternative.roundToInt()
+                    if (rounded in 50..240) rates += rounded
                 }
             }
         }
         if (rates.isEmpty()) {
-            val fallback = display?.refreshRate?.takeIf { it.isFinite() && it > 0f }?.roundToInt() ?: 60
+            val fallback = fallbackHz.takeIf { it.isFinite() && it > 0f }?.roundToInt() ?: 60
             rates += fallback.coerceIn(50, 240)
         }
         return rates.sorted()
@@ -113,6 +131,15 @@ object DisplayRefreshRatePolicy {
 
     fun resolvePreferredRefreshRate(display: Display?, preferredHz: Int): Int =
         resolvePreferredRefreshRate(preferredHz, supportedPerformanceRefreshRates(display))
+
+    internal fun resolveWindowRequest(
+        highPerformance: Boolean, preferredHz: Int, active: Boolean, supportedRates: List<Int>
+    ): WindowRefreshRateRequest = WindowRefreshRateRequest(
+        rate = if (active && highPerformance) resolvePreferredRefreshRate(preferredHz, supportedRates).toFloat() else 0f,
+        touchBoost = active,
+        // A paused/unfocused window must relinquish its high-performance vote.
+        powerSavingsBalanced = !(active && highPerformance)
+    )
 
     /**
      * Returns whether the display has a supported rate above 60Hz and its highest reported rate.

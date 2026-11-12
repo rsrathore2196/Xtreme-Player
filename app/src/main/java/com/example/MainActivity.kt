@@ -51,15 +51,11 @@ class MainActivity : ComponentActivity() {
     private var uiResumed = false
     private var powerReceiverRegistered = false
     private var displayListenerRegistered = false
-    private var supportsHighRefresh = false
-    private var cachedHighRefreshRate = 60f
-    private var cachedDisplayId = -1
     private var lastAppliedLegacyRate = -1f
     private var lastAppliedCategory = -1f
     private var lastAppliedBoost: Boolean? = null
     private var lastAppliedPowerSavingsBalanced: Boolean? = null
     private val displayManager by lazy { getSystemService(DisplayManager::class.java) }
-    private val powerManager by lazy { getSystemService(PowerManager::class.java) }
     private val refreshPolicyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) { updateRefreshRate() }
     }
@@ -69,7 +65,6 @@ class MainActivity : ComponentActivity() {
         override fun onDisplayChanged(displayId: Int) {
             val currentDisplay = window.decorView.display
             if (currentDisplay != null && currentDisplay.displayId == displayId) {
-                cachedDisplayId = -1
                 updateRefreshRate()
             }
         }
@@ -108,9 +103,13 @@ class MainActivity : ComponentActivity() {
                 .collect { updateRefreshRate() }
         }
         updateRefreshRate()
-        if (supportsHighRefresh && !displayListenerRegistered) {
-            displayManager?.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
-            displayListenerRegistered = true
+        // A 60Hz display can change modes or be replaced by an external display.
+        // Its frame budget and supported-rate fallback still need notifications.
+        displayManager?.let { manager ->
+            if (!displayListenerRegistered) {
+                manager.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
+                displayListenerRegistered = true
+            }
         }
         startFrameMetricsObserver()
     }
@@ -355,21 +354,16 @@ class MainActivity : ComponentActivity() {
         updateRefreshRate()
     }
 
+    override fun onConfigurationChanged(configuration: android.content.res.Configuration) {
+        super.onConfigurationChanged(configuration)
+        // Resolve modes after the decor has applied a window/resolution change.
+        window.decorView.post { if (uiResumed) updateRefreshRate() }
+    }
+
     private fun updateRefreshRate() {
         val decor = window.decorView
         val display = decor.display ?: return
         val settings = com.example.data.local.OtherSettingsPreferences.performanceSettings(applicationContext)
-
-        if (cachedDisplayId != display.displayId) {
-            cachedDisplayId = display.displayId
-            val (highRefresh, maxRate) = com.example.performance.DisplayRefreshRatePolicy.resolveDisplayRefreshCapabilities(display)
-            supportsHighRefresh = highRefresh
-            cachedHighRefreshRate = maxRate
-            if (supportsHighRefresh && !displayListenerRegistered && uiResumed) {
-                displayManager?.registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
-                displayListenerRegistered = true
-            }
-        }
 
         val actualRate = display.refreshRate.takeIf { it.isFinite() && it > 0f } ?: 60f
         frameBudgetNanos = (1_000_000_000L / actualRate).toLong()
@@ -377,15 +371,12 @@ class MainActivity : ComponentActivity() {
         // High Performance opts out of Android's frame-rate power-saving
         // balancing on API 35+, while still allowing thermal/system safety throttling.
         val active = uiResumed && decor.hasWindowFocus()
-        val requestedHz = if (settings.highPerformanceEnabled) {
-            com.example.performance.DisplayRefreshRatePolicy.resolvePreferredRefreshRate(
-                display,
-                settings.refreshRateHz
-            )
-        } else {
-            0
-        }
-        val targetRate = if (active) requestedHz.toFloat() else 0f
+        val request = com.example.performance.DisplayRefreshRatePolicy.resolveWindowRequest(
+            settings.highPerformanceEnabled, settings.refreshRateHz, active,
+            if (active && settings.highPerformanceEnabled)
+                com.example.performance.DisplayRefreshRatePolicy.supportedPerformanceRefreshRates(display)
+            else emptyList())
+        val targetRate = request.rate
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
             if (lastAppliedCategory != targetRate) {
@@ -394,11 +385,11 @@ class MainActivity : ComponentActivity() {
                 decor.requestedFrameRate = targetRate
                 lastAppliedCategory = targetRate
             }
-            if (lastAppliedBoost != active) {
-                window.frameRateBoostOnTouchEnabled = active
-                lastAppliedBoost = active
+            if (lastAppliedBoost != request.touchBoost) {
+                window.frameRateBoostOnTouchEnabled = request.touchBoost
+                lastAppliedBoost = request.touchBoost
             }
-            val powerSavingsBalanced = !settings.highPerformanceEnabled
+            val powerSavingsBalanced = request.powerSavingsBalanced
             if (lastAppliedPowerSavingsBalanced != powerSavingsBalanced) {
                 window.setFrameRatePowerSavingsBalanced(powerSavingsBalanced)
                 lastAppliedPowerSavingsBalanced = powerSavingsBalanced

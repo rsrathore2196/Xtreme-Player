@@ -39,6 +39,14 @@ data class LiquidGlassProfile(
     val baseFillAlphaOverride: Float? = null,
     val allowSecondaryBackdropSampling: Boolean = true
 ) {
+    /** Dock radii are already tuned per profile; do not multiply them twice. */
+    internal fun blurRadius(requested: Dp, floatingDock: Boolean): Dp =
+        if (floatingDock) floatingDockBlurRadius else requested * blurRadiusMultiplier
+
+    internal fun surfaceFillAlpha(requested: Float?, fallback: Float, floatingDock: Boolean): Float =
+        ((if (floatingDock) baseFillAlphaOverride ?: requested else requested ?: baseFillAlphaOverride)
+            ?: fallback).coerceIn(0f, 1f)
+
     companion object {
         /**
          * Full-fidelity Liquid Glass rendering:

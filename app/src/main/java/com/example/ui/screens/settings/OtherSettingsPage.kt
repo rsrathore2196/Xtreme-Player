@@ -6,6 +6,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -75,6 +76,7 @@ import com.example.ui.theme.contrastingContentColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -220,7 +222,7 @@ fun OtherSettingsPage(
                     Text("Preferred Refresh Rate", fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold, color = appColors.textPrimary)
                     Text(
-                        "Choose 60, 90 or 120 Hz. Android may still limit the actual rate.",
+                        "Auto lets Android choose. Fixed rates use the nearest supported rate at your current resolution.",
                         fontSize = 11.sp, color = appColors.textMuted,
                         modifier = Modifier.padding(top = 3.dp, bottom = 10.dp)
                     )
@@ -230,18 +232,15 @@ fun OtherSettingsPage(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         val chipShape = RoundedCornerShape(14.dp)
-                        listOf(60, 90, 120).forEach { rate ->
-                            val effectiveRate = if (performanceSettings.refreshRateHz in listOf(60, 90, 120)) {
-                                performanceSettings.refreshRateHz
-                            } else 60
-                            val selected = effectiveRate == rate
+                        OtherSettingsPreferences.PERFORMANCE_REFRESH_RATE_OPTIONS.forEach { rate ->
+                            val selected = performanceSettings.refreshRateHz == rate
                             Surface(
                                 modifier = Modifier
                                     .weight(1f)
                                     .clip(chipShape)
-                                    .clickable {
+                                    .selectable(selected = selected, role = Role.RadioButton, onClick = {
                                         OtherSettingsPreferences.setPerformanceRefreshRate(context, rate)
-                                    }
+                                    })
                                     .testTag("refresh_rate_$rate"),
                                 shape = chipShape,
                                 color = if (selected) accentColor.copy(alpha = 0.18f) else inputBg,
@@ -253,7 +252,7 @@ fun OtherSettingsPage(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "$rate Hz",
+                                        text = if (rate == 0) "Auto" else "$rate Hz",
                                         fontSize = 12.5.sp,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                         color = if (selected) accentColor else appColors.textPrimary,

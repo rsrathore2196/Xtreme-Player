@@ -14,7 +14,6 @@ import androidx.annotation.FloatRange
 import androidx.compose.foundation.shape.AbsoluteRoundedCornerShape
 import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.util.fastCoerceAtLeast
 import androidx.compose.ui.util.fastCoerceAtMost
 import com.example.ui.components.backdrop.BackdropEffectScope
 import androidx.compose.ui.geometry.isSpecified
@@ -34,10 +33,6 @@ fun BackdropEffectScope.lens(
     val currentSize = try { size } catch (_: Throwable) { return }
     if (!currentSize.isSpecified || currentSize.isEmpty() || currentSize.width <= 0f || currentSize.height <= 0f) return
 
-    if (padding > 0f) {
-        padding = (padding - refractionHeight).fastCoerceAtLeast(0f)
-    }
-
     val cornerRadii = cornerRadii ?: return
     try {
         val shader =
@@ -54,7 +49,7 @@ fun BackdropEffectScope.lens(
             }
         shader.apply {
             setFloatUniform("size", currentSize.width, currentSize.height)
-            setFloatUniform("offset", -padding, -padding)
+            setFloatUniform("offset", -padding - contentOffset.x, -padding - contentOffset.y)
             setFloatUniform("cornerRadii", cornerRadii)
             setFloatUniform("refractionHeight", refractionHeight)
             setFloatUniform("refractionAmount", -refractionAmount)

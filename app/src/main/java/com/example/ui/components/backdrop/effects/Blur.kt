@@ -23,11 +23,10 @@ fun BackdropEffectScope.blur(
     if (!isRenderEffectSupported()) return
     if (radius <= 0f) return
 
-    if (edgeTreatment != TileMode.Clamp || renderEffect != null) {
-        if (radius > padding) {
-            padding = radius
-        }
-    }
+    // Sample the real neighboring page pixels before clipping the glass. Clamping
+    // to a resized, rounded capture rect makes the blur's edge move in texel-sized
+    // steps during the last frames of a dock/mini-player spring.
+    padding = maxOf(padding, radius * 3f)
 
     renderEffect =
         BlurEffect(

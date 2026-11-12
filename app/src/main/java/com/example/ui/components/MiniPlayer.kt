@@ -160,7 +160,7 @@ fun MiniPlayer(
                 .playerMorphElement(PlayerMorphSide.MINI, PlayerMorphPart.SURFACE, track.id)
                 .xtremeLiquidGlassBackground(
                     shape = CircleShape,
-                    blurRadius = XtremeLiquidGlassDefaults.FloatingDockBlurRadius,
+                    floatingDock = true,
                     surfaceTintAlpha = XtremeLiquidGlassDefaults.FloatingDockTintAlpha,
                     tintColor = ambientGlowColor,
                     borderWidth = 0.8.dp,

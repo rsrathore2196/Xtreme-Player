@@ -17,6 +17,7 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
@@ -31,17 +32,17 @@ import androidx.compose.ui.node.observeReads
 import androidx.compose.ui.node.requireGraphicsContext
 import androidx.compose.ui.platform.InspectorInfo
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import com.example.ui.components.backdrop.backdrops.LayerBackdrop
 import com.example.ui.components.backdrop.highlight.Highlight
 import com.example.ui.components.backdrop.highlight.HighlightElement
 import com.example.ui.components.backdrop.internal.ShapeProvider
+import com.example.ui.components.backdrop.internal.BackdropRaster
+import com.example.ui.components.backdrop.internal.backdropRaster
 import com.example.ui.components.backdrop.internal.recordLayer
 import com.example.ui.components.backdrop.shadow.InnerShadow
 import com.example.ui.components.backdrop.shadow.InnerShadowElement
 import com.example.ui.components.backdrop.shadow.Shadow
 import com.example.ui.components.backdrop.shadow.ShadowElement
-import kotlin.math.ceil
 
 private val DefaultHighlight = { Highlight.Default }
 private val DefaultShadow = { Shadow.Default }
@@ -72,7 +73,9 @@ fun Modifier.drawPlainBackdrop(
         .graphicsLayer {
             clip = true
             this.shape = shapeProvider.shape
-            compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+            // The filtered layer already owns its offscreen buffer. An extra
+            // local-space buffer here would resample it again under dock scaling.
+            compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Auto
         }
         .then(
             DrawBackdropElement(
@@ -156,7 +159,7 @@ fun Modifier.drawBackdrop(
         .graphicsLayer {
             clip = true
             this.shape = shapeProvider.shape
-            compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+            compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Auto
         }
         .then(
             DrawBackdropElement(
@@ -300,6 +303,7 @@ private class DrawBackdropNode(
     private var padding = 0f
     private var hasVisibleBackdrop = false
     private var effectsDirty = true
+    private var raster: BackdropRaster? = null
     private val sourceChanged: () -> Unit = { if (isAttached) invalidateDraw() }
 
     fun updateBackdrop(value: Backdrop) {
@@ -311,31 +315,24 @@ private class DrawBackdropNode(
 
     private val recordBackdropBlock: (DrawScope.() -> Unit) = {
         val canvas = drawContext.canvas
-        val padding = padding
-        val scale = backdropScale
-
-        if (padding != 0f) {
-            canvas.translate(padding, padding)
-        }
-        // Vendored addition: draw the backdrop content downscaled so the recorded
-        // layer (and therefore the RenderEffect chain) covers fewer pixels.
-        if (scale != 1f) {
-            canvas.scale(scale, scale)
-        }
-        onDrawBackdrop {
-            with(backdrop) {
-                drawBackdrop(
-                    density = effectScope,
-                    coordinates = layoutCoordinates,
-                    layerBlock = layerBlock
-                )
+        val raster = requireNotNull(raster)
+        val x = padding + raster.phase.x
+        val y = padding + raster.phase.y
+        canvas.save()
+        try {
+            canvas.translate(x, y)
+            canvas.scale(raster.scaleX, raster.scaleY)
+            onDrawBackdrop {
+                with(backdrop) {
+                    drawBackdrop(
+                        density = effectScope,
+                        coordinates = layoutCoordinates,
+                        layerBlock = layerBlock
+                    )
+                }
             }
-        }
-        if (scale != 1f) {
-            canvas.scale(1f / scale, 1f / scale)
-        }
-        if (padding != 0f) {
-            canvas.translate(-padding, -padding)
+        } finally {
+            canvas.restore()
         }
     }
 
@@ -348,23 +345,20 @@ private class DrawBackdropNode(
         if (source?.isRecording == true || source?.graphicsLayer?.isReleased == true) return@sample
         if (source != null && (source.layerCoordinates?.isAttached != true ||
                 source.graphicsLayer.size.width < 1 || source.graphicsLayer.size.height < 1)) return@sample
-        val scale = backdropScale
-        if (effectScope.update(this, scale) || effectsDirty) observeEffects()
-        val padding = padding
-        // Capture only this surface. A fixed-width shader window used stale uniform
-        // snapshots and alternated its padding on blur-only profiles. Re-recording
-        // this small display list also preserves subpixel motion; the source page
-        // is still recorded once and the blur/lens chain remains cached.
+        val raster = backdropRaster(size, backdropScale,
+            coordinates.takeIf { source != null && layerBlock == null }).also { this@DrawBackdropNode.raster = it }
+        // Effects see the physical viewport, not the reserved width before the
+        // dock's ancestor scale. Phase is part of the immutable shader snapshot.
+        if (effectScope.update(this, backdropScale, raster.size, raster.phase) || effectsDirty) observeEffects()
+        // Only this surface plus its filter halo is captured. The source page is
+        // still recorded once, and source-only changes reuse the effect chain.
         recordLayer(
             this@DrawBackdropNode,
             layer,
-            size = IntSize(
-                ceil(size.width * scale + padding * 2).toInt().coerceAtLeast(1),
-                ceil(size.height * scale + padding * 2).toInt().coerceAtLeast(1)
-            ),
+            size = raster.layerSize(padding),
             block = recordBackdropBlock
         )
-        layer.topLeft = if (padding != 0f) IntOffset(-padding.toInt(), -padding.toInt()) else IntOffset.Zero
+        layer.topLeft = IntOffset.Zero
         hasVisibleBackdrop = true
         drawRecordedBackdrop()
     }
@@ -376,15 +370,16 @@ private class DrawBackdropNode(
     private val drawRecordedBackdrop: DrawScope.() -> Unit = {
         val layer = graphicsLayer
         if (layer != null && hasVisibleBackdrop) {
-            val scale = backdropScale
-            if (scale != 1f) {
-                // Vendored addition: stretch the low resolution layer back over the
-                // full surface; the blur in the effect chain masks the upscaling.
-                scale(1f / scale, pivot = Offset.Zero) {
-                    drawLayer(layer)
+            val raster = raster
+            if (raster != null) {
+                // Undo both downsampling and the ancestor's scale. Preserve the
+                // fractional origin: rounding it would move the page by up to a
+                // whole low-resolution texel (3-5 screen pixels) at spring settle.
+                scale(1f / raster.scaleX, 1f / raster.scaleY, pivot = Offset.Zero) {
+                    translate(-padding - raster.phase.x, -padding - raster.phase.y) {
+                        drawLayer(layer)
+                    }
                 }
-            } else {
-                drawLayer(layer)
             }
         }
     }
@@ -463,6 +458,7 @@ private class DrawBackdropNode(
         layoutCoordinates = null
         surfaceCoordinates = null
         hasVisibleBackdrop = false
+        raster = null
         effectsDirty = true
         exportedBackdrop?.layerCoordinates = null
     }

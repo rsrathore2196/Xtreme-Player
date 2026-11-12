@@ -11,7 +11,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -49,7 +49,9 @@ val LocalLiquidGlassProfile = compositionLocalOf { LiquidGlassProfile.BALANCED }
  * Controls remain outside their source; no bitmap readback or frame loop.
  */
 class LiquidGlassBackdrop internal constructor(internal val source: LayerBackdrop) {
-    internal var sampleScale by mutableFloatStateOf(XtremeLiquidGlassDefaults.BackdropSampleScale)
+    // A source can explicitly override resolution. Otherwise the current profile
+    // is authoritative immediately, including the first frame after a switch.
+    internal var sampleScale by mutableStateOf<Float?>(null)
 }
 
 val LocalLiquidGlassBackdrop = compositionLocalOf<LiquidGlassBackdrop?> { null }
@@ -84,11 +86,9 @@ fun Modifier.xtremeSharedBackdropSource(
     sampleScale: Float? = null,
     backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current
 ): Modifier {
-    val profile = LocalLiquidGlassProfile.current
     if (!enabled || !LocalDynamicGlassEnabled.current || backdrop == null ||
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return this
-    val effectiveScale = (sampleScale ?: profile.backdropSampleScale).takeIf { it.isFinite() }?.coerceIn(0.1f, 1f)
-        ?: profile.backdropSampleScale
+    val effectiveScale = sampleScale?.takeIf { it.isFinite() }?.coerceIn(0.1f, 1f)
     SideEffect { backdrop.sampleScale = effectiveScale }
     return layerBackdrop(backdrop.source)
 }
@@ -115,7 +115,8 @@ fun Modifier.xtremeLiquidGlassBackground(
     rimBrush: Brush? = null,
     neutralFinish: Boolean = false,
     innerWhiteTintAlpha: Float = 0f,
-    onSample: (() -> Unit)? = null
+    onSample: (() -> Unit)? = null,
+    floatingDock: Boolean = false
 ): Modifier {
     val profile = LocalLiquidGlassProfile.current
     if (!enabled || !LocalDynamicGlassEnabled.current) return this
@@ -128,7 +129,7 @@ fun Modifier.xtremeLiquidGlassBackground(
             else Modifier.border(borderWidth, appColors.cardBorder, shape))
 
     val density = LocalDensity.current
-    val effectiveBlurRadius = blurRadius * profile.blurRadiusMultiplier
+    val effectiveBlurRadius = profile.blurRadius(blurRadius, floatingDock)
     val radius = with(density) { effectiveBlurRadius.toPx() }
     val processingScale = backdrop?.sampleScale ?: profile.backdropSampleScale
     val useBackdrop = backdrop != null && radius > 0f && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
@@ -190,7 +191,10 @@ fun Modifier.xtremeLiquidGlassBackground(
             ) else Modifier
         )
         .drawWithCache {
-            val base = baseFillColor ?: if (dark) Color(0xFF101013) else Color(0xFFF8FAFD)
+            // Fast's stronger fill must stay light behind the light theme's
+            // black labels. The neutral specular finish can still use dark rims.
+            val lightDockFill = floatingDock && !appColors.isDark && profile.baseFillAlphaOverride != null
+            val base = baseFillColor ?: if (dark && !lightDockFill) Color(0xFF101013) else Color(0xFFF8FAFD)
             val tint = tintColor.copy(alpha = surfaceTintAlpha.coerceIn(0f, 0.65f) * tintColor.alpha)
             val colorWash = Brush.linearGradient(listOf(tint, Color.Transparent, tint.copy(alpha = tint.alpha * 0.45f)),
                 Offset.Zero, Offset(size.width, size.height))
@@ -213,9 +217,7 @@ fun Modifier.xtremeLiquidGlassBackground(
             val defaultFillAlpha = if (useBackdrop || (backdrop == null && enabled)) {
                 if (dark) 0.50f else 0.64f
             } else 0.90f
-            val fillAlpha = baseFillAlpha?.coerceIn(0f, 1f)
-                ?: profile.baseFillAlphaOverride
-                ?: defaultFillAlpha
+            val fillAlpha = profile.surfaceFillAlpha(baseFillAlpha, defaultFillAlpha, floatingDock)
 
             onDrawWithContent {
                 if (fillAlpha > 0f) drawRect(base.copy(alpha = fillAlpha))

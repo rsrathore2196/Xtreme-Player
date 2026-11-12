@@ -2,8 +2,20 @@ package com.example.performance
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import androidx.compose.ui.unit.dp
 
 class LiquidGlassPerformanceProfileTest {
+
+    @Test fun floatingChromeUsesItsDedicatedRadiusAndFastFill() {
+        assertEquals(8.dp, LiquidGlassProfile.PREMIUM.blurRadius(20.dp, floatingDock = true))
+        assertEquals(5.dp, LiquidGlassProfile.BALANCED.blurRadius(20.dp, floatingDock = true))
+        assertEquals(3.dp, LiquidGlassProfile.PERFORMANCE.blurRadius(20.dp, floatingDock = true))
+        assertEquals(12.dp, LiquidGlassProfile.BALANCED.blurRadius(20.dp, floatingDock = false))
+        assertEquals(.24f, LiquidGlassProfile.PREMIUM.surfaceFillAlpha(.24f, .5f, floatingDock = true))
+        assertEquals(.24f, LiquidGlassProfile.BALANCED.surfaceFillAlpha(.24f, .5f, floatingDock = true))
+        assertEquals(.78f, LiquidGlassProfile.PERFORMANCE.surfaceFillAlpha(.24f, .5f, floatingDock = true))
+        assertEquals(0f, LiquidGlassProfile.PERFORMANCE.surfaceFillAlpha(0f, .5f, floatingDock = false))
+    }
 
     private fun capabilities(
         sdk: Int = 35,
