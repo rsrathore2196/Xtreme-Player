@@ -157,6 +157,9 @@ fun AnimatedBottomBar(
     // Spatial feedback remains available with either glass or the plain surface;
     // the glass preference controls rendering, not the navigation spring.
     val touchInteraction = rememberDockGlassInteraction()
+    val sampleMotion = remember(geometry, touchInteraction) {
+        { geometry.width; touchInteraction.scale; Unit }
+    }
     val glassInteraction = touchInteraction.takeIf { appColors.dynamicGlassEnabled && LocalDynamicGlassEnabled.current }
     val pointerHandled = remember { mutableStateOf(false) }
     val pointerTab = remember { mutableIntStateOf(selectedTabIndex) }
@@ -210,8 +213,8 @@ fun AnimatedBottomBar(
             tintColor = ambientGlowColor, borderWidth = 0.8.dp, elevation = 16.dp, appColors = appColors,
             baseFillAlpha = XtremeLiquidGlassDefaults.FloatingDockDarkFillAlpha,
             neutralFinish = true,
-            stableCaptureWidthPx = geometry.reservedWidth + with(density) { 12.dp.toPx() },
             interaction = glassInteraction,
+            onSample = sampleMotion,
             innerWhiteTintAlpha = if (appColors.isDark) 0f else 0.07f
         ))
         Layout(

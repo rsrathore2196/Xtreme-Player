@@ -109,13 +109,13 @@ fun Modifier.xtremeLiquidGlassBackground(
     enabled: Boolean = LocalDynamicGlassEnabled.current,
     appColors: AppThemeColors = LocalAppColors.current,
     backdrop: LiquidGlassBackdrop? = LocalLiquidGlassBackdrop.current,
-    stableCaptureWidthPx: Float = 0f,
     baseFillAlpha: Float? = null,
     baseFillColor: Color? = null,
     interaction: DockGlassInteraction? = null,
     rimBrush: Brush? = null,
     neutralFinish: Boolean = false,
-    innerWhiteTintAlpha: Float = 0f
+    innerWhiteTintAlpha: Float = 0f,
+    onSample: (() -> Unit)? = null
 ): Modifier {
     val profile = LocalLiquidGlassProfile.current
     if (!enabled || !LocalDynamicGlassEnabled.current) return this
@@ -186,7 +186,7 @@ fun Modifier.xtremeLiquidGlassBackground(
                 highlight = null,
                 shadow = null,
                 backdropScale = processingScale,
-                stableCaptureWidthPx = stableCaptureWidthPx
+                onSample = onSample
             ) else Modifier
         )
         .drawWithCache {

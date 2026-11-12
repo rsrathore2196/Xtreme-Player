@@ -16,6 +16,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.GraphicsLayerScope
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -52,6 +53,14 @@ class LayerBackdrop internal constructor(
     internal var layerCoordinates: LayoutCoordinates? by mutableStateOf(null)
     internal var isRecording = false
 
+    // These are draw-node dependencies, not snapshot state observed by the page.
+    // Invalidating a reader's isolated layer must never recapture its source.
+    private val drawListeners = mutableSetOf<() -> Unit>()
+    internal fun addDrawListener(listener: () -> Unit) { drawListeners.add(listener) }
+    internal fun removeDrawListener(listener: () -> Unit) { drawListeners.remove(listener) }
+    internal fun notifyContentChanged() { drawListeners.forEach { it() } }
+    private val sourceToSurface = Matrix()
+
     private var inverseLayerScope: InverseLayerScope? = null
 
     override fun DrawScope.drawBackdrop(
@@ -61,6 +70,24 @@ class LayerBackdrop internal constructor(
     ) {
         val coordinates = coordinates ?: return
         val layerCoordinates = layerCoordinates ?: return
+        if (!coordinates.isAttached || !layerCoordinates.isAttached || isRecording || graphicsLayer.isReleased) return
+        if (layerBlock == null) {
+            // Translation alone cannot map a source through the dock's ancestor
+            // scale/press/morph layers. Use the complete source-to-surface matrix,
+            // retaining fractional pixels rather than snapping the sampling phase.
+            sourceToSurface.reset()
+            try {
+                coordinates.transformFrom(layerCoordinates, sourceToSurface)
+            } catch (_: Exception) {
+                // Separate window/lookahead coordinate trees keep the previous
+                // window-position fallback instead of breaking their controls.
+                sourceToSurface.reset()
+                val offset = coordinates.positionInWindow() - layerCoordinates.positionInWindow()
+                sourceToSurface.translate(-offset.x, -offset.y)
+            }
+            withTransform({ transform(sourceToSurface) }) { drawLayer(graphicsLayer) }
+            return
+        }
         withTransform({
             if (layerBlock != null) {
                 with(obtainInverseLayerScope()) { inverseTransform(density, layerBlock) }

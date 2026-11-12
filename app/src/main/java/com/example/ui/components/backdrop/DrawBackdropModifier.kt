@@ -21,21 +21,15 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.layout.LayoutCoordinates
-import androidx.compose.ui.layout.Measurable
-import androidx.compose.ui.layout.MeasureResult
-import androidx.compose.ui.layout.MeasureScope
 import androidx.compose.ui.layout.boundsInWindow
-import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.node.DrawModifierNode
 import androidx.compose.ui.node.GlobalPositionAwareModifierNode
-import androidx.compose.ui.node.LayoutModifierNode
 import androidx.compose.ui.node.ModifierNodeElement
 import androidx.compose.ui.node.ObserverModifierNode
 import androidx.compose.ui.node.invalidateDraw
 import androidx.compose.ui.node.observeReads
 import androidx.compose.ui.node.requireGraphicsContext
 import androidx.compose.ui.platform.InspectorInfo
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import com.example.ui.components.backdrop.backdrops.LayerBackdrop
@@ -47,9 +41,7 @@ import com.example.ui.components.backdrop.shadow.InnerShadow
 import com.example.ui.components.backdrop.shadow.InnerShadowElement
 import com.example.ui.components.backdrop.shadow.Shadow
 import com.example.ui.components.backdrop.shadow.ShadowElement
-import kotlin.math.abs
-import android.os.Build
-import com.example.ui.components.backdrop.effects.runtimeShaderEffect
+import kotlin.math.ceil
 
 private val DefaultHighlight = { Highlight.Default }
 private val DefaultShadow = { Shadow.Default }
@@ -75,6 +67,13 @@ fun Modifier.drawPlainBackdrop(
                 Modifier
             }
         )
+        // Enclose the draw node, not only its child: source invalidation must
+        // reach this reader even while the parent/source is recording a frame.
+        .graphicsLayer {
+            clip = true
+            this.shape = shapeProvider.shape
+            compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+        }
         .then(
             DrawBackdropElement(
                 backdrop = backdrop,
@@ -110,7 +109,8 @@ fun Modifier.drawBackdrop(
     // refraction) must be pre-multiplied by the same factor by the caller; the blur
     // hides the upscaling. 1f keeps the original full resolution behavior.
     backdropScale: Float = 1f,
-    stableCaptureWidthPx: Float = 0f
+    // Read motion state inside the reader's draw observation, never composition.
+    onSample: (() -> Unit)? = null
 ): Modifier {
     val shapeProvider = ShapeProvider(shape)
     return this
@@ -151,6 +151,13 @@ fun Modifier.drawBackdrop(
                 Modifier
             }
         )
+        // Enclose the draw node, not only its child: source invalidation must
+        // reach this reader even while the parent/source is recording a frame.
+        .graphicsLayer {
+            clip = true
+            this.shape = shapeProvider.shape
+            compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
+        }
         .then(
             DrawBackdropElement(
                 backdrop = backdrop,
@@ -163,7 +170,7 @@ fun Modifier.drawBackdrop(
                 onDrawSurface = onDrawSurface,
                 onDrawFront = onDrawFront,
                 backdropScale = backdropScale.coerceIn(0.05f, 1f),
-                stableCaptureWidthPx = stableCaptureWidthPx.coerceAtLeast(0f)
+                onSample = onSample
             )
         )
 }
@@ -179,7 +186,7 @@ private class DrawBackdropElement(
     val onDrawSurface: (DrawScope.() -> Unit)?,
     val onDrawFront: (DrawScope.() -> Unit)?,
     val backdropScale: Float,
-    val stableCaptureWidthPx: Float = 0f
+    val onSample: (() -> Unit)? = null
 ) : ModifierNodeElement<DrawBackdropNode>() {
 
     override fun create(): DrawBackdropNode {
@@ -194,12 +201,12 @@ private class DrawBackdropElement(
             onDrawSurface = onDrawSurface,
             onDrawFront = onDrawFront,
             backdropScale = backdropScale,
-            stableCaptureWidthPx = stableCaptureWidthPx
+            onSample = onSample
         )
     }
 
     override fun update(node: DrawBackdropNode) {
-        node.backdrop = backdrop
+        node.updateBackdrop(backdrop)
         node.shapeProvider = shapeProvider
         node.effects = effects
         node.layerBlock = layerBlock
@@ -212,7 +219,7 @@ private class DrawBackdropElement(
         node.onDrawSurface = onDrawSurface
         node.onDrawFront = onDrawFront
         node.backdropScale = backdropScale
-        node.stableCaptureWidthPx = stableCaptureWidthPx
+        node.onSample = onSample
         node.invalidateDrawCache()
     }
 
@@ -243,7 +250,7 @@ private class DrawBackdropElement(
         if (onDrawSurface != other.onDrawSurface) return false
         if (onDrawFront != other.onDrawFront) return false
         if (backdropScale != other.backdropScale) return false
-        if (stableCaptureWidthPx != other.stableCaptureWidthPx) return false
+        if (onSample != other.onSample) return false
 
         return true
     }
@@ -259,7 +266,7 @@ private class DrawBackdropElement(
         result = 31 * result + (onDrawSurface?.hashCode() ?: 0)
         result = 31 * result + (onDrawFront?.hashCode() ?: 0)
         result = 31 * result + backdropScale.hashCode()
-        result = 31 * result + stableCaptureWidthPx.hashCode()
+        result = 31 * result + (onSample?.hashCode() ?: 0)
         return result
     }
 }
@@ -275,8 +282,8 @@ private class DrawBackdropNode(
     var onDrawSurface: (DrawScope.() -> Unit)?,
     var onDrawFront: (DrawScope.() -> Unit)?,
     var backdropScale: Float,
-    var stableCaptureWidthPx: Float = 0f
-) : LayoutModifierNode, DrawModifierNode, GlobalPositionAwareModifierNode, ObserverModifierNode, Modifier.Node() {
+    var onSample: (() -> Unit)? = null
+) : DrawModifierNode, GlobalPositionAwareModifierNode, ObserverModifierNode, Modifier.Node() {
 
     private val effectScope =
         object : BackdropEffectScopeImpl() {
@@ -286,29 +293,21 @@ private class DrawBackdropNode(
 
     private var graphicsLayer: GraphicsLayer? = null
 
-    private val layoutLayerBlock: GraphicsLayerScope.() -> Unit = {
-        clip = true
-        shape = shapeProvider.shape
-        compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen
-    }
-
     // Geometry belongs to this surface's draw node, never the shared source's
     // snapshot dependencies. Foreground layout must not recapture the whole page.
     private var layoutCoordinates: LayoutCoordinates? = null
     private var surfaceCoordinates: LayoutCoordinates? = null
     private var padding = 0f
-    private var recordedSource: LayerBackdrop? = null
-    private var recordedOffset = Offset.Unspecified
-    private var recordedSize = IntSize.Zero
-    private var recordedPadding = Float.NaN
-    private var recordedScale = Float.NaN
     private var hasVisibleBackdrop = false
-    private var windowCapture = false
-    private var recordedWindow = false
-    private var captureOrigin = Offset.Unspecified
-    private var windowShift = Offset.Zero
-    private var windowBounds = IntSize.Zero
+    private var effectsDirty = true
+    private val sourceChanged: () -> Unit = { if (isAttached) invalidateDraw() }
 
+    fun updateBackdrop(value: Backdrop) {
+        if (backdrop === value) return
+        if (isAttached) (backdrop as? LayerBackdrop)?.removeDrawListener(sourceChanged)
+        backdrop = value
+        if (isAttached) (backdrop as? LayerBackdrop)?.addDrawListener(sourceChanged)
+    }
 
     private val recordBackdropBlock: (DrawScope.() -> Unit) = {
         val canvas = drawContext.canvas
@@ -323,14 +322,7 @@ private class DrawBackdropNode(
         if (scale != 1f) {
             canvas.scale(scale, scale)
         }
-        if (windowCapture) {
-            // Record one fixed horizontal source window. Translation within that
-            // window is a shader uniform, so the animated pill never resizes it.
-            val source = backdrop as LayerBackdrop
-            canvas.translate(-captureOrigin.x, -captureOrigin.y)
-            drawLayer(source.graphicsLayer)
-            canvas.translate(captureOrigin.x, captureOrigin.y)
-        } else onDrawBackdrop {
+        onDrawBackdrop {
             with(backdrop) {
                 drawBackdrop(
                     density = effectScope,
@@ -354,61 +346,24 @@ private class DrawBackdropNode(
         if (coordinates.boundsInWindow().isEmpty) return@sample
         val source = backdrop as? LayerBackdrop
         if (source?.isRecording == true || source?.graphicsLayer?.isReleased == true) return@sample
-        // Keep observing source attachment even when its display list is reused.
-        val sourceCoordinates = source?.layerCoordinates
-        if (source != null && sourceCoordinates?.isAttached != true) return@sample
+        if (source != null && (source.layerCoordinates?.isAttached != true ||
+                source.graphicsLayer.size.width < 1 || source.graphicsLayer.size.height < 1)) return@sample
         val scale = backdropScale
-        val reusable = source != null && layerBlock == null && onDrawBackdrop === DefaultOnDrawBackdrop
-        val offset = if (reusable) {
-            try {
-                requireNotNull(sourceCoordinates).localPositionOf(coordinates)
-            } catch (_: Exception) {
-                coordinates.positionInWindow() - requireNotNull(sourceCoordinates).positionInWindow()
-            }
-        } else Offset.Zero
-        val previousWindow = windowCapture
-        // Android 12 has no runtime input-clamp shader: retain its exact bounds.
-        // Opt-in is restricted to the bottom bar's existing blur+lens recipe.
-        windowCapture = reusable && stableCaptureWidthPx > 0f && Build.VERSION.SDK_INT >= 33 && padding == 0f
-        if (windowCapture) {
-            val width = maxOf(stableCaptureWidthPx, size.width)
-            val desired = Offset(offset.x + (size.width - width) / 2f, offset.y)
-            if (!previousWindow || differsByPixel(captureOrigin.copy(x = desired.x), desired) ||
-                abs((captureOrigin.x + width / 2f) - (offset.x + size.width / 2f)) >= 2f) captureOrigin = desired
-            windowShift = (offset - captureOrigin) * scale
-        } else windowShift = Offset.Zero
-        val newBounds = IntSize((size.width * scale).toInt().coerceAtLeast(1),
-            (size.height * scale).toInt().coerceAtLeast(1))
-        // Only rebuild the RenderEffect chain when its geometry/configuration changes.
-        // The pill's x/y movement is a shader-uniform update, not a reason to recreate
-        // blur/refraction RenderEffects every frame (which caused visible dock shimmer).
-        val effectGeometryChanged = previousWindow != windowCapture || windowBounds != newBounds
-        windowBounds = newBounds
-        if (effectScope.update(this, scale) || effectGeometryChanged) updateEffects()
-        updateStableWindowUniforms()
+        if (effectScope.update(this, scale) || effectsDirty) observeEffects()
         val padding = padding
-        val requiredSize = IntSize(
-            (((if (windowCapture) maxOf(stableCaptureWidthPx, size.width) else size.width) * scale).toInt() + padding.toInt() * 2).coerceAtLeast(1),
-            ((size.height * scale).toInt() + padding.toInt() * 2).coerceAtLeast(1))
-        val recordingOffset = if (windowCapture) captureOrigin else offset
-        if (!reusable || recordedSource !== source || recordedSize != requiredSize || recordedWindow != windowCapture ||
-            recordedPadding != padding || recordedScale != scale || differsByPixel(recordedOffset, recordingOffset)) {
-            recordLayer(
-                this@DrawBackdropNode,
-                layer,
-                size = requiredSize,
-                block = recordBackdropBlock
-            )
-            recordedSource = if (reusable) source else null
-            recordedOffset = recordingOffset
-            recordedWindow = windowCapture
-            recordedSize = requiredSize
-            recordedPadding = padding
-            recordedScale = scale
-        }
-        // A GraphicsLayer records live child RenderNodes. Scrolling, transforms,
-        // artwork loads and source redraws remain current without rerecording this
-        // unchanged sample. Custom canvas/callback paths still record every draw.
+        // Capture only this surface. A fixed-width shader window used stale uniform
+        // snapshots and alternated its padding on blur-only profiles. Re-recording
+        // this small display list also preserves subpixel motion; the source page
+        // is still recorded once and the blur/lens chain remains cached.
+        recordLayer(
+            this@DrawBackdropNode,
+            layer,
+            size = IntSize(
+                ceil(size.width * scale + padding * 2).toInt().coerceAtLeast(1),
+                ceil(size.height * scale + padding * 2).toInt().coerceAtLeast(1)
+            ),
+            block = recordBackdropBlock
+        )
         layer.topLeft = if (padding != 0f) IntOffset(-padding.toInt(), -padding.toInt()) else IntOffset.Zero
         hasVisibleBackdrop = true
         drawRecordedBackdrop()
@@ -434,17 +389,11 @@ private class DrawBackdropNode(
         }
     }
 
-    override fun MeasureScope.measure(
-        measurable: Measurable,
-        constraints: Constraints
-    ): MeasureResult {
-        val placeable = measurable.measure(constraints)
-        return layout(placeable.width, placeable.height) {
-            placeable.placeWithLayer(IntOffset.Zero, layerBlock = layoutLayerBlock)
-        }
-    }
-
     override fun ContentDrawScope.draw() {
+        // Ancestor graphicsLayer motion does not trigger layout/global-position
+        // callbacks. Reading its state here keeps the sampled page anchored while
+        // the chrome scales/morphs, without recomposition or a frame ticker.
+        onSample?.invoke()
         onDrawBehind?.invoke(this)
         drawBackdropLayer()
         onDrawSurface?.invoke(this)
@@ -475,34 +424,21 @@ private class DrawBackdropNode(
     }
 
     fun invalidateDrawCache() {
-        observeEffects()
+        effectsDirty = true
         invalidateDraw()
     }
 
     private fun observeEffects() {
+        // Observe the recipe after the draw size is known, including its first
+        // lens uniforms. Artwork changes invalidate drawing, not this effect cache.
         observeReads { updateEffects() }
-    }
-
-    @androidx.annotation.RequiresApi(33)
-    private fun updateStableWindowUniforms() {
-        if (!windowCapture || !isRuntimeShaderSupported()) return
-        effectScope.obtainRuntimeShader("StableBackdropWindow", StableWindowShader).apply {
-            setFloatUniform("shift", windowShift.x, windowShift.y)
-            setFloatUniform("bounds", windowBounds.width.toFloat(), windowBounds.height.toFloat())
-        }
+        effectsDirty = false
     }
 
     private fun updateEffects() {
         if (!isRenderEffectSupported()) return
 
-        effectScope.apply {
-            if (windowCapture) {
-                // Extend the exact visible input edges before blur. Position uniforms
-                // are updated separately without rebuilding this RenderEffect chain.
-                runtimeShaderEffect("StableBackdropWindow", StableWindowShader, "content") { }
-            }
-            this@DrawBackdropNode.effects(this)
-        }
+        effectScope.apply(effects)
         graphicsLayer?.renderEffect = effectScope.renderEffect
         padding = effectScope.padding
     }
@@ -511,10 +447,12 @@ private class DrawBackdropNode(
         val graphicsContext = requireGraphicsContext()
         graphicsLayer = graphicsContext.createGraphicsLayer()
 
-        observeEffects()
+        (backdrop as? LayerBackdrop)?.addDrawListener(sourceChanged)
+        effectsDirty = true
     }
 
     override fun onDetach() {
+        (backdrop as? LayerBackdrop)?.removeDrawListener(sourceChanged)
         val graphicsContext = requireGraphicsContext()
         graphicsLayer?.let { layer ->
             graphicsContext.releaseGraphicsLayer(layer)
@@ -524,29 +462,8 @@ private class DrawBackdropNode(
         effectScope.reset()
         layoutCoordinates = null
         surfaceCoordinates = null
-        recordedSource = null
-        recordedSize = IntSize.Zero
-        recordedOffset = Offset.Unspecified
-        recordedPadding = Float.NaN
-        recordedScale = Float.NaN
         hasVisibleBackdrop = false
-        windowCapture = false
-        recordedWindow = false
-        captureOrigin = Offset.Unspecified
+        effectsDirty = true
         exportedBackdrop?.layerCoordinates = null
     }
 }
-
-private fun differsByPixel(first: Offset, second: Offset): Boolean =
-    abs(first.x - second.x) >= 1f || abs(first.y - second.y) >= 1f
-
-// Native Clamp samples edge pixel centres; shifting the input is independent of
-// the unchanged blur/lens shaders, shape clip, highlights and foreground controls.
-private const val StableWindowShader = """
-    uniform shader content;
-    uniform float2 shift;
-    uniform float2 bounds;
-    half4 main(float2 position) {
-        return content.eval(clamp(position, float2(0.5), bounds - float2(0.5)) + shift);
-    }
-"""

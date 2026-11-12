@@ -35,6 +35,7 @@ private class LayerBackdropElement(
     override fun update(node: LayerBackdropNode) {
         if (node.backdrop != backdrop) {
             node.backdrop.layerCoordinates = null
+            node.backdrop.notifyContentChanged()
             node.backdrop = backdrop
         }
         node.invalidateDraw()
@@ -91,15 +92,21 @@ private class LayerBackdropNode(
             backdrop.isRecording = false
         }
         drawLayer(backdrop.graphicsLayer)
+        // An image/cache result can redraw only the page, with stationary chrome.
+        // Its blur readers must refresh their filtered layers without waiting for
+        // scrolling, a new layout, or a perpetual frame timer.
+        backdrop.notifyContentChanged()
     }
 
     override fun onGloballyPositioned(coordinates: LayoutCoordinates) {
         if (coordinates.isAttached) {
             backdrop.layerCoordinates = coordinates
+            backdrop.notifyContentChanged()
         }
     }
 
     override fun onDetach() {
         backdrop.layerCoordinates = null
+        backdrop.notifyContentChanged()
     }
 }
