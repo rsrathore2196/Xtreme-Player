@@ -106,7 +106,9 @@ object ImageConfig {
 data class ExtractedTrackColors(
     val dominantColor: Color,
     val accentColor: Color,
-    val vibrantColor: Color = accentColor
+    val vibrantColor: Color = accentColor,
+    val topEdgeColor: Color = dominantColor,
+    val bottomEdgeColor: Color = dominantColor
 )
 
 object TrackPaletteCache {
@@ -132,7 +134,8 @@ object TrackPaletteCache {
                         synchronized(memoryCache) {
                             if (clearGeneration == readGeneration && memoryCache.get(key) == null)
                                 memoryCache.put(key, ExtractedTrackColors(
-                                    Color(item.getInt(0)), Color(item.getInt(1)), Color(item.getInt(2))))
+                                    Color(item.getInt(0)), Color(item.getInt(1)), Color(item.getInt(2)),
+                                    Color(item.optInt(3, item.getInt(0))), Color(item.optInt(4, item.getInt(0)))))
                         }
                     }
                     }
@@ -143,7 +146,8 @@ object TrackPaletteCache {
                     val content = kotlinx.coroutines.withContext(AppDispatchers.CpuBounded) {
                     val json = org.json.JSONObject()
                     snapshot.forEach { (key, c) -> json.put(key, org.json.JSONArray().put(c.dominantColor.toArgb())
-                        .put(c.accentColor.toArgb()).put(c.vibrantColor.toArgb())) }
+                        .put(c.accentColor.toArgb()).put(c.vibrantColor.toArgb())
+                        .put(c.topEdgeColor.toArgb()).put(c.bottomEdgeColor.toArgb())) }
                     json.toString().toByteArray()
                     }
                     val stream = storage.startWrite()
