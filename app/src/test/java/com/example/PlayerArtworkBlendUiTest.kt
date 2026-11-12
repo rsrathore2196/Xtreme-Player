@@ -53,13 +53,15 @@ class PlayerArtworkBlendUiTest {
             CompositionLocalProvider(LocalAppColors provides DarkAppColors.copy(dynamicAlbumGlow = true),
                 LocalDynamicGlassEnabled provides true) {
                 // Offset the entire player to catch root/local coordinate mix-ups.
-                Box(Modifier.offset(y = 15.dp).size(200.dp, 320.dp).testTag("edge_color_player")) {
-                    PlayerGlassBackground(rememberUpdatedState(top), rememberUpdatedState(bottom), bounds)
-                    Canvas(Modifier.offset(y = inset).size(200.dp, coverHeight)
-                        .onGloballyPositioned { bounds.value = it.boundsInRoot() }
-                        .playerArtworkEdgeBlend(true)) {
-                        drawRect(top)
-                        drawRect(bottom, Offset(0f, size.height / 2), Size(size.width, size.height / 2))
+                Box(Modifier.size(240.dp, 360.dp)) {
+                    Box(Modifier.offset(y = 15.dp).size(200.dp, 320.dp).testTag("edge_color_player")) {
+                        PlayerGlassBackground(rememberUpdatedState(top), rememberUpdatedState(bottom), bounds)
+                        Canvas(Modifier.offset(y = inset).size(200.dp, coverHeight)
+                            .onGloballyPositioned { bounds.value = it.boundsInRoot() }
+                            .playerArtworkEdgeBlend(true)) {
+                            drawRect(top)
+                            drawRect(bottom, Offset(0f, size.height / 2), Size(size.width, size.height / 2))
+                        }
                     }
                 }
             }
@@ -73,13 +75,18 @@ class PlayerArtworkBlendUiTest {
             } finally { file.delete() }
             val start = (image.height * inset.value / 320f).toInt()
             val end = (image.height * (inset.value + coverHeight.value) / 320f).toInt()
+            fun assertColor(expected: Color, y: Int, message: String) {
+                val actual = java.awt.Color(image.getRGB(image.width / 2, y))
+                val target = java.awt.Color(expected.toArgb())
+                // Native premultiplied alpha can round one channel by 1/255.
+                assertTrue("$message at y=$y: $actual", maxOf(kotlin.math.abs(target.red - actual.red),
+                    kotlin.math.abs(target.green - actual.green), kotlin.math.abs(target.blue - actual.blue)) <= 1)
+            }
             for (y in listOf(1, start - 1, start + 2, start + (end - start) / 10)) {
-                assertEquals("The header and upper fade must retain the cover's top hue", top.toArgb(),
-                    image.getRGB(image.width / 2, y))
+                assertColor(top, y, "The header and upper fade must retain the cover's top hue")
             }
             for (y in listOf(end - (end - start) / 10, end - 2, end + 1, image.height - 2)) {
-                assertEquals("The lower fade and controls must retain the cover's bottom hue", bottom.toArgb(),
-                    image.getRGB(image.width / 2, y))
+                assertColor(bottom, y, "The lower fade and controls must retain the cover's bottom hue")
             }
         }
         verify()

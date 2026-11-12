@@ -2509,14 +2509,14 @@ internal fun PlayerCoverArtwork(request: ImageRequest, modifier: Modifier = Modi
     var hostBounds by remember { mutableStateOf<Rect?>(null) }
     val rectangular = aspect > 1.05f
     val fit = rectangular || !fullScreen || aspect == 0f
-    androidx.compose.runtime.SideEffect {
-        hostBounds?.let { bounds ->
-            // Match ContentScale.Fit's actual image, including letterboxing.
-            val height = if (fit && aspect > 0f) minOf(bounds.height, bounds.width / aspect) else bounds.height
-            val top = bounds.top + (bounds.height - height) / 2f
-            onBoundsChanged(Rect(bounds.left, top, bounds.right, top + height))
-        }
+    fun reportBounds(bounds: Rect) {
+        // Match ContentScale.Fit's actual image, including letterboxing.
+        val height = if (fit && aspect > 0f) minOf(bounds.height, bounds.width / aspect) else bounds.height
+        val top = bounds.top + (bounds.height - height) / 2f
+        onBoundsChanged(Rect(bounds.left, top, bounds.right, top + height))
     }
+    // Re-evaluate when the decoded aspect becomes known, even if layout is unchanged.
+    androidx.compose.runtime.SideEffect { hostBounds?.let { reportBounds(it) } }
     AsyncImage(model = request, contentDescription = "Cover Art - Tap to flip",
         contentScale = if (fit) ContentScale.Fit else ContentScale.Crop,
         onSuccess = { result ->
@@ -2525,7 +2525,11 @@ internal fun PlayerCoverArtwork(request: ImageRequest, modifier: Modifier = Modi
             val height = bitmap?.height ?: result.result.drawable.intrinsicHeight
             aspect = if (width > 0 && height > 0) width.toFloat() / height else 1f
             onReady(aspect > 1.05f)
-        }, modifier = modifier.onGloballyPositioned { hostBounds = it.boundsInRoot() }
+        }, modifier = modifier.onGloballyPositioned {
+            val bounds = it.boundsInRoot()
+            hostBounds = bounds
+            reportBounds(bounds)
+        }
             .playerArtworkEdgeBlend(fullScreen || rectangular, aspect.takeIf { rectangular }))
 }
 
