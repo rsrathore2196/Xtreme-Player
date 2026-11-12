@@ -140,10 +140,45 @@ class PlayerArtworkColorsTest {
             expectedTealHue, hsl(colors.dominantColor)[0], 8f)
     }
 
-    @Test fun cacheKeyFormatUsesV7VersionPrefix() {
+    @Test fun cacheKeyInvalidatesPalettesWithoutSeparateEdgeColors() {
         val track = MusicTrack("track_1", "Song", "Artist", "Album", 200_000, "cover_url", "audio_url")
         val key = playerPaletteKey(track, true, Color.White, Color.Black, "cover_url")
-        assertTrue("Key must start with album-bg-colors-v7", key.startsWith("album-bg-colors-v7|"))
-        assertFalse("Key must not contain old v6 prefix", key.startsWith("album-bg-colors-v6|"))
+        assertTrue("Key must start with album-bg-colors-v8", key.startsWith("album-bg-colors-v8|"))
+        assertFalse("Old single-color backgrounds must be re-extracted", key.startsWith("album-bg-colors-v7|"))
+    }
+
+    @Test fun oppositeEdgesKeepTheirActualColorsEvenWithALargeCenterSubject() {
+        for ((top, bottom) in listOf(0xff6a1b9a.toInt() to 0xffef6c00.toInt(),
+            android.graphics.Color.BLACK to android.graphics.Color.WHITE,
+            android.graphics.Color.WHITE to android.graphics.Color.BLACK)) sample(top) { bitmap ->
+            for (y in 60 until 120) for (x in 0 until 120) bitmap.setPixel(x, y, bottom)
+            android.graphics.Canvas(bitmap).drawRect(12f, 15f, 108f, 105f,
+                android.graphics.Paint().apply { color = android.graphics.Color.GREEN })
+            for (dark in listOf(true, false)) {
+                val colors = extractPlayerArtworkColors(bitmap, dark)!!
+                assertEquals("Header must match the top, independently of the subject", top, colors.topEdgeColor.toArgb())
+                assertEquals("Controls must match the bottom, independently of the top", bottom, colors.bottomEdgeColor.toArgb())
+            }
+        }
+    }
+
+    @Test fun transparentPixelsDoNotDarkenEdgesAndMissingEdgesUseTheArtworkPalette() =
+        sample(0xff3868a8.toInt()) { bitmap ->
+            for (y in 0 until 8) for (x in 0 until 60) bitmap.setPixel(x, y, android.graphics.Color.TRANSPARENT)
+            for (y in 112 until 120) for (x in 0 until 120) bitmap.setPixel(x, y, android.graphics.Color.TRANSPARENT)
+            val colors = extractPlayerArtworkColors(bitmap, true)!!
+            assertEquals(Color(0xff3868a8), colors.topEdgeColor)
+            assertEquals(colors.dominantColor, colors.bottomEdgeColor)
+        }
+
+    @Test fun tinyCoversHaveValidIndependentEdges() {
+        val bitmap = Bitmap.createBitmap(1, 2, Bitmap.Config.ARGB_8888)
+        try {
+            bitmap.setPixel(0, 0, android.graphics.Color.RED)
+            bitmap.setPixel(0, 1, android.graphics.Color.BLUE)
+            val colors = extractPlayerArtworkColors(bitmap, true)!!
+            assertEquals(Color.Red, colors.topEdgeColor)
+            assertEquals(Color.Blue, colors.bottomEdgeColor)
+        } finally { bitmap.recycle() }
     }
 }

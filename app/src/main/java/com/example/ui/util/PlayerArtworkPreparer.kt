@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlin.math.roundToInt
 
 /** Presentation-only cover; playback/catalog identity and the native shelf image stay intact. */
 internal data class ResolvedPlayerCover(val identity: String, val url: String)
@@ -136,7 +137,7 @@ internal fun playerAppearanceColors(source: AppThemeColors): AppThemeColors = so
 @Suppress("UNUSED_PARAMETER")
 fun playerPaletteKey(track: MusicTrack, dark: Boolean, accent: Color, base: Color,
     artworkIdentity: String = track.coverUrl): String =
-    "album-bg-colors-v7|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
+    "album-bg-colors-v8|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
 
 /** The URL is ready on the first composition; no metadata API or navigation wait. */
 @Composable
@@ -197,6 +198,33 @@ internal fun extractPlayerArtworkColors(bitmap: Bitmap, dark: Boolean): Extracte
     // Read pixels directly into an IntArray - zero allocation overhead and avoids canvas drawing bugs.
     val pixels = IntArray(w * h)
     bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+    // The two edges can have completely different hues. Keep their real RGB
+    // values independent of the subject palette, theme, and accent adjustments.
+    // Weight the outermost rows most strongly, averaging a narrow band to soften
+    // compression noise without pulling colors from the middle of the cover.
+    fun edgeColor(bottom: Boolean, fallback: Color): Color {
+        val rows = (h * 0.06f).roundToInt().coerceIn(1, h)
+        var red = 0.0
+        var green = 0.0
+        var blue = 0.0
+        var total = 0.0
+        for (row in 0 until rows) {
+            val y = if (bottom) h - row - 1 else row
+            for (x in 0 until w) {
+                val pixel = pixels[y * w + x]
+                val weight = ((pixel ushr 24) and 0xff) / 255.0 * (rows - row)
+                red += ((pixel ushr 16) and 0xff) * weight
+                green += ((pixel ushr 8) and 0xff) * weight
+                blue += (pixel and 0xff) * weight
+                total += weight
+            }
+        }
+        return if (total == 0.0) fallback else Color(
+            (red / total).roundToInt(), (green / total).roundToInt(), (blue / total).roundToInt())
+    }
+    fun colors(dominant: Color, accent: Color, vibrant: Color) = ExtractedTrackColors(
+        dominant, accent, vibrant, edgeColor(false, dominant), edgeColor(true, dominant))
 
     // Spatial Multi-Region Analysis:
     // Partition into a 3x3 grid (9 zones):
@@ -284,7 +312,7 @@ internal fun extractPlayerArtworkColors(bitmap: Bitmap, dark: Boolean): Extracte
         val palette = Palette.from(bitmap).clearFilters().generate()
         val swatch = palette.dominantSwatch ?: palette.mutedSwatch ?: palette.vibrantSwatch ?: return null
         val c = Color(swatch.rgb)
-        return ExtractedTrackColors(c, c, c)
+        return colors(c, c, c)
     }
 
     // Merge adjacent bins (Manhattan distance <= 1 in 5-bit space) to avoid quantization split
@@ -336,7 +364,7 @@ internal fun extractPlayerArtworkColors(bitmap: Bitmap, dark: Boolean): Extracte
     if (isNeutral) {
         val avg = ((domR + domG + domB) / 3).coerceIn(0, 255)
         val neutral = Color(avg, avg, avg)
-        return ExtractedTrackColors(neutral, neutral, neutral)
+        return colors(neutral, neutral, neutral)
     }
 
     val dominantColor = Color(domR, domG, domB)
@@ -360,5 +388,5 @@ internal fun extractPlayerArtworkColors(bitmap: Bitmap, dark: Boolean): Extracte
     val accentColor = Color(android.graphics.Color.HSVToColor(accHsv))
     val vibrantColor = Color(android.graphics.Color.HSVToColor(vibHsv))
 
-    return ExtractedTrackColors(dominantColor, accentColor, vibrantColor)
+    return colors(dominantColor, accentColor, vibrantColor)
 }

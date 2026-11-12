@@ -46,6 +46,8 @@ class PlayerLyricsContrastUiTest {
     fun landscapeLyricsAndHeartAdaptToTheActualBackdropInEitherTheme() = checkContrast()
 
     @Test fun coloredBackdropsKeepLyricsAndHeartWhite() = checkContrast(Color(0xfff4d9ed), Color.White)
+    @Test fun whiteArtworkEdgesStayReadableWhenTheCenterPaletteIsBlue() = checkContrast(dominant = Color.Blue)
+
     @Test fun greyBackdropsKeepLyricsAndHeartWhite() = checkContrast(Color(0xffe7e7e7), Color.White)
 
     @Test fun onlyNearWhiteBackdropsNeedBlackLyricsAndHeart() {
@@ -85,12 +87,12 @@ class PlayerLyricsContrastUiTest {
         assertFalse("The expanded player's overflowing title moves without needing focus", initial.contentEquals(pixels()))
     }
 
-    private fun checkContrast(backdrop: Color = Color.White, foreground: Color = Color.Black) {
+    private fun checkContrast(backdrop: Color = Color.White, foreground: Color = Color.Black, dominant: Color = backdrop) {
         val song = MusicTrack("bright-player", "Song", "Artist", "Album", 180_000, "", "")
         val lyrics = TrackLyrics(song.id, song.title, song.artist, true,
             listOf(LyricLine(1_000, "Clearly readable lyrics", 4_000), LyricLine(8_000, "Upcoming lyrics", 4_000)))
         TrackPaletteCache.put(playerPaletteKey(song, true, Color.White, Color.Black),
-            ExtractedTrackColors(backdrop, backdrop, backdrop))
+            ExtractedTrackColors(dominant, dominant, dominant, backdrop, backdrop))
         var theme by mutableStateOf(DarkAppColors.copy(dynamicGlassEnabled = true, dynamicAlbumGlow = true))
         var state by mutableStateOf(PlayerUiState(currentTrack = song, currentPositionMs = 1_500, isFavorite = true))
         compose.mainClock.autoAdvance = false

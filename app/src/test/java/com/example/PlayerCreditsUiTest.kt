@@ -64,15 +64,16 @@ class PlayerCreditsUiTest {
     fun compactLandscapeKeepsLargerPlayerTextAndControlsVisible() = checkCredits()
 
     @Test fun brightArtworkUsesDarkCreditsWithoutRecoloringThePlayer() = checkBrightCredits()
+    @Test fun brightEdgesUseDarkCreditsEvenWhenTheCenterPaletteIsBlue() = checkBrightCredits(Color.Blue)
 
     @Test @Config(qualifiers = "w891dp-h411dp-land")
     fun landscapeCreditsAlsoAdaptToBrightArtwork() = checkBrightCredits()
 
-    private fun checkBrightCredits() {
+    private fun checkBrightCredits(dominant: Color = Color.White) {
         val song = MusicTrack("bright-credits", "Bright Song", "Main Artist", "Bright Album", 180_000, "", "",
             singers = "Lead Singer", writer = "Song Writer")
         TrackPaletteCache.put(playerPaletteKey(song, true, Color.White, Color.Black),
-            ExtractedTrackColors(Color.White, Color.White, Color.White))
+            ExtractedTrackColors(dominant, dominant, dominant, Color.White, Color.White))
         var theme by mutableStateOf(DarkAppColors.copy(dynamicGlassEnabled = true, dynamicAlbumGlow = true))
         compose.mainClock.autoAdvance = false
         compose.setContent { MaterialTheme {
