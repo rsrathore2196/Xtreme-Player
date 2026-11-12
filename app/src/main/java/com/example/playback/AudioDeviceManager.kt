@@ -1,6 +1,7 @@
 package com.example.playback
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -35,7 +36,9 @@ data class SoundOutputDevice(
     val isBluetooth: Boolean = false,
     val isWired: Boolean = false,
     val isUsb: Boolean = false,
-    val isCar: Boolean = false
+    val isCar: Boolean = false,
+    val address: String = "",
+    val category: AudioDeviceCategory = audioDeviceCategory(type, name, isCar)
 )
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -53,6 +56,7 @@ object AudioDeviceManager {
 
     @Volatile private var audioManager: AudioManager? = null
     private var isInitialized = false
+    @Volatile private var preferredDeviceId = -1
 
     @Synchronized
     fun init(context: Context) {
@@ -90,72 +94,52 @@ object AudioDeviceManager {
     private fun refreshDevicesOnIo(context: Context, generation: Int) {
         val am = audioManager ?: (context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
         if (am == null) {
-            if (generation == refreshGeneration.get()) _availableDevices.value = listOf(getFallbackSpeakerDevice())
+            if (generation == refreshGeneration.get()) {
+                _availableDevices.value = emptyList()
+                _selectedDeviceId.value = -1
+            }
             return
         }
 
         try {
-            val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            val currentSelected = _selectedDeviceId.value
-            val list = mutableListOf<SoundOutputDevice>()
-
-            for (device in devices) {
-                if (isAudioOutput(device.type)) {
+            // GET_DEVICES_OUTPUTS contains connected endpoints, never the paired-device list.
+            val connected = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                .filter { isAudioOutput(it.type) }
+                .map { device ->
                     val isSpeaker = device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER ||
-                            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER_SAFE)
-                    val isBt = isBluetoothType(device.type)
-                    val isWired = isWiredType(device.type)
-                    val isUsb = isUsbType(device.type)
-                    val isCar = isCarAudioDevice(device)
-
-                    val typeLabel = if (isCar) "Car Audio System" else getDeviceTypeLabel(device.type)
-                    val friendlyName = getDeviceFriendlyName(device)
-
-                    val isGenericAlias = friendlyName.contains("System Default", ignoreCase = true) ||
-                            friendlyName.contains("Default Audio", ignoreCase = true) ||
-                            friendlyName.equals("Default", ignoreCase = true) ||
-                            friendlyName.contains("Default Device", ignoreCase = true) ||
-                            friendlyName.startsWith("Audio Output (", ignoreCase = true)
-
-                    if (!isGenericAlias) {
-                        // Avoid duplicate speaker entries
-                        if (!isSpeaker || list.none { it.isBuiltInSpeaker }) {
-                            list.add(
-                                SoundOutputDevice(
-                                    id = device.id,
-                                    name = friendlyName,
-                                    typeName = typeLabel,
-                                    type = device.type,
-                                    isSelected = (currentSelected == device.id),
-                                    isBuiltInSpeaker = isSpeaker,
-                                    isBluetooth = isBt,
-                                    isWired = isWired,
-                                    isUsb = isUsb,
-                                    isCar = isCar
-                                )
-                            )
-                        }
-                    }
+                        device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER_SAFE
+                    val isCar = !isSpeaker && isCarAudioDevice(device)
+                    SoundOutputDevice(
+                        id = device.id,
+                        name = if (isSpeaker) "This phone" else getDeviceFriendlyName(device),
+                        typeName = if (isCar) "Car audio" else getDeviceTypeLabel(device.type),
+                        type = device.type,
+                        isSelected = false,
+                        isBuiltInSpeaker = isSpeaker,
+                        isBluetooth = isBluetoothOutput(device.type),
+                        isWired = isWiredType(device.type),
+                        isUsb = isUsbType(device.type),
+                        isCar = isCar,
+                        address = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) device.address else ""
+                    )
                 }
-            }
-
-            // If no speaker device was explicitly found in the array, add default speaker
-            if (list.none { it.isBuiltInSpeaker }) {
-                list.add(0, getFallbackSpeakerDevice())
-            }
-
-            // Resolve selection: if nothing selected (-1 or not in list), mark speaker or first device
+            val mediaRouteIds = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                try {
+                    am.getAudioDevicesForAttributes(AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build()).map { it.id }.toSet()
+                } catch (_: Exception) { emptySet() }
+            } else emptySet()
+            val resolved = normalizeAudioOutputs(connected, preferredDeviceId, mediaRouteIds)
             if (generation != refreshGeneration.get()) return
-            if (list.none { it.isSelected }) {
-                val defaultDev = list.find { it.isBluetooth } ?: list.find { it.isBuiltInSpeaker } ?: list.first()
-                val resolved = list.map { it.copy(isSelected = it.id == defaultDev.id) }
-                _availableDevices.value = resolved
-            } else {
-                _availableDevices.value = list
-            }
+            _selectedDeviceId.value = resolved.firstOrNull { it.isSelected }?.id ?: -1
+            _availableDevices.value = resolved
         } catch (e: Exception) {
             Log.e(TAG, "Error refreshing audio devices: ${e.message}", e)
-            if (generation == refreshGeneration.get()) _availableDevices.value = listOf(getFallbackSpeakerDevice())
+            if (generation == refreshGeneration.get()) {
+                _availableDevices.value = emptyList()
+                _selectedDeviceId.value = -1
+            }
         }
     }
 
@@ -167,55 +151,37 @@ object AudioDeviceManager {
     internal suspend fun routeDevice(context: Context, deviceId: Int, player: Player? = null) = withContext(Dispatchers.IO) {
       routingMutex.withLock {
         refreshGeneration.incrementAndGet()
-        _selectedDeviceId.value = deviceId
         val am = audioManager ?: (context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager)
         val devices = am?.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
         val targetDevice = devices?.find { it.id == deviceId }
+        if (targetDevice == null) {
+            refreshDevices(context)
+            return@withLock
+        }
+        preferredDeviceId = deviceId
+        _selectedDeviceId.value = deviceId
 
-        Log.i(TAG, "Selecting audio output device: id=$deviceId, name=${targetDevice?.let { getDeviceFriendlyName(it) } ?: "Auto/Default"}")
+        Log.i(TAG, "Selecting audio output device: id=$deviceId, name=${getDeviceFriendlyName(targetDevice)}")
 
         // 1. Route directly on ExoPlayer if provided
         try {
             if (player is ExoPlayer) {
                 withContext(Handler(player.applicationLooper).asCoroutineDispatcher()) {
-                    player.setPreferredAudioDevice(targetDevice?.takeUnless { isFallbackId(deviceId) })
+                    player.setPreferredAudioDevice(targetDevice)
                 }
             }
         } catch (e: CancellationException) { throw e } catch (e: Exception) {
             Log.w(TAG, "Failed setting preferred audio device on player: ${e.message}")
         }
 
-        // 2. Route via Android Audio system (API 31+ Communication Device or Speakerphone)
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && am != null) {
-                if (targetDevice != null && !isFallbackId(deviceId)) {
-                    am.setCommunicationDevice(targetDevice)
-                } else {
-                    am.clearCommunicationDevice()
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed setting communication device: ${e.message}")
-        }
+        // This is media playback. Communication-device routing is for calls and
+        // can activate a second, low-quality SCO profile for the same earbuds.
 
         // Update in-memory device list state
         _availableDevices.value = _availableDevices.value.map {
             it.copy(isSelected = (it.id == deviceId))
         }
       }
-    }
-
-    private fun isFallbackId(id: Int): Boolean = id == -100
-
-    private fun getFallbackSpeakerDevice(): SoundOutputDevice {
-        return SoundOutputDevice(
-            id = -100,
-            name = "Phone Speaker",
-            typeName = "Built-in Speaker",
-            type = AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
-            isSelected = true,
-            isBuiltInSpeaker = true
-        )
     }
 
     private fun isAudioOutput(type: Int): Boolean {
@@ -226,6 +192,7 @@ object AudioDeviceManager {
             AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
             AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
             AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY,
             AudioDeviceInfo.TYPE_USB_HEADSET,
             AudioDeviceInfo.TYPE_AUX_LINE,
             AudioDeviceInfo.TYPE_LINE_ANALOG,
@@ -243,28 +210,9 @@ object AudioDeviceManager {
     }
 
     private fun isCarAudioDevice(device: AudioDeviceInfo): Boolean {
-        if (device.type == AudioDeviceInfo.TYPE_AUX_LINE) {
-            return true
-        }
-        val name = (device.productName?.toString() ?: "").lowercase()
-        val carKeywords = listOf(
-            "car", "auto", "sync", "uconnect", "mbux", "idrive", "toyota", "honda", "ford",
-            "bmw", "audi", "mercedes", "hyundai", "kia", "pioneer", "kenwood", "alpine",
-            "carplay", "handsfree", "car kit", "automotive", "mazda", "nissan", "subaru", "lexus", "volvo"
-        )
-        return carKeywords.any { name.contains(it) }
-    }
-
-    private fun isBluetoothType(type: Int): Boolean {
-        if (type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP || type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
-            return true
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            return type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
-                    type == AudioDeviceInfo.TYPE_BLE_SPEAKER ||
-                    type == AudioDeviceInfo.TYPE_BLE_BROADCAST
-        }
-        return false
+        val name = device.productName?.toString().orEmpty()
+        return Regex("\\b(car|carplay|android auto|uconnect|mbux|idrive|toyota|honda|ford|bmw|audi|mercedes|hyundai|kia|mazda|nissan|subaru|lexus|volvo)\\b", RegexOption.IGNORE_CASE)
+            .containsMatchIn(name)
     }
 
     private fun isWiredType(type: Int): Boolean {
@@ -272,7 +220,7 @@ object AudioDeviceManager {
     }
 
     private fun isUsbType(type: Int): Boolean {
-        return type == AudioDeviceInfo.TYPE_USB_DEVICE || type == AudioDeviceInfo.TYPE_USB_HEADSET
+        return type == AudioDeviceInfo.TYPE_USB_DEVICE || type == AudioDeviceInfo.TYPE_USB_HEADSET || type == AudioDeviceInfo.TYPE_USB_ACCESSORY
     }
 
     private fun getDeviceFriendlyName(device: AudioDeviceInfo): String {
@@ -291,15 +239,16 @@ object AudioDeviceManager {
             AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset"
             AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Headphones"
             AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth Earbuds / Audio"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth audio"
             AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY,
             AudioDeviceInfo.TYPE_USB_HEADSET -> "USB Audio Device"
             AudioDeviceInfo.TYPE_HEARING_AID -> "Hearing Aid"
             else -> {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
                     (device.type == AudioDeviceInfo.TYPE_BLE_HEADSET || device.type == AudioDeviceInfo.TYPE_BLE_SPEAKER)
                 ) {
-                    "Bluetooth LE Audio"
+                    "Bluetooth LE audio"
                 } else {
                     "Audio Output (${device.id})"
                 }
@@ -309,15 +258,20 @@ object AudioDeviceManager {
 
     private fun getDeviceTypeLabel(type: Int): String {
         return when (type) {
-            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "Internal Speaker"
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+            AudioDeviceInfo.TYPE_BUILTIN_SPEAKER_SAFE -> "Built-in speaker"
             AudioDeviceInfo.TYPE_WIRED_HEADSET,
-            AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired Audio"
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES -> "Wired audio"
             AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth Wireless"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth"
             AudioDeviceInfo.TYPE_USB_DEVICE,
-            AudioDeviceInfo.TYPE_USB_HEADSET -> "USB-C Audio"
+            AudioDeviceInfo.TYPE_USB_ACCESSORY,
+            AudioDeviceInfo.TYPE_USB_HEADSET -> "USB audio"
             AudioDeviceInfo.TYPE_HEARING_AID -> "Accessibility"
-            else -> "Audio Output"
+            AudioDeviceInfo.TYPE_BLE_HEADSET,
+            AudioDeviceInfo.TYPE_BLE_SPEAKER,
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> "Bluetooth LE"
+            else -> "Audio output"
         }
     }
 }

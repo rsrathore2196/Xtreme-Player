@@ -6,30 +6,27 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.media.AudioDeviceInfo
+import android.graphics.drawable.ColorDrawable
 import android.media.AudioManager
 import android.os.Build
-import android.graphics.drawable.ColorDrawable
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -43,6 +40,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -54,13 +52,14 @@ import androidx.compose.material.icons.filled.BluetoothAudio
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsCar
+import androidx.compose.material.icons.filled.Earbuds
 import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.Hearing
+import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Speaker
-import androidx.compose.material.icons.filled.SpeakerGroup
 import androidx.compose.material.icons.filled.Usb
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
@@ -73,23 +72,27 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -98,29 +101,14 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.content.ContextCompat
+import com.example.playback.AudioDeviceCategory
 import com.example.playback.AudioDeviceManager
 import com.example.playback.SoundOutputDevice
-import com.example.ui.theme.LiquidGlass
 import com.example.ui.theme.LocalAppColors
-import com.example.ui.theme.bouncyClickable
-import kotlinx.coroutines.flow.first
 import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.first
 
-/**
- * Custom Adaptive Aesthetic Output Devices Picker Popup & Audio Management.
- *
- * Key Architectural Highlights:
- * 1. Layout & Interaction Overhaul:
- *    - Completely removed redundant system switcher header and manual "Done" / "Apply" buttons.
- *    - Instant Selection: Tapping any device item immediately selects & routes audio to that endpoint.
- *    - Clean filtering: Displays only physical and wireless output targets, eliminating generic system aliases.
- * 2. Full Dark / Light Theme Adaptability & Accessibility:
- *    - Adapts automatically to Light, Dark, or AMOLED themes with WCAG AAA compliant semantic tokens.
- * 3. Native Permissions & Dynamic Device Discovery:
- *    - Native permission flow checking BLUETOOTH_CONNECT (API 31+) with runtime discovery.
- * 4. Integrated Minimal Modern Volume Slider:
- *    - Direct STREAM_MUSIC output volume management for the active audio target with hardware button sync.
- */
+/** Connected output picker with immediate routing and media-volume controls. */
 @Composable
 fun SoundOutputDeviceDialog(
     devices: List<SoundOutputDevice>,
@@ -251,288 +239,143 @@ fun SoundOutputDeviceDialog(
             onDispose { }
         }
         PlayerPopupTheme(appColors) {
-            Box(
+            BoxWithConstraints(
                 modifier = Modifier
                     .fillMaxSize()
                     .drawBehind {
                         drawRect(if (isDark) Color.Black.copy(alpha = 0.18f * scrimAlpha)
                             else Color(0xFF0F172A).copy(alpha = 0.12f * scrimAlpha))
                     }
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { closeWithAnimation() }
-                    ),
+                    .pointerInput(Unit) { detectTapGestures { closeWithAnimation() } },
                 contentAlignment = Alignment.Center
             ) {
-                val dialogShape = RoundedCornerShape(28.dp)
+                val dialogShape = RoundedCornerShape(32.dp)
                 Surface(
                     shape = dialogShape,
                     color = appColors.cardBackground,
                     modifier = Modifier
-                        .fillMaxWidth(0.90f)
-                        .widthIn(max = 380.dp)
-                        .shadow(
-                            elevation = 24.dp,
-                            shape = dialogShape,
-                            spotColor = Color.Black.copy(alpha = if (isDark) 0.60f else 0.16f),
-                            ambientColor = Color.Transparent
-                        )
-                        .clip(dialogShape)
+                        .padding(horizontal = 20.dp)
+                        .widthIn(max = 420.dp)
+                        .fillMaxWidth()
+                        .heightIn(max = (maxHeight - 48.dp).coerceAtLeast(120.dp))
+                        .shadow(24.dp, dialogShape, spotColor = Color.Black.copy(alpha = 0.24f))
                         .graphicsLayer {
                             scaleX = scale
                             scaleY = scale
                             this.alpha = alpha
-                            this.translationY = translateY * density
+                            translationY = translateY * density
                         }
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = { /* Consume clicks inside popup */ }
-                        )
+                        .clip(dialogShape)
+                        .pointerInput(Unit) { detectTapGestures { /* Keep taps inside the dialog. */ } }
                         .testTag("sound_output_devices_dialog")
                 ) {
-                    Box(modifier = Modifier.fillMaxWidth()) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp, vertical = 18.dp)
-                        ) {
-                            // 1. Sleek Modern Header (No redundant switcher or apply buttons)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                    Column(Modifier.padding(20.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Audio output", color = appColors.textPrimary,
+                                    fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
+                                Spacer(Modifier.height(4.dp))
+                                Text("Choose where to listen", color = appColors.textSecondary, fontSize = 12.sp)
+                            }
+                            IconButton(
+                                onClick = closeWithAnimation,
+                                modifier = Modifier.testTag("close_output_devices_dialog")
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(38.dp)
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(
-                                                appColors.primaryAccent.copy(alpha = if (isDark) 0.18f else 0.12f)
-                                            )
-                                            .border(
-                                                1.dp,
-                                                LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.35f else 0.45f),
-                                                RoundedCornerShape(12.dp)
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.SpeakerGroup,
-                                            contentDescription = null,
-                                            tint = appColors.primaryAccent,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-
-                                    Spacer(modifier = Modifier.width(12.dp))
-
-                                    Column {
-                                        Text(
-                                            text = "Audio Output",
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 16.sp,
-                                            color = appColors.textPrimary
-                                        )
-                                        Text(
-                                            text = "Choose where your music plays",
-                                            fontSize = 11.5.sp,
-                                            color = appColors.textMuted
-                                        )
-                                    }
-                                }
-
-                                // Liquid Glass Close Icon
-                                Box(
-                                    modifier = Modifier
-                                        .size(32.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            if (isDark) Color.White.copy(alpha = 0.08f)
-                                            else Color.Black.copy(alpha = 0.05f)
-                                        )
-                                        .border(
-                                            1.dp,
-                                            LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.30f else 0.40f),
-                                            CircleShape
-                                        )
-                                        .bouncyClickable { closeWithAnimation() }
-                                        .testTag("close_output_devices_dialog"),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Close,
-                                        contentDescription = "Close",
-                                        tint = appColors.textPrimary,
-                                        modifier = Modifier.size(16.dp)
-                                    )
+                                Box(Modifier.size(32.dp).background(appColors.cardBackgroundElevated, CircleShape),
+                                    contentAlignment = Alignment.Center) {
+                                    Icon(Icons.Default.Close, "Close", tint = appColors.textSecondary, modifier = Modifier.size(18.dp))
                                 }
                             }
-
-                            Spacer(modifier = Modifier.height(14.dp))
-                            HorizontalDivider(
-                                color = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.06f),
-                                thickness = 1.dp
-                            )
-                            Spacer(modifier = Modifier.height(14.dp))
-
-                            // 2. Filtered Physical & Wireless Target Devices List
-                            Text(
-                                text = "AVAILABLE DEVICES (${devices.size})",
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 0.8.sp,
-                                color = appColors.primaryAccent,
-                                modifier = Modifier.padding(bottom = 8.dp)
-                            )
-
+                        }
+                        Spacer(Modifier.height(24.dp))
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Connected devices", color = appColors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f))
+                            Text(devices.size.toString(), color = appColors.textSecondary, fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.background(appColors.cardBackgroundElevated, CircleShape)
+                                    .padding(horizontal = 8.dp, vertical = 3.dp).testTag("output_device_count"))
+                        }
+                        Spacer(Modifier.height(10.dp))
+                        if (devices.isEmpty()) {
+                            Text("No audio outputs detected", color = appColors.textSecondary, fontSize = 13.sp,
+                                modifier = Modifier.padding(vertical = 20.dp, horizontal = 4.dp))
+                        } else {
                             LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 240.dp),
+                                modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 items(devices, key = { it.id }) { device ->
-                                    ModernDeviceItemRow(
-                                        device = device,
-                                        isDark = isDark,
-                                        onClick = {
-                                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                            // Instant Selection: immediately select & route without extra button clicks
-                                            onSelectDevice(device.id)
-                                        }
-                                    )
-                                }
-                            }
-
-                            // 3. Bluetooth Discovery Prompt (If permission needed or no bluetooth active)
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !hasBluetoothPermission) {
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = Color.Transparent,
-                                    border = BorderStroke(1.dp, appColors.primaryAccent.copy(alpha = 0.35f)),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(appColors.primaryAccent.copy(alpha = 0.08f))
-                                        .bouncyClickable {
-                                            permissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT)
-                                        }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Bluetooth,
-                                            contentDescription = null,
-                                            tint = appColors.primaryAccent,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Column(modifier = Modifier.weight(1f)) {
-                                            Text(
-                                                text = "Allow Bluetooth Discovery",
-                                                fontSize = 11.5.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = appColors.textPrimary
-                                            )
-                                            Text(
-                                                text = "Tap to discover paired headphones & speakers",
-                                                fontSize = 10.sp,
-                                                color = appColors.textMuted
-                                            )
-                                        }
+                                    ModernDeviceItemRow(device) {
+                                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                        onSelectDevice(device.id)
                                     }
                                 }
                             }
-
-                            Spacer(modifier = Modifier.height(16.dp))
-                            HorizontalDivider(
-                                color = if (isDark) Color.White.copy(alpha = 0.08f) else Color.Black.copy(alpha = 0.06f),
-                                thickness = 1.dp
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
-
-                            // 4. Modern Minimal Thin-Line Volume Slider
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !hasBluetoothPermission) {
+                            Spacer(Modifier.height(12.dp))
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = appColors.cardBackgroundElevated,
+                                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                                    .clickable { permissionLauncher.launch(Manifest.permission.BLUETOOTH_CONNECT) }
                             ) {
-                                Text(
-                                    text = "OUTPUT VOLUME",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    letterSpacing = 0.8.sp,
-                                    color = appColors.textMuted
-                                )
-                                Text(
-                                    text = "${((currentVolume.toFloat() / maxVolume) * 100).toInt()}%",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = appColors.primaryAccent
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.height(4.dp))
-
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                val volumeIcon = when {
-                                    currentVolume == 0 -> Icons.AutoMirrored.Filled.VolumeMute
-                                    currentVolume < maxVolume / 2 -> Icons.AutoMirrored.Filled.VolumeDown
-                                    else -> Icons.AutoMirrored.Filled.VolumeUp
+                                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Bluetooth, null, tint = appColors.primaryAccent, modifier = Modifier.size(20.dp))
+                                    Spacer(Modifier.width(12.dp))
+                                    Column {
+                                        Text("Allow Bluetooth access", color = appColors.textPrimary, fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold)
+                                        Text("Show connected device details", color = appColors.textSecondary, fontSize = 11.sp)
+                                    }
                                 }
-
-                                Icon(
-                                    imageVector = volumeIcon,
-                                    contentDescription = "Volume",
-                                    tint = appColors.textSecondary,
-                                    modifier = Modifier
-                                        .size(18.dp)
-                                        .clickable {
-                                            // Toggle Mute
-                                            val newVol = if (currentVolume > 0) 0 else (maxVolume * 0.4f).roundToInt()
-                                            currentVolume = newVol
-                                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVol, 0)
-                                        }
-                                )
-
-                                Spacer(modifier = Modifier.width(10.dp))
-
-                                Slider(
-                                    value = currentVolume.toFloat(),
-                                    onValueChange = { newVal ->
-                                        val targetVol = newVal.roundToInt().coerceIn(0, maxVolume)
-                                        if (targetVol != currentVolume) {
-                                            currentVolume = targetVol
-                                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVol, 0)
-                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                        }
-                                    },
-                                    valueRange = 0f..maxVolume.toFloat(),
-                                    steps = 0,
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = appColors.primaryAccent,
-                                        activeTrackColor = appColors.primaryAccent,
-                                        inactiveTrackColor = if (isDark) Color.White.copy(alpha = 0.12f) else Color.Black.copy(alpha = 0.10f)
-                                    ),
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .height(26.dp)
-                                        .testTag("device_output_volume_slider")
-                                )
+                            }
+                        }
+                        Spacer(Modifier.height(20.dp))
+                        Surface(shape = RoundedCornerShape(20.dp), color = appColors.cardBackgroundElevated) {
+                            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                                    Text("Volume", color = appColors.textSecondary, fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
+                                    Text("${(currentVolume.toFloat() / maxVolume * 100).roundToInt()}%",
+                                        color = appColors.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                }
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    IconButton(onClick = {
+                                        val newVolume = if (currentVolume > 0) 0 else (maxVolume * 0.4f).roundToInt()
+                                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVolume, 0)
+                                        currentVolume = newVolume
+                                    }) {
+                                        Icon(
+                                            when {
+                                                currentVolume == 0 -> Icons.AutoMirrored.Filled.VolumeMute
+                                                currentVolume < maxVolume / 2 -> Icons.AutoMirrored.Filled.VolumeDown
+                                                else -> Icons.AutoMirrored.Filled.VolumeUp
+                                            },
+                                            if (currentVolume > 0) "Mute" else "Unmute",
+                                            tint = appColors.textSecondary, modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                    Slider(
+                                        value = currentVolume.toFloat(),
+                                        onValueChange = { value ->
+                                            val volume = value.roundToInt().coerceIn(0, maxVolume)
+                                            if (volume != currentVolume) {
+                                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0)
+                                                currentVolume = volume
+                                            }
+                                        },
+                                        valueRange = 0f..maxVolume.toFloat(),
+                                        colors = SliderDefaults.colors(
+                                            thumbColor = appColors.primaryAccent,
+                                            activeTrackColor = appColors.primaryAccent,
+                                            inactiveTrackColor = appColors.textPrimary.copy(alpha = 0.10f)
+                                        ),
+                                        modifier = Modifier.weight(1f).testTag("device_output_volume_slider")
+                                            .semantics { contentDescription = "Output volume" }
+                                    )
+                                }
                             }
                         }
                     }
@@ -542,175 +385,69 @@ fun SoundOutputDeviceDialog(
     }
 }
 
-/**
- * Modern Device Item Row with instant selection styling and WCAG AAA high contrast tokens.
- */
 @Composable
-private fun ModernDeviceItemRow(
-    device: SoundOutputDevice,
-    isDark: Boolean,
-    onClick: () -> Unit
-) {
-    val appColors = LocalAppColors.current
-    val isSelected = device.isSelected
-    val icon = getDeviceIcon(device)
-    val itemShape = RoundedCornerShape(16.dp)
-
-    val itemBorder = if (isSelected) {
-        BorderStroke(1.2.dp, appColors.primaryAccent)
-    } else {
-        if (appColors.isAmoled) {
-            BorderStroke(1.dp, Color(0xFF222222))
-        } else {
-            BorderStroke(1.dp, appColors.cardBorder.copy(alpha = if (isDark) 0.45f else 0.65f))
-        }
+private fun ModernDeviceItemRow(device: SoundOutputDevice, onClick: () -> Unit) {
+    val colors = LocalAppColors.current
+    val selected = device.isSelected
+    val shape = RoundedCornerShape(20.dp)
+    val iconBackground = if (selected) colors.primaryAccent.copy(alpha = 0.12f) else colors.cardBackground
+    val categoryLabel = when (device.category) {
+        AudioDeviceCategory.PHONE -> "Phone speaker"
+        AudioDeviceCategory.EARBUDS -> "Earbuds"
+        AudioDeviceCategory.HEADPHONES -> "Headphones"
+        AudioDeviceCategory.SPEAKER -> "Speaker"
+        AudioDeviceCategory.CAR -> "Car audio"
+        AudioDeviceCategory.HEARING_AID -> "Hearing aid"
+        AudioDeviceCategory.USB -> "USB audio"
+        AudioDeviceCategory.BLUETOOTH -> "Bluetooth audio"
     }
-
-    val itemBg = if (isSelected) {
-        if (appColors.isAmoled) {
-            Brush.verticalGradient(listOf(appColors.primaryAccent.copy(alpha = 0.20f), Color(0xFF000000)))
-        } else if (isDark) {
-            Brush.verticalGradient(listOf(appColors.primaryAccent.copy(alpha = 0.18f), appColors.cardBackgroundElevated))
-        } else {
-            Brush.verticalGradient(listOf(appColors.primaryAccent.copy(alpha = 0.14f), appColors.cardBackground))
-        }
-    } else {
-        if (appColors.isAmoled) {
-            Brush.verticalGradient(listOf(Color(0xFF0E0E0E), Color(0xFF060606)))
-        } else if (isDark) {
-            Brush.verticalGradient(listOf(appColors.cardBackgroundElevated, appColors.cardBackground))
-        } else {
-            Brush.verticalGradient(listOf(Color.White, appColors.chipBackground))
-        }
-    }
-
     Surface(
-        shape = itemShape,
-        color = Color.Transparent,
-        border = itemBorder,
-        modifier = Modifier
-            .fillMaxWidth()
-            .shadow(
-                elevation = if (isSelected) 6.dp else 1.dp,
-                shape = itemShape,
-                spotColor = if (isSelected) appColors.primaryAccent.copy(alpha = 0.35f) else Color.Black.copy(alpha = if (isDark) 0.25f else 0.04f),
-                ambientColor = Color.Transparent
-            )
-            .clip(itemShape)
-            .background(itemBg)
-            .bouncyClickable(targetScaleOnPress = 0.97f) { onClick() }
+        shape = shape,
+        color = if (selected) androidx.compose.ui.graphics.lerp(colors.cardBackground, colors.primaryAccent, 0.08f)
+            else colors.cardBackgroundElevated,
+        border = if (selected) BorderStroke(1.dp, colors.primaryAccent.copy(alpha = 0.40f)) else null,
+        modifier = Modifier.fillMaxWidth().clip(shape)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .semantics { stateDescription = if (selected) "Playing here" else "Connected" }
             .testTag("device_row_${device.id}")
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 11.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.weight(1f)
-            ) {
-                // Device Icon Container
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(11.dp))
-                        .background(
-                            if (isSelected) appColors.primaryAccent.copy(alpha = if (isDark) 0.24f else 0.16f)
-                            else if (isDark) Color.White.copy(alpha = 0.06f)
-                            else Color.Black.copy(alpha = 0.04f)
-                        )
-                        .border(
-                            1.dp,
-                            if (isSelected) LiquidGlass.specularBorderBrush(appColors, highlightAlpha = 0.45f)
-                            else LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.22f else 0.30f),
-                            RoundedCornerShape(11.dp)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = if (isSelected) appColors.primaryAccent else appColors.textMuted,
-                        modifier = Modifier.size(19.dp)
-                    )
-                }
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = device.name,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                        fontSize = 13.5.sp,
-                        color = if (isSelected && !isDark) appColors.primaryAccent else appColors.textPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = device.typeName,
-                        fontSize = 11.sp,
-                        color = if (isSelected) appColors.primaryAccent.copy(alpha = 0.85f) else appColors.textMuted
-                    )
-                }
+        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(46.dp).background(iconBackground, RoundedCornerShape(15.dp)),
+                contentAlignment = Alignment.Center) {
+                Icon(deviceIcon(device.category), categoryLabel,
+                    tint = if (selected) colors.primaryAccent else colors.textSecondary,
+                    modifier = Modifier.size(25.dp))
             }
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            // Active Target Indicator Badge
-            if (isSelected) {
-                Surface(
-                    shape = RoundedCornerShape(8.dp),
-                    color = appColors.primaryAccent.copy(alpha = 0.18f),
-                    border = BorderStroke(1.dp, appColors.primaryAccent.copy(alpha = 0.5f))
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Check,
-                            contentDescription = "Active",
-                            tint = appColors.primaryAccent,
-                            modifier = Modifier.size(12.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = "ACTIVE",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = 0.5.sp,
-                            color = appColors.primaryAccent
-                        )
-                    }
-                }
-            } else {
-                Box(
-                    modifier = Modifier
-                        .size(18.dp)
-                        .clip(CircleShape)
-                        .background(if (isDark) Color.White.copy(alpha = 0.04f) else Color.Black.copy(alpha = 0.04f))
-                        .border(
-                            1.dp,
-                            LiquidGlass.specularBorderBrush(appColors, highlightAlpha = if (isDark) 0.25f else 0.35f),
-                            CircleShape
-                        )
-                )
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(device.name, color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.height(4.dp))
+                Text(if (selected) "Playing here · ${device.typeName}" else device.typeName,
+                    color = if (selected) colors.primaryAccent else colors.textMuted, fontSize = 11.sp,
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(Modifier.width(10.dp))
+            Box(Modifier.size(22.dp).then(
+                if (selected) Modifier.background(colors.primaryAccent, CircleShape)
+                else Modifier.border(1.5.dp, colors.textMuted.copy(alpha = 0.45f), CircleShape)
+            ), contentAlignment = Alignment.Center) {
+                if (selected) Icon(Icons.Default.Check, null,
+                    tint = if (colors.primaryAccent.luminance() > 0.5f) Color.Black else Color.White,
+                    modifier = Modifier.size(14.dp))
             }
         }
     }
 }
 
-private fun getDeviceIcon(device: SoundOutputDevice): ImageVector {
-    return when {
-        device.isCar -> Icons.Default.DirectionsCar
-        device.isBluetooth -> Icons.Default.BluetoothAudio
-        device.isWired -> Icons.Default.Headphones
-        device.isUsb -> Icons.Default.Usb
-        device.isBuiltInSpeaker -> Icons.Default.Speaker
-        device.type == AudioDeviceInfo.TYPE_HEARING_AID -> Icons.Default.Hearing
-        else -> Icons.Default.Speaker
-    }
+private fun deviceIcon(category: AudioDeviceCategory): ImageVector = when (category) {
+    AudioDeviceCategory.PHONE -> Icons.Default.Smartphone
+    AudioDeviceCategory.EARBUDS -> Icons.Default.Earbuds
+    AudioDeviceCategory.HEADPHONES -> Icons.Default.Headphones
+    AudioDeviceCategory.SPEAKER -> Icons.Default.Speaker
+    AudioDeviceCategory.CAR -> Icons.Default.DirectionsCar
+    AudioDeviceCategory.HEARING_AID -> Icons.Default.Hearing
+    AudioDeviceCategory.USB -> Icons.Default.Usb
+    AudioDeviceCategory.BLUETOOTH -> Icons.Default.BluetoothAudio
 }
