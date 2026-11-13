@@ -100,8 +100,10 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
                     selectedSongCovers.put(track.id, cover)
                     onCoverResolved(ResolvedPlayerCover(playerCoverIdentity(track), cover))
                 }
+                if (!com.example.data.local.OtherSettingsPreferences.isDynamicGlassEnabled(context) ||
+                    !com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(context).dynamicAlbumGlow) return@collectLatest
                 val key = playerPaletteKey(artworkTrack, true, Color.White, Color.Black, request.data.toString())
-                if (TrackPaletteCache.get(key) == null) {
+                if (TrackPaletteCache.get(key)?.colorField == null) {
                     // Network and decoding started at selection; optional color analysis
                     // still yields during navigation and shares the existing CPU budget.
                     BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
@@ -135,7 +137,7 @@ internal fun playerAppearanceColors(source: AppThemeColors): AppThemeColors = so
 @Suppress("UNUSED_PARAMETER")
 fun playerPaletteKey(track: MusicTrack, dark: Boolean, accent: Color, base: Color,
     artworkIdentity: String = track.coverUrl): String =
-    "album-bg-colors-v9|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
+    "album-bg-colors-v10|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
 
 /** Show the native cover immediately; resolve a landscape shelf image to song art while visible. */
 @Composable
@@ -150,7 +152,7 @@ internal fun rememberPlayerArtworkRequest(track: MusicTrack, active: Boolean,
     val identity = remember(track) { playerCoverLookupIdentity(track) }
     var resolved by remember(identity) { mutableStateOf<String?>(null) }
     LaunchedEffect(identity, active, sourceSize) {
-        if (!active || resolved != null || hasNativeSquareCover(track.coverUrl) || isSelectedSongCover(track.id, track.coverUrl)) return@LaunchedEffect
+        if (!active || resolved != null || isSelectedSongCover(track.id, track.coverUrl)) return@LaunchedEffect
         // The visible player also owns its lookup. A cancelled/unfinished optional
         // prefetch must not leave a Home video's rectangular thumbnail in the player.
         withContext(AppDispatchers.Io) {

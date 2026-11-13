@@ -108,7 +108,8 @@ data class ExtractedTrackColors(
     val accentColor: Color,
     val vibrantColor: Color = accentColor,
     val topEdgeColor: Color = dominantColor,
-    val bottomEdgeColor: Color = dominantColor
+    val bottomEdgeColor: Color = dominantColor,
+    val colorField: ArtworkColorField? = null
 )
 
 object TrackPaletteCache {

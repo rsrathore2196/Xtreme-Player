@@ -143,8 +143,8 @@ class PlayerArtworkColorsTest {
     @Test fun cacheKeyInvalidatesPalettesWithoutSeparateEdgeColors() {
         val track = MusicTrack("track_1", "Song", "Artist", "Album", 200_000, "cover_url", "audio_url")
         val key = playerPaletteKey(track, true, Color.White, Color.Black, "cover_url")
-        assertTrue("Key must start with album-bg-colors-v9", key.startsWith("album-bg-colors-v9|"))
-        assertFalse("White-biased edge palettes must be re-extracted", key.startsWith("album-bg-colors-v8|"))
+        assertTrue("Key must start with album-bg-colors-v10", key.startsWith("album-bg-colors-v10|"))
+        assertFalse("Flat edge palettes must be re-extracted", key.startsWith("album-bg-colors-v9|"))
     }
 
     @Test fun oppositeEdgesKeepTheirActualColorsEvenWithALargeCenterSubject() {

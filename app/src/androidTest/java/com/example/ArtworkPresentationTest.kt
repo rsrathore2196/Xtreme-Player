@@ -36,8 +36,12 @@ import com.example.data.repository.CatalogPlaylist
 import com.example.performance.BackgroundWorkCoordinator
 import com.example.playback.PlayerUiState
 import com.example.ui.components.PlayerCoverArtwork
+import com.example.ui.components.PlayerGlassBackground
+import com.example.ui.components.LocalDynamicGlassEnabled
 import com.example.ui.screens.CatalogDetailScreen
 import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.theme.LocalAppColors
+import com.example.ui.theme.DarkAppColors
 import com.example.ui.util.*
 import com.example.ui.viewmodel.CatalogDetailState
 import kotlinx.coroutines.CompletableDeferred
@@ -49,6 +53,9 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.runBlocking
+import com.example.data.local.OtherSettingsPreferences
 
 @RunWith(AndroidJUnit4::class)
 class ArtworkPresentationTest {
@@ -58,6 +65,7 @@ class ArtworkPresentationTest {
     private lateinit var loader: ImageLoader
     private val fetches = AtomicInteger()
     private val failures = AtomicInteger()
+    private val paletteRequests = AtomicInteger()
     private val square = "https://lh3.googleusercontent.com/song-album=w600-h600-l90-rj"
     private val rectangle = "https://lh3.googleusercontent.com/shelf-video=w640-h360-l90-rj"
     private val track = MusicTrack("yt_squaretest1", "Song", "Singer", "Album", 180_000, rectangle, "audio")
@@ -68,6 +76,8 @@ class ArtworkPresentationTest {
         previous = Coil.imageLoader(context)
         loader = ImageLoader.Builder(context).components {
             add(coil.intercept.Interceptor { chain ->
+                if (chain.request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)?.targetSize == ImageConfig.PALETTE_THUMBNAIL_SIZE)
+                    paletteRequests.incrementAndGet()
                 chain.proceed(chain.request).also { if (it is coil.request.ErrorResult) failures.incrementAndGet() }
             })
             add(ArtworkResolutionInterceptor())
@@ -166,6 +176,52 @@ class ArtworkPresentationTest {
         }
         compose.waitUntil(30_000) { failures.get() > 0 }
         assertFalse(request.get().data.toString().contains("rejected"))
+    }
+
+    @Test fun squareCroppedVideoThumbnailStillResolvesTheOfficialAudioCover() {
+        val request = AtomicReference<ImageRequest>()
+        val calls = AtomicInteger()
+        val cropped = track.copy(id = "yt_squarecrop1", coverUrl = "https://lh3.googleusercontent.com/video-crop=w600-h600-l90-rj")
+        compose.setContent {
+            val artwork = rememberPlayerArtworkRequest(cropped, true, resolveCover = { calls.incrementAndGet(); square })
+            SideEffect { request.set(artwork) }
+        }
+        compose.waitUntil(30_000) { request.get().data.toString().contains("song-album") }
+        assertEquals(1, calls.get())
+        assertEquals("https://lh3.googleusercontent.com/video-crop=w600-h600-l90-rj", cropped.coverUrl)
+    }
+
+    @Test fun preparedBackdropKeepsHorizontalColorsAndSettlesWithoutRepeatedRenderingChanges() {
+        val pixels = IntArray(120 * 120) { if (it % 120 < 60) 0xffd02030.toInt() else 0xff2040c0.toInt() }
+        val colors = extractPlayerArtworkColors(pixels, 120, 120)!!
+        compose.setContent {
+            CompositionLocalProvider(LocalAppColors provides DarkAppColors.copy(dynamicAlbumGlow = true), LocalDynamicGlassEnabled provides true) {
+                Box(Modifier.size(240.dp, 360.dp).testTag("prepared_color_field")) {
+                    PlayerGlassBackground(rememberUpdatedState(colors.topEdgeColor), rememberUpdatedState(colors.bottomEdgeColor),
+                        colorField = rememberUpdatedState(colors.colorField))
+                }
+            }
+        }
+        val node = compose.onNodeWithTag("prepared_color_field")
+        val before = node.captureToImage().toPixelMap()
+        val left = before[before.width / 10, before.height / 2]
+        val right = before[before.width * 9 / 10, before.height / 2]
+        assertTrue(left.red > left.blue * 2)
+        assertTrue(right.blue > right.red * 2)
+        val after = node.captureToImage().toPixelMap()
+        for (y in 0 until after.height step 8) for (x in 0 until after.width step 8) assertEquals(before[x, y], after[x, y])
+    }
+
+    @Test fun disabledGlowStillPreparesTheSongCoverWithoutOptionalPaletteWork() = runBlocking {
+        val original = OtherSettingsPreferences.playerExperienceSettings(context).dynamicAlbumGlow
+        try {
+            OtherSettingsPreferences.setDynamicAlbumGlow(context, false)
+            val cover = AtomicReference<ResolvedPlayerCover>()
+            prepareCurrentPlayerArtwork(context, flowOf(track.copy(id = "yt_glowoff0001")), flowOf(true), this,
+                onCoverResolved = { cover.set(it) }, resolveCover = { square }, loaderFor = { loader }).join()
+            assertEquals(square, cover.get().url)
+            assertEquals("Disabled effects must not decode or analyze a palette", 0, paletteRequests.get())
+        } finally { OtherSettingsPreferences.setDynamicAlbumGlow(context, original) }
     }
 
     @Test fun aLateCoverForThePreviousTrackCannotReplaceTheNewTrack() {

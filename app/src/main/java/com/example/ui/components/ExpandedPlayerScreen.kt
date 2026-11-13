@@ -445,6 +445,7 @@ fun ExpandedPlayerScreen(
     var accentColor by remember(paletteKey) { mutableStateOf(cachedColors?.accentColor ?: appColors.primaryAccent) }
     var topEdgeColor by remember(paletteKey) { mutableStateOf(cachedColors?.topEdgeColor ?: appColors.cardBackgroundElevated) }
     var bottomEdgeColor by remember(paletteKey) { mutableStateOf(cachedColors?.bottomEdgeColor ?: appColors.cardBackgroundElevated) }
+    val artworkColorField = remember { mutableStateOf(cachedColors?.colorField) }
     // Only the backdrop's draw scope observes geometry; layout changes do not
     // recompose the controls or restart artwork decoding.
     val artworkBlendBounds = remember(track.id) { mutableStateOf<Rect?>(null) }
@@ -458,7 +459,10 @@ fun ExpandedPlayerScreen(
             accentColor = inMem.accentColor
             topEdgeColor = inMem.topEdgeColor
             bottomEdgeColor = inMem.bottomEdgeColor
-            return@LaunchedEffect
+            if (inMem.colorField != null) {
+                artworkColorField.value = inMem.colorField
+                return@LaunchedEffect
+            }
         }
 
         if (highResCoverUrl.isNotBlank()) {
@@ -483,6 +487,7 @@ fun ExpandedPlayerScreen(
                             accentColor = extracted.accentColor
                             topEdgeColor = extracted.topEdgeColor
                             bottomEdgeColor = extracted.bottomEdgeColor
+                            artworkColorField.value = extracted.colorField
                         }
                     }
                 } catch (cancelled: CancellationException) {
@@ -604,7 +609,8 @@ fun ExpandedPlayerScreen(
             PlayerGlassBackground(
                 topEdgeColor = animatedTopEdgeColor,
                 bottomEdgeColor = animatedBottomEdgeColor,
-                artworkBounds = artworkBlendBounds
+                artworkBounds = artworkBlendBounds,
+                colorField = artworkColorField
             )
 
             val configuration = LocalConfiguration.current
@@ -2603,13 +2609,19 @@ internal fun PlayerGlassBackground(
     topEdgeColor: State<Color>,
     bottomEdgeColor: State<Color>,
     artworkBounds: State<Rect?>? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    colorField: State<com.example.ui.util.ArtworkColorField?>? = null
 ) {
     val appColors = LocalAppColors.current
     val dynamicGlass = LocalDynamicGlassEnabled.current
     if (!dynamicGlass || !appColors.dynamicAlbumGlow) {
         Box(modifier.fillMaxSize().testTag("player_neutral_backdrop").xtremeSharedBackdropSource(enabled = dynamicGlass)
             .background(Color(0xff101010)))
+        return
+    }
+    colorField?.value?.let { field ->
+        PlayerArtworkFieldBackground(field, artworkBounds,
+            modifier.fillMaxSize().testTag("player_album_glow_backdrop").xtremeSharedBackdropSource(enabled = dynamicGlass))
         return
     }
     val origin = remember { mutableStateOf(Offset.Zero) }
