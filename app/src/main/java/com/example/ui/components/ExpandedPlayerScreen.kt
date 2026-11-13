@@ -82,6 +82,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Cast
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.FormatQuote
@@ -166,6 +168,8 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -2782,22 +2786,66 @@ private fun PlayerOptionsMenu(
                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
             )
 
-            DropdownMenuItem(text = { Text(when (downloaded[track.id]?.status) {
-                com.example.downloads.DownloadStatus.COMPLETE -> "Remove download"
-                com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> "Pause download"
-                com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> "Resume download"
-                else -> "Download"
-            }, color = appColors.textPrimary) }, onClick = { downloadScope.launch {
-                try {
-                    when (downloaded[track.id]?.status) {
-                        com.example.downloads.DownloadStatus.COMPLETE -> downloads.remove(track.id)
-                        com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> downloads.pause(track.id)
-                        com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> downloads.resume(track.id)
-                        else -> downloads.enqueue(listOf(track))
+            val downloadRecord = downloaded[track.id]
+            val downloadStatus = downloadRecord?.status
+            DropdownMenuItem(
+                text = {
+                    Text(when (downloadStatus) {
+                        com.example.downloads.DownloadStatus.COMPLETE -> "Remove download"
+                        com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> "Pause download"
+                        com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> "Resume download"
+                        else -> "Download"
+                    }, style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.SemiBold, color = appColors.textPrimary))
+                },
+                leadingIcon = {
+                    Box(Modifier.size(34.dp).clip(CircleShape).background(itemIconBg)
+                        .testTag("player_download_icon"), contentAlignment = Alignment.Center) {
+                        val active = downloadStatus == com.example.downloads.DownloadStatus.QUEUED ||
+                            downloadStatus == com.example.downloads.DownloadStatus.DOWNLOADING
+                        if (downloadRecord != null && downloadStatus != com.example.downloads.DownloadStatus.COMPLETE &&
+                            (active || downloadRecord.total > 0)) {
+                            val ringModifier = Modifier.matchParentSize().testTag("player_download_progress").semantics {
+                                contentDescription = if (downloadRecord.total > 0) "${(downloadRecord.fraction * 100).roundToInt()}% downloaded"
+                                    else if (downloadStatus == com.example.downloads.DownloadStatus.QUEUED) "Download queued"
+                                    else "Downloading · size unknown"
+                            }
+                            if (downloadRecord.total > 0) {
+                                CircularProgressIndicator(progress = { downloadRecord.fraction }, modifier = ringModifier,
+                                    color = appColors.primaryAccent, strokeWidth = 2.dp,
+                                    trackColor = appColors.primaryAccent.copy(alpha = .18f), gapSize = 0.dp)
+                            } else {
+                                CircularProgressIndicator(modifier = ringModifier, color = appColors.primaryAccent,
+                                    strokeWidth = 2.dp, trackColor = appColors.primaryAccent.copy(alpha = .18f))
+                            }
+                        }
+                        Icon(when (downloadStatus) {
+                            com.example.downloads.DownloadStatus.COMPLETE -> Icons.Default.DeleteOutline
+                            com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> Icons.Default.Pause
+                            else -> Icons.Default.Download
+                        }, contentDescription = null, tint = appColors.primaryAccent, modifier = Modifier.size(18.dp))
                     }
-                    onDismissRequest()
-                } catch (_: Exception) { android.widget.Toast.makeText(context, "Could not update download. Try again.", android.widget.Toast.LENGTH_SHORT).show() }
-            } })
+                },
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp).testTag("player_download_option"),
+                onClick = {
+                    AppHaptics.performTap(context)
+                    downloadScope.launch {
+                        try {
+                            when (downloaded[track.id]?.status) {
+                                com.example.downloads.DownloadStatus.COMPLETE -> downloads.remove(track.id)
+                                com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> downloads.pause(track.id)
+                                com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> downloads.resume(track.id)
+                                else -> downloads.enqueue(listOf(track))
+                            }
+                            onDismissRequest()
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (_: Exception) {
+                            android.widget.Toast.makeText(context, "Could not update download. Try again.", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+            )
             // Action 3: Share Track
             DropdownMenuItem(
                 text = {

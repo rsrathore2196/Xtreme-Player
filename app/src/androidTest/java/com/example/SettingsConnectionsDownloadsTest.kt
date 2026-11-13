@@ -48,11 +48,12 @@ class SettingsConnectionsDownloadsTest {
         compose.onNodeWithTag("connect_youtube").performScrollTo()
         screenshot("accounts-connections-review.png")
     }
-    @Test fun downloadsExplainsEntryPointsAndExposesNetworkControls() {
+    @Test fun downloadsShowsStorageAndExposesNetworkControls() {
         compose.setContent { MyApplicationTheme { DownloadsPage() } }
         compose.onNodeWithTag("downloads_wifi_only").assertExists()
         compose.onNodeWithText("Download quality").assertExists()
-        compose.onNodeWithText("Find and play your saved tracks in Library → Downloads.").assertExists()
+        compose.onNodeWithText("Find and play your saved tracks in Library → Downloads.").assertDoesNotExist()
+        compose.onNodeWithTag("download_storage_summary").assertExists()
         compose.onNodeWithText("Search downloads").assertDoesNotExist()
         compose.onNodeWithText("Play downloaded").assertDoesNotExist()
         screenshot("downloads-review.png")

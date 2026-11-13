@@ -153,7 +153,8 @@ class LibraryDownloadsUiTest {
         compose.onNodeWithText("Search downloads").assertDoesNotExist()
         compose.onNodeWithText("Play downloaded").assertDoesNotExist()
         compose.onNodeWithTag("clear_downloads").assertExists()
-        compose.onNodeWithText("Find and play your saved tracks in Library → Downloads.").assertExists()
+        compose.onNodeWithText("Find and play your saved tracks in Library → Downloads.").assertDoesNotExist()
+        compose.onNodeWithTag("download_storage_summary").assertExists()
     }
 
     private fun awaitDownloads() {

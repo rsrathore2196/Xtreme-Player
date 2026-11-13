@@ -16,6 +16,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -32,6 +34,10 @@ import com.example.ui.viewmodel.PlaylistImportUiState
 import com.github.takahirom.roborazzi.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
+import com.example.downloads.DownloadRecord
+import com.example.downloads.DownloadStatus
+import com.example.downloads.OfflineDownloads
 import org.junit.*
 import org.junit.Assert.*
 import org.junit.runner.RunWith
@@ -203,6 +209,7 @@ class PlayerPopupThemeUiTest {
         compose.onNodeWithTag("player_options_button").performClick()
         settle()
         assertBackground("player_options_popup", Color.White)
+        assertDownloadRow("Download")
         compose.onNodeWithText("Sleep Mode").performClick()
         settle()
         assertBackground("sleep_timer_popup", Color.White)
@@ -213,6 +220,95 @@ class PlayerPopupThemeUiTest {
         compose.onNodeWithTag("player_options_button").performClick()
         settle()
         assertBackground("player_options_popup", Color.Black)
+        assertDownloadRow("Download")
+        val downloads = OfflineDownloads.get(context)
+        for ((status, title) in listOf(DownloadStatus.COMPLETE to "Remove download",
+            DownloadStatus.PAUSED to "Resume download", DownloadStatus.DOWNLOADING to "Pause download",
+            DownloadStatus.QUEUED to "Pause download", DownloadStatus.FAILED to "Resume download")) {
+            runBlocking { downloads.put(DownloadRecord(track, status)) }
+            settle()
+            assertDownloadRow(title)
+            val progress = compose.onNodeWithTag("player_download_progress", useUnmergedTree = true)
+            if (status == DownloadStatus.QUEUED || status == DownloadStatus.DOWNLOADING) {
+                assertEquals(ProgressBarRangeInfo.Indeterminate,
+                    progress.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo])
+            } else progress.assertDoesNotExist()
+        }
+        runBlocking { downloads.put(DownloadRecord(track, DownloadStatus.PAUSED)) }
+    }
+
+    @Test fun downloadIconProgressFollowsLiveBytesPauseResumeAndCompletion() {
+        val progressTrack = track.copy(id = "menu-progress")
+        val downloads = OfflineDownloads.get(context)
+        runBlocking {
+            downloads.load()
+            downloads.put(DownloadRecord(progressTrack, DownloadStatus.DOWNLOADING, bytes = 0, total = 1000))
+        }
+        var colors by mutableStateOf(DarkAppColors.copy(dynamicGlassEnabled = false))
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            CompositionLocalProvider(LocalAppColors provides colors, LocalArtworkRequestsActive provides false,
+                LocalVisualEffectsActive provides false) {
+                ExpandedPlayerScreen(PlayerUiState(currentTrack = progressTrack), {}, {}, {}, {}, {}, {}, {}, {}, {},
+                    onAddToPlaylist = {}, isScreenVisible = false)
+            }
+        } }
+        settle()
+        compose.onNodeWithTag("player_options_button").performClick()
+        settle()
+        val ring = compose.onNodeWithTag("player_download_progress", useUnmergedTree = true)
+        fun assertProgress(fraction: Float) {
+            assertEquals(fraction, ring.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current, .001f)
+            val iconBounds = compose.onNodeWithTag("player_download_icon", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertEquals("The progress line surrounds the existing icon", iconBounds, ring.fetchSemanticsNode().boundsInRoot)
+        }
+        assertProgress(0f)
+        for (bytes in listOf(250L, 730L)) {
+            runBlocking { downloads.update(progressTrack.id, persist = false) { it.copy(bytes = bytes) } }
+            settle()
+            assertProgress(bytes / 1000f)
+        }
+        captureSuffix = "-progress-dark"
+        assertBackground("player_options_popup", Color.Black)
+        runBlocking { downloads.update(progressTrack.id) { it.copy(status = DownloadStatus.PAUSED) } }
+        settle()
+        assertDownloadRow("Resume download")
+        assertProgress(.73f)
+        compose.runOnIdle { colors = LightAppColors.copy(dynamicGlassEnabled = false) }
+        settle()
+        assertProgress(.73f)
+        captureSuffix = "-progress-light"
+        assertBackground("player_options_popup", Color.White)
+        runBlocking { downloads.update(progressTrack.id) { it.copy(status = DownloadStatus.DOWNLOADING, bytes = 850) } }
+        settle()
+        assertDownloadRow("Pause download")
+        assertProgress(.85f)
+        runBlocking { downloads.update(progressTrack.id) { it.copy(total = -1) } }
+        settle()
+        assertEquals(ProgressBarRangeInfo.Indeterminate, ring.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo])
+        runBlocking { downloads.update(progressTrack.id) { it.copy(status = DownloadStatus.COMPLETE, bytes = 1000, total = 1000) } }
+        settle()
+        assertDownloadRow("Remove download")
+        ring.assertDoesNotExist()
+    }
+
+    private fun assertDownloadRow(title: String) {
+        val text = compose.onNodeWithText(title, useUnmergedTree = true)
+        val share = compose.onNodeWithText("Share Track", useUnmergedTree = true)
+        val bounds = text.fetchSemanticsNode().boundsInRoot
+        val shareBounds = share.fetchSemanticsNode().boundsInRoot
+        val icon = compose.onNodeWithTag("player_download_icon", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertEquals("Download text uses the same inset as the other options", shareBounds.left, bounds.left, .5f)
+        assertEquals(bounds.center.y, icon.center.y, .5f)
+        assertEquals(34f * context.resources.displayMetrics.density, icon.width, .5f)
+        fun style(node: SemanticsNodeInteraction): androidx.compose.ui.text.TextStyle {
+            val layouts = mutableListOf<TextLayoutResult>()
+            node.performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            return layouts.single().layoutInput.style
+        }
+        assertEquals(style(share).fontWeight, style(text).fontWeight)
+        assertEquals(style(share).fontSize, style(text).fontSize)
+        assertEquals(style(share).color, style(text).color)
     }
 
     @Test @Config(sdk = [34])

@@ -33,7 +33,11 @@ fun DownloadsPage(modifier: Modifier = Modifier, store: OfflineDownloads = Offli
         try { block() } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
         catch (_: Exception) { error = "Downloads could not be updated. Check available storage and try again." }
     } }
-    LaunchedEffect(store) { try { store.load() } catch (_: Exception) { error = "Saved downloads could not be loaded." } }
+    LaunchedEffect(store) {
+        try { store.load() }
+        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (_: Exception) { error = "Saved downloads could not be loaded." }
+    }
     if (clear) AlertDialog(onDismissRequest = { clear = false }, title = { Text("Remove all downloads?") },
         text = { Text("This removes saved audio from this device. Your playlists stay in your library.") },
         confirmButton = { TextButton(onClick = { clear = false; action { store.clear() } }) { Text("Remove") } },
@@ -72,16 +76,16 @@ fun DownloadsPage(modifier: Modifier = Modifier, store: OfflineDownloads = Offli
                             }) }
                         }
                     }
-                    Text("${records.values.count { it.status == DownloadStatus.COMPLETE }} tracks saved · ${formatDownloadBytes(records.values.sumOf { it.bytes })}",
-                        color = colors.textMuted, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
+                    HorizontalDivider(Modifier.padding(vertical = 16.dp), color = colors.cardBorder)
+                    DownloadStorageSummary(
+                        downloadedBytes = records.values.sumOf { it.bytes.coerceAtLeast(0) },
+                        savedTracks = records.values.count { it.status == DownloadStatus.COMPLETE },
+                        hasPartialAudio = records.values.any { it.status != DownloadStatus.COMPLETE && it.bytes > 0 }
+                    )
                 }
             }
         }
         error?.let { message -> item { Text(message, color = colors.primaryAccent) } }
-        item {
-            Text("Find and play your saved tracks in Library → Downloads.",
-                color = colors.textSecondary, modifier = Modifier.padding(vertical = 8.dp))
-        }
         if (records.isNotEmpty()) item {
             TextButton(onClick = { clear = true }, modifier = Modifier.testTag("clear_downloads")) { Text("Remove all downloads") }
         }

@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -50,10 +51,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -121,6 +124,7 @@ fun SettingsScreen(
     val settingsColors = remember(themeColors) { LiquidGlass.settingsColors(themeColors) }
     val accentColor = settingsColors.primaryAccent
     val screenBg = settingsColors.scaffoldBackground
+    val pageState = rememberSaveableStateHolder()
 
     var showEditProfileSheet by remember { mutableStateOf(false) }
 
@@ -196,11 +200,14 @@ fun SettingsScreen(
         }
 
         if (isViewingProfileDetail) {
-            ProfileDetailPage(
-                userProfile = userProfile,
-                isDarkMode = isDarkMode,
-                onEditDetailsClick = { showEditProfileSheet = true }
-            )
+            pageState.SaveableStateProvider("profile") {
+                ProfileDetailPage(
+                    userProfile = userProfile,
+                    isDarkMode = isDarkMode,
+                    onEditDetailsClick = { showEditProfileSheet = true },
+                    modifier = Modifier.weight(1f).navigationBarsPadding().background(screenBg)
+                )
+            }
         } else {
             // Content Area: Category List or Category Detail Subpage
             AnimatedContent(
@@ -230,76 +237,82 @@ fun SettingsScreen(
                             )
                     }
                 },
-                modifier = Modifier.fillMaxSize(),
+                // Bound each page to the space below the header. Its own scroll
+                // container handles gestures; the Settings background never scrolls.
+                modifier = Modifier.weight(1f).fillMaxWidth().clipToBounds().navigationBarsPadding(),
                 label = "SettingsCategoryTransition"
             ) { category ->
-                if (category == null) {
-                    // Categorized Overview (Matching screenshot structure)
-                    SettingsOverviewList(
-                        userProfile = userProfile,
-                        isDarkMode = isDarkMode,
-                        onProfileClick = { isViewingProfileDetail = true },
-                        onCategoryClick = { selectedCategory = it }
-                    )
-                } else {
-                    // Sub-Page for the selected category
-                    when (category) {
-                    SettingsCategory.ACCOUNTS_CONNECTIONS -> com.example.ui.screens.settings.AccountsConnectionsPage()
-                    SettingsCategory.DOWNLOADS -> com.example.ui.screens.settings.DownloadsPage()
-                    SettingsCategory.THEMES_APP_UI -> {
-                        ThemesAppUiPage(
-                            isDarkMode = isDarkMode,
-                            themeMode = themeMode,
-                            onSelectThemeMode = onSelectThemeMode,
-                            customThemeState = customThemeState,
-                            onUpdateCustomThemeState = onUpdateCustomThemeState,
-                            onApplyPreset = onApplyPreset,
-                            isDynamicGlassEnabled = isDynamicGlassEnabled,
-                            onToggleDynamicGlass = onToggleDynamicGlass,
-                            liquidGlassProfile = liquidGlassProfile,
-                            onSelectLiquidGlassProfile = onSelectLiquidGlassProfile,
-                            onNestedPageChanged = { title, subtitle, back ->
-                                if (selectedCategory == SettingsCategory.THEMES_APP_UI) {
-                                    subPageTitle = title; subPageSubtitle = subtitle; subPageBackAction = back
+                pageState.SaveableStateProvider(category?.name ?: "overview") {
+                    Box(Modifier.fillMaxSize().background(screenBg).testTag("settings_page_${category?.name ?: "overview"}")) {
+                        if (category == null) {
+                            // Categorized Overview (Matching screenshot structure)
+                            SettingsOverviewList(
+                                userProfile = userProfile,
+                                isDarkMode = isDarkMode,
+                                onProfileClick = { isViewingProfileDetail = true },
+                                onCategoryClick = { selectedCategory = it }
+                            )
+                        } else {
+                            // Sub-Page for the selected category
+                            when (category) {
+                                SettingsCategory.ACCOUNTS_CONNECTIONS -> com.example.ui.screens.settings.AccountsConnectionsPage()
+                                SettingsCategory.DOWNLOADS -> com.example.ui.screens.settings.DownloadsPage()
+                                SettingsCategory.THEMES_APP_UI -> {
+                                    ThemesAppUiPage(
+                                        isDarkMode = isDarkMode,
+                                        themeMode = themeMode,
+                                        onSelectThemeMode = onSelectThemeMode,
+                                        customThemeState = customThemeState,
+                                        onUpdateCustomThemeState = onUpdateCustomThemeState,
+                                        onApplyPreset = onApplyPreset,
+                                        isDynamicGlassEnabled = isDynamicGlassEnabled,
+                                        onToggleDynamicGlass = onToggleDynamicGlass,
+                                        liquidGlassProfile = liquidGlassProfile,
+                                        onSelectLiquidGlassProfile = onSelectLiquidGlassProfile,
+                                        onNestedPageChanged = { title, subtitle, back ->
+                                            if (selectedCategory == SettingsCategory.THEMES_APP_UI) {
+                                                subPageTitle = title; subPageSubtitle = subtitle; subPageBackAction = back
+                                            }
+                                        }
+                                    )
+                                }
+                                SettingsCategory.MUSIC_PLAYBACK -> {
+                                    MusicPlaybackPage(
+                                        effectsState = effectsState,
+                                        isDarkMode = isDarkMode,
+                                        onCrystalClarityToggle = onCrystalClarityToggle,
+                                        onToggleEqualizer = onToggleEqualizer,
+                                        onOpenEqualizer = onOpenEqualizer,
+                                        onSelectPreset = onSelectPreset
+                                    )
+                                }
+                                SettingsCategory.OTHER_SETTINGS -> {
+                                    OtherSettingsPage(
+                                        isDarkMode = isDarkMode,
+                                        onNestedPageChanged = { title, subtitle, back ->
+                                            if (selectedCategory == SettingsCategory.OTHER_SETTINGS) {
+                                                subPageTitle = title; subPageSubtitle = subtitle; subPageBackAction = back
+                                            }
+                                        }
+                                    )
+                                }
+                                SettingsCategory.BACKUP_RESTORE -> {
+                                    BackupRestorePage(
+                                        isDarkMode = isDarkMode
+                                    )
+                                }
+                                SettingsCategory.ABOUT -> {
+                                    AboutPage(
+                                        isDarkMode = isDarkMode
+                                    )
                                 }
                             }
-                        )
-                    }
-                    SettingsCategory.MUSIC_PLAYBACK -> {
-                        MusicPlaybackPage(
-                            effectsState = effectsState,
-                            isDarkMode = isDarkMode,
-                            onCrystalClarityToggle = onCrystalClarityToggle,
-                            onToggleEqualizer = onToggleEqualizer,
-                            onOpenEqualizer = onOpenEqualizer,
-                            onSelectPreset = onSelectPreset
-                        )
-                    }
-                    SettingsCategory.OTHER_SETTINGS -> {
-                        OtherSettingsPage(
-                            isDarkMode = isDarkMode,
-                            onNestedPageChanged = { title, subtitle, back ->
-                                if (selectedCategory == SettingsCategory.OTHER_SETTINGS) {
-                                    subPageTitle = title; subPageSubtitle = subtitle; subPageBackAction = back
-                                }
-                            }
-                        )
-                    }
-                    SettingsCategory.BACKUP_RESTORE -> {
-                        BackupRestorePage(
-                            isDarkMode = isDarkMode
-                        )
-                    }
-                    SettingsCategory.ABOUT -> {
-                        AboutPage(
-                            isDarkMode = isDarkMode
-                        )
+                        }
                     }
                 }
             }
         }
     }
-}
 }
 }
 
@@ -378,6 +391,7 @@ private fun SettingsOverviewList(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .testTag("settings_overview")
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
@@ -425,7 +439,9 @@ private fun SettingsOverviewList(
             onCategoryClick = onCategoryClick
         )
 
-        Spacer(modifier = Modifier.height(28.dp))
+        // The floating dock and mini player overlay this page instead of
+        // reserving layout space. Leave enough scroll range to uncover the last row.
+        Spacer(modifier = Modifier.height(160.dp))
     }
 }
 
