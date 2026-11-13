@@ -405,6 +405,7 @@ fun MainNavigationScaffold(
                                     favoriteTracksState = viewModel.favoriteTracks,
                                     favoriteCount = favoriteCount,
                                     onPlayLikedSongs = { viewModel.playLikedSongs() },
+                                    onPlayDownloadedTrack = { track, queue -> viewModel.playPlaylistTrack(track, queue) },
                                     listState = libraryListState,
                                     playlists = playlists,
                                     currentPlayingTrackId = currentPlayingTrackId,

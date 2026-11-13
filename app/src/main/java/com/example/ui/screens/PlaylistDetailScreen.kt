@@ -60,6 +60,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import com.example.ui.components.TrackListItem
@@ -106,7 +107,12 @@ fun PlaylistDetailScreen(
     footer: (@Composable () -> Unit)? = null,
     onRemoveEntry: ((MusicTrack) -> Unit)? = null,
     downloadCollectionComplete: Boolean = true,
-    loadDownloadTracks: (suspend () -> List<MusicTrack>)? = null
+    loadDownloadTracks: (suspend () -> List<MusicTrack>)? = null,
+    showDownloadAction: Boolean = true,
+    artworkIcon: ImageVector? = null,
+    collectionLabel: String = "PLAYLIST",
+    emptyTitle: String = "Playlist is empty",
+    emptyDescription: String? = null
 ) {
     val playlist = playlistWithTracks.playlist
     val tracks = playlistWithTracks.musicTracks
@@ -365,10 +371,11 @@ fun PlaylistDetailScreen(
             if (landscape) item("landscape_playlist_header") {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically) {
-                    AsyncImage(rememberPlaylistCoverRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE),
-                        contentDescription = null, contentScale = ContentScale.Crop,
-                        modifier = Modifier.size(112.dp).clip(RoundedCornerShape(16.dp))
-                            .background(appColors.cardBackgroundElevated).testTag("landscape_playlist_artwork"))
+                    val artworkModifier = Modifier.size(112.dp).clip(RoundedCornerShape(16.dp))
+                        .background(appColors.cardBackgroundElevated).testTag("landscape_playlist_artwork")
+                    if (artworkIcon != null) LibraryCollectionArtwork(artworkIcon, artworkModifier)
+                    else AsyncImage(rememberPlaylistCoverRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE),
+                        contentDescription = null, contentScale = ContentScale.Crop, modifier = artworkModifier)
                     Spacer(Modifier.width(20.dp))
                     Column(Modifier.weight(1f)) {
                         Text(playlist.title, style = MaterialTheme.typography.headlineMedium.copy(
@@ -409,17 +416,12 @@ fun PlaylistDetailScreen(
                                 .background(appColors.scaffoldBackground)
                                 .testTag("playlist_profile_header")
                         ) {
-                            AsyncImage(
-                                model = rememberPlaylistCoverRequest(playlist.coverUrl, 1200),
-                                contentDescription = playlist.title,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(top = topSpacing)
-                                    .aspectRatio(1f)
-                                    .testTag("playlist_profile_artwork")
-                                    .headerArtworkEdgeBlend(topFade = 0.10f, bottomFade = 0.10f, topMargin = 0.01f, bottomMargin = 0.02f)
-                            )
+                            val artworkModifier = Modifier.fillMaxWidth().padding(top = topSpacing).aspectRatio(1f)
+                                .testTag("playlist_profile_artwork")
+                                .headerArtworkEdgeBlend(topFade = 0.10f, bottomFade = 0.10f, topMargin = 0.01f, bottomMargin = 0.02f)
+                            if (artworkIcon != null) LibraryCollectionArtwork(artworkIcon, artworkModifier)
+                            else AsyncImage(model = rememberPlaylistCoverRequest(playlist.coverUrl, 1200),
+                                contentDescription = playlist.title, contentScale = ContentScale.Fit, modifier = artworkModifier)
                             Box(
                                 Modifier
                                     .align(Alignment.TopStart)
@@ -482,7 +484,7 @@ fun PlaylistDetailScreen(
                     }
 
                     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
-                        Text("PLAYLIST", color = appColors.textMuted, style = MaterialTheme.typography.labelMedium)
+                        Text(collectionLabel, color = appColors.textMuted, style = MaterialTheme.typography.labelMedium)
                         Text(
                             text = playlist.title,
                             color = appColors.textPrimary,
@@ -512,7 +514,7 @@ fun PlaylistDetailScreen(
                 }
             }
 
-                item("collection_download") {
+                if (showDownloadAction) item("collection_download") {
                     com.example.ui.screens.settings.DownloadCollectionButton(tracks, playlist.title,
                         Modifier.fillMaxWidth().padding(horizontal = 24.dp), downloadCollectionComplete, loadDownloadTracks)
                 }
@@ -585,13 +587,13 @@ fun PlaylistDetailScreen(
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Text(
-                            text = "Playlist is empty",
+                            text = emptyTitle,
                             color = appColors.textPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp
                         )
                         Text(
-                            text = if (readOnly) "No playable tracks are available." else "Add tracks from the Home or Search screen using the 3-dot menu.",
+                            text = emptyDescription ?: if (readOnly) "No playable tracks are available." else "Add tracks from the Home or Search screen using the 3-dot menu.",
                             color = appColors.textMuted,
                             fontSize = 13.sp,
                             modifier = Modifier.padding(top = 4.dp)

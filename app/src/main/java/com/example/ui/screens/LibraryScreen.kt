@@ -44,7 +44,12 @@ import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CloudDownload
-import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.runtime.LaunchedEffect
+import com.example.downloads.OfflineDownloads
+import com.example.downloads.DownloadStatus
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -136,14 +141,27 @@ fun LibraryScreen(
     favoriteCount: Int = favoriteTracks.size,
     onPlayLikedSongs: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
-    listState: LazyListState = rememberLazyListState()
+    listState: LazyListState = rememberLazyListState(),
+    onPlayDownloadedTrack: (MusicTrack, List<MusicTrack>) -> Unit = onTrackClick,
+    downloadStore: OfflineDownloads = OfflineDownloads.get(LocalContext.current)
 ) {
     var selectedTab by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf("Playlists", "Listening Stats")
     var likedOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    var downloadsOpen by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    val downloadsScroll = rememberLazyListState()
     var period by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(com.example.data.local.ListeningPeriod.WEEKLY) }
     val statsScroll = rememberLazyListState()
     val likedScroll = rememberLazyListState()
+    if (downloadsOpen) {
+        androidx.activity.compose.BackHandler { downloadsOpen = false }
+        val openedFavorites = favoriteTracksState?.collectAsStateWithLifecycle()?.value ?: favoriteTracks
+        val likedIds = remember(openedFavorites) { openedFavorites.mapTo(mutableSetOf()) { it.id } }
+        LibraryDownloadsScreen(onBackClick = { downloadsOpen = false }, onPlayTrack = onPlayDownloadedTrack,
+            onToggleFavorite = onToggleFavorite, currentPlayingTrackId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id,
+            store = downloadStore, listState = downloadsScroll, likedIds = likedIds)
+        return
+    }
     if (likedOpen) {
         androidx.activity.compose.BackHandler { likedOpen = false }
         val openedFavorites = favoriteTracksState?.collectAsStateWithLifecycle()?.value ?: favoriteTracks
@@ -157,6 +175,13 @@ fun LibraryScreen(
             onBackClick = { likedOpen = false }, onPlayTrack = onTrackClick, onToggleFavorite = onToggleFavorite,
             onDeletePlaylist = {}, onRemoveTrack = {}, readOnly = true, listState = likedScroll) }
         return
+    }
+    val downloadRecords by downloadStore.records.collectAsStateWithLifecycle()
+    val downloadedCount = remember(downloadRecords) { downloadRecords.values.count { it.status == DownloadStatus.COMPLETE && it.plan != null } }
+    LaunchedEffect(downloadStore) {
+        try { downloadStore.load() }
+        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (error: Exception) { android.util.Log.w("LibraryScreen", "Could not load download count", error) }
     }
     val isDark = isDarkMode
     val appColors = LocalAppColors.current
@@ -295,94 +320,6 @@ fun LibraryScreen(
         when (selectedTab) {
             0 -> {
                 // PLAYLISTS TAB
-                // 1. Liked Songs Pin Card
-                item {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 20.dp, vertical = 6.dp)
-                            .liquidGlassCard(appColors, shape = RoundedCornerShape(18.dp), elevation = 2.dp, translucency = 0.90f, tintAccent = true)
-                            .clickable { likedOpen = true }
-                            .testTag("open_liked_songs")
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            val likedSongsBoxBg = if (appColors.isAmoled) {
-                                Brush.linearGradient(listOf(Color(0xFF242424), Color(0xFF141414)))
-                            } else {
-                                Brush.linearGradient(listOf(appColors.primaryAccent, appColors.secondaryAccent))
-                            }
-                            val likedSongsHeartTint = if (appColors.isAmoled) {
-                                Color(0xFFFF3B69)
-                            } else {
-                                appColors.onPrimaryAccent
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .size(62.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(likedSongsBoxBg)
-                                    .then(
-                                        if (appColors.isAmoled) Modifier.border(1.dp, Color(0xFF383838), RoundedCornerShape(12.dp))
-                                        else Modifier
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Favorite,
-                                    contentDescription = null,
-                                    tint = likedSongsHeartTint,
-                                    modifier = Modifier.size(30.dp)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(14.dp))
-
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "Liked Songs",
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 18.sp,
-                                        color = if (appColors.isDark) Color.White else appColors.textPrimary
-                                    )
-                                )
-                                Text(
-                                    text = "$favoriteCount tracks liked",
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = if (appColors.isDark) Color(0xFFCBD5E1) else appColors.textSecondary,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                )
-                            }
-
-                            if (favoriteCount > 0) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(38.dp)
-                                        .clickable { if (onPlayLikedSongs != null) onPlayLikedSongs() else favoriteTracks.firstOrNull()?.let { onTrackClick(it, favoriteTracks) } }
-                                        .testTag("play_liked_songs")
-                                        .clip(CircleShape)
-                                        .background(appColors.primaryAccent),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.PlayArrow,
-                                        contentDescription = "Play Liked",
-                                        tint = appColors.onPrimaryAccent,
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-
                 // 2. Import Third-Party Playlist Card
                 item {
                     Box(
@@ -434,6 +371,33 @@ fun LibraryScreen(
                                 )
                             }
                         }
+                    }
+                }
+
+                // The pinned collections use exactly the same grid/card geometry as playlists.
+                item("library_collections") {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 7.dp),
+                        horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                        PlaylistGridCard(
+                            playlist = PlaylistEntity(-1L, "Liked Songs", "$favoriteCount tracks liked"),
+                            onClick = { likedOpen = true },
+                            modifier = if (landscape) Modifier.width(tileWidth.dp) else Modifier.weight(1f),
+                            cardTag = "open_liked_songs", artworkIcon = Icons.Default.Favorite,
+                            artworkBrush = Brush.linearGradient(listOf(Color(0xFF7C3AED), Color(0xFFDB2777))),
+                            artworkTint = Color.White,
+                            onPlayClick = if (favoriteCount > 0) ({
+                                if (onPlayLikedSongs != null) onPlayLikedSongs()
+                                else favoriteTracks.firstOrNull()?.let { onTrackClick(it, favoriteTracks) }
+                            }) else null,
+                            playButtonTag = "play_liked_songs"
+                        )
+                        PlaylistGridCard(
+                            playlist = PlaylistEntity(-2L, "Downloads", "$downloadedCount tracks saved"),
+                            onClick = { downloadsOpen = true },
+                            modifier = if (landscape) Modifier.width(tileWidth.dp) else Modifier.weight(1f),
+                            cardTag = "open_downloads", artworkIcon = Icons.Default.Download,
+                            artworkBrush = downloadsArtworkBrush(), artworkTint = Color.White
+                        )
                     }
                 }
 
@@ -571,14 +535,20 @@ fun PlaylistGridCard(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     coverRequestsActive: Boolean = true,
-    coverSize: Int = ImageConfig.PLAYLIST_HEADER_SIZE
+    coverSize: Int = ImageConfig.PLAYLIST_HEADER_SIZE,
+    cardTag: String = "playlist_card_${playlist.playlistId}",
+    artworkIcon: ImageVector = Icons.AutoMirrored.Filled.QueueMusic,
+    artworkBrush: Brush? = null,
+    artworkTint: Color? = null,
+    onPlayClick: (() -> Unit)? = null,
+    playButtonTag: String = "play_playlist_${playlist.playlistId}"
 ) {
     val appColors = LocalAppColors.current
     Column(
         modifier = modifier
             .clip(RoundedCornerShape(18.dp))
             .bouncyClickable(onClick = onClick)
-            .testTag("playlist_card_${playlist.playlistId}")
+            .testTag(cardTag)
     ) {
         // Big square album art
         Box(
@@ -599,7 +569,8 @@ fun PlaylistGridCard(
                         else Brush.verticalGradient(listOf(appColors.cardBorder, appColors.cardBorder))
                     ),
                     RoundedCornerShape(18.dp)
-                ),
+                )
+                .testTag("${cardTag}_artwork"),
             contentAlignment = Alignment.Center
         ) {
             if (playlist.coverUrl.isNotBlank()) {
@@ -611,7 +582,7 @@ fun PlaylistGridCard(
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
-                val fallbackBrush = if (appColors.isAmoled) {
+                val fallbackBrush = artworkBrush ?: if (appColors.isAmoled) {
                     Brush.linearGradient(listOf(Color(0xFF282828), Color(0xFF141414)))
                 } else {
                     Brush.linearGradient(
@@ -628,11 +599,18 @@ fun PlaylistGridCard(
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                        imageVector = artworkIcon,
                         contentDescription = null,
-                        tint = appColors.primaryAccent,
+                        tint = artworkTint ?: appColors.primaryAccent,
                         modifier = Modifier.size(46.dp)
                     )
+                }
+            }
+            if (onPlayClick != null) {
+                IconButton(onClick = onPlayClick, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp)
+                    .size(38.dp).clip(CircleShape).background(appColors.primaryAccent).testTag(playButtonTag)) {
+                    Icon(Icons.Default.PlayArrow, "Play ${playlist.title}", tint = appColors.onPrimaryAccent,
+                        modifier = Modifier.size(22.dp))
                 }
             }
         }

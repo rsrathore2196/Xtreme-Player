@@ -62,7 +62,9 @@ class ListeningStatsUiTest {
         compose.runOnIdle { assertEquals(1, plays); assertEquals(favorites, queue) }
         compose.onNodeWithTag("library_screen").assertExists()
         compose.onNodeWithTag("open_liked_songs").performClick()
-        compose.waitUntil(5_000) { compose.onAllNodesWithText("Favorite Song").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("playlist_detail_screen").fetchSemanticsNodes().isNotEmpty() }
+        // The full-size collection header can put tracks below the fold on a short display.
+        compose.onNode(hasScrollAction()).performScrollToNode(hasText("Favorite Song"))
         compose.onNodeWithTag("library_screen").assertDoesNotExist()
         compose.onNodeWithText("Favorite Song").assertExists()
         compose.runOnIdle { assertEquals("Opening liked songs must not start playback", 1, plays) }
@@ -96,6 +98,10 @@ class ListeningStatsUiTest {
         compose.onNodeWithText("Playlists").performClick()
         compose.onNodeWithTag("library_screen").assertExists()
         compose.onNodeWithTag("create_playlist_button").assertIsDisplayed()
+        compose.onNodeWithTag("open_downloads").performScrollTo().performClick()
+        compose.waitUntil(5_000) { compose.onAllNodesWithTag("playlist_back_button").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("playlist_back_button").performClick()
+        compose.onNodeWithTag("library_screen").performScrollToNode(hasText("Listening Stats"))
         compose.onNodeWithText("Listening Stats").performClick()
         compose.onNodeWithText("Yearly").assertIsSelected()
     }

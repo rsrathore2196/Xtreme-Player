@@ -52,7 +52,9 @@ class SettingsConnectionsDownloadsTest {
         compose.setContent { MyApplicationTheme { DownloadsPage() } }
         compose.onNodeWithTag("downloads_wifi_only").assertExists()
         compose.onNodeWithText("Download quality").assertExists()
-        compose.onNodeWithText("Your downloaded music will appear here.").assertExists()
+        compose.onNodeWithText("Find and play your saved tracks in Library → Downloads.").assertExists()
+        compose.onNodeWithText("Search downloads").assertDoesNotExist()
+        compose.onNodeWithText("Play downloaded").assertDoesNotExist()
         screenshot("downloads-review.png")
     }
     private fun screenshot(name: String) {
