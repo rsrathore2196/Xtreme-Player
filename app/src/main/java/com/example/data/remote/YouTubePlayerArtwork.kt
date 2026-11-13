@@ -25,7 +25,7 @@ internal class YouTubePlayerArtworkResolver(
     private val save: suspend (String, String?) -> Unit = { _, _ -> }
 ) {
     private val cache = LruCache<String, Pair<Long, String?>>(128)
-    private fun key(track: MusicTrack, context: String) = "song-cover-v3:" + java.security.MessageDigest.getInstance("SHA-256")
+    private fun key(track: MusicTrack, context: String) = "song-cover-v4:" + java.security.MessageDigest.getInstance("SHA-256")
         .digest(("$context|${playerCoverIdentity(track)}|${RecordingIdentity.isrc(track.isrc).orEmpty()}" +
             track.originalProviderTitle.takeIf(String::isNotBlank)?.let { "|$it" }.orEmpty()).toByteArray()).let { bytes -> buildString(64) {
             for (byte in bytes) { val n = byte.toInt() and 255; append("0123456789abcdef"[n ushr 4]); append("0123456789abcdef"[n and 15]) }
@@ -63,11 +63,16 @@ internal class YouTubePlayerArtworkResolver(
             val linked = native?.let { withContext(AppDispatchers.CpuBounded) { counterpartCover(it, videoId, track) } }
             // Video shelves often supply a channel or no artist at all. Credits
             // from the requested video's own watch row are recording evidence.
-            val identityTrack = native?.let { withContext(AppDispatchers.CpuBounded) { selectedVideoMetadata(it, videoId, track) } } ?: track
+            val watchTrack = native?.let { withContext(AppDispatchers.CpuBounded) { selectedVideoMetadata(it, videoId, track) } }
+            // A watch byline can be the uploading label, even when Home supplied
+            // the correct singer. Keep that singer as well as same-video credits.
+            val identities = listOfNotNull(track, watchTrack).distinctBy { RecordingIdentity.artistNames(it.copy(title = "")) }
+                .sortedBy { RecordingIdentity.artistNames(it.copy(title = "")).isEmpty() }
+            val queries = identities.flatMap(::songArtworkQueries).distinct().take(3)
             var cover = linked
-            if (cover == null) for (query in songArtworkQueries(identityTrack)) {
+            if (cover == null) for (query in queries) {
                 val root = response { search(query) } ?: continue
-                cover = withContext(AppDispatchers.CpuBounded) { matchingSongCover(root, identityTrack) }
+                cover = withContext(AppDispatchers.CpuBounded) { identities.firstNotNullOfOrNull { matchingSongCover(root, it) } }
                 if (cover != null) break
             }
             currentCoroutineContext().ensureActive()
@@ -273,11 +278,11 @@ private val playerCoverResolver = YouTubePlayerArtworkResolver(
     readSaved = { key ->
         val entry = com.example.data.cache.RecommendationCache.get(com.example.XtremeMusicApp.getInstance()).get(key)
         entry?.takeIf { System.currentTimeMillis() < it.expiresAt }?.let {
-            withContext(AppDispatchers.CpuBounded) { runCatching { JSONObject(it.body).takeIf { it.optInt("version") == 3 }?.optString("url") }.getOrNull() }
+            withContext(AppDispatchers.CpuBounded) { runCatching { JSONObject(it.body).takeIf { it.optInt("version") == 4 }?.optString("url") }.getOrNull() }
         }
     },
     save = { key, url -> com.example.data.cache.RecommendationCache.get(com.example.XtremeMusicApp.getInstance())
-        .putBody(key, JSONObject().put("version", 3).put("url", url.orEmpty()).toString(), if (url == null) 60_000L else 86_400_000L) }
+        .putBody(key, JSONObject().put("version", 4).put("url", url.orEmpty()).toString(), if (url == null) 60_000L else 86_400_000L) }
 )
 internal suspend fun resolveYouTubePlayerCover(track: MusicTrack): String? = playerCoverResolver.resolve(track, essential = true)
 internal suspend fun resolveNativeSongCover(track: MusicTrack, nativeCover: String): String? = playerCoverResolver.resolve(track, nativeCover)

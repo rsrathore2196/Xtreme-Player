@@ -20,6 +20,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.updateTransition
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -59,9 +60,9 @@ import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material.icons.filled.Speaker
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -80,6 +81,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -88,13 +91,15 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -110,6 +115,7 @@ import kotlinx.coroutines.flow.first
 
 /** Connected output picker with immediate routing and media-volume controls. */
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun SoundOutputDeviceDialog(
     devices: List<SoundOutputDevice>,
     isDark: Boolean = LocalAppColors.current.isDark,
@@ -249,13 +255,13 @@ fun SoundOutputDeviceDialog(
                     .pointerInput(Unit) { detectTapGestures { closeWithAnimation() } },
                 contentAlignment = Alignment.Center
             ) {
-                val dialogShape = RoundedCornerShape(32.dp)
+                val dialogShape = RoundedCornerShape(24.dp)
                 Surface(
                     shape = dialogShape,
                     color = appColors.cardBackground,
                     modifier = Modifier
-                        .padding(horizontal = 20.dp)
-                        .widthIn(max = 420.dp)
+                        .padding(horizontal = 24.dp)
+                        .widthIn(max = 344.dp)
                         .fillMaxWidth()
                         .heightIn(max = (maxHeight - 48.dp).coerceAtLeast(120.dp))
                         .shadow(24.dp, dialogShape, spotColor = Color.Black.copy(alpha = 0.24f))
@@ -269,17 +275,17 @@ fun SoundOutputDeviceDialog(
                         .pointerInput(Unit) { detectTapGestures { /* Keep taps inside the dialog. */ } }
                         .testTag("sound_output_devices_dialog")
                 ) {
-                    Column(Modifier.padding(20.dp)) {
+                    Column(Modifier.padding(16.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("Audio output", color = appColors.textPrimary,
-                                    fontSize = 21.sp, fontWeight = FontWeight.SemiBold)
-                                Spacer(Modifier.height(4.dp))
-                                Text("Choose where to listen", color = appColors.textSecondary, fontSize = 12.sp)
-                            }
+                            Text("Audio output", color = appColors.textPrimary, modifier = Modifier.weight(1f),
+                                fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                            Text(devices.size.toString(), color = appColors.textSecondary, fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.background(appColors.cardBackgroundElevated, RoundedCornerShape(8.dp))
+                                    .padding(horizontal = 7.dp, vertical = 3.dp).testTag("output_device_count"))
                             IconButton(
                                 onClick = closeWithAnimation,
-                                modifier = Modifier.testTag("close_output_devices_dialog")
+                                modifier = Modifier.size(40.dp).testTag("close_output_devices_dialog")
                             ) {
                                 Box(Modifier.size(32.dp).background(appColors.cardBackgroundElevated, CircleShape),
                                     contentAlignment = Alignment.Center) {
@@ -287,23 +293,14 @@ fun SoundOutputDeviceDialog(
                                 }
                             }
                         }
-                        Spacer(Modifier.height(24.dp))
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("Connected devices", color = appColors.textMuted, fontSize = 12.sp, fontWeight = FontWeight.Medium,
-                                modifier = Modifier.weight(1f))
-                            Text(devices.size.toString(), color = appColors.textSecondary, fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.background(appColors.cardBackgroundElevated, CircleShape)
-                                    .padding(horizontal = 8.dp, vertical = 3.dp).testTag("output_device_count"))
-                        }
-                        Spacer(Modifier.height(10.dp))
+                        Spacer(Modifier.height(12.dp))
                         if (devices.isEmpty()) {
                             Text("No audio outputs detected", color = appColors.textSecondary, fontSize = 13.sp,
                                 modifier = Modifier.padding(vertical = 20.dp, horizontal = 4.dp))
                         } else {
                             LazyColumn(
                                 modifier = Modifier.fillMaxWidth().weight(1f, fill = false),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 items(devices, key = { it.id }) { device ->
                                     ModernDeviceItemRow(device) {
@@ -332,50 +329,59 @@ fun SoundOutputDeviceDialog(
                                 }
                             }
                         }
-                        Spacer(Modifier.height(20.dp))
-                        Surface(shape = RoundedCornerShape(20.dp), color = appColors.cardBackgroundElevated) {
-                            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                                Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                                    Text("Volume", color = appColors.textSecondary, fontSize = 12.sp,
-                                        fontWeight = FontWeight.Medium, modifier = Modifier.weight(1f))
-                                    Text("${(currentVolume.toFloat() / maxVolume * 100).roundToInt()}%",
-                                        color = appColors.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-                                }
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    IconButton(onClick = {
-                                        val newVolume = if (currentVolume > 0) 0 else (maxVolume * 0.4f).roundToInt()
-                                        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVolume, 0)
-                                        currentVolume = newVolume
-                                    }) {
-                                        Icon(
-                                            when {
-                                                currentVolume == 0 -> Icons.AutoMirrored.Filled.VolumeMute
-                                                currentVolume < maxVolume / 2 -> Icons.AutoMirrored.Filled.VolumeDown
-                                                else -> Icons.AutoMirrored.Filled.VolumeUp
-                                            },
-                                            if (currentVolume > 0) "Mute" else "Unmute",
-                                            tint = appColors.textSecondary, modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                    Slider(
-                                        value = currentVolume.toFloat(),
-                                        onValueChange = { value ->
-                                            val volume = value.roundToInt().coerceIn(0, maxVolume)
-                                            if (volume != currentVolume) {
-                                                audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0)
-                                                currentVolume = volume
-                                            }
+                        Spacer(Modifier.height(16.dp))
+                        val rtl = LocalLayoutDirection.current == LayoutDirection.Rtl
+                        Surface(shape = RoundedCornerShape(16.dp), color = appColors.cardBackgroundElevated) {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp).height(48.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = {
+                                    val newVolume = if (currentVolume > 0) 0 else (maxVolume * 0.4f).roundToInt()
+                                    audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVolume, 0)
+                                    currentVolume = newVolume
+                                }, modifier = Modifier.size(40.dp)) {
+                                    Icon(
+                                        when {
+                                            currentVolume == 0 -> Icons.AutoMirrored.Filled.VolumeMute
+                                            currentVolume < maxVolume / 2 -> Icons.AutoMirrored.Filled.VolumeDown
+                                            else -> Icons.AutoMirrored.Filled.VolumeUp
                                         },
-                                        valueRange = 0f..maxVolume.toFloat(),
-                                        colors = SliderDefaults.colors(
-                                            thumbColor = appColors.primaryAccent,
-                                            activeTrackColor = appColors.primaryAccent,
-                                            inactiveTrackColor = appColors.textPrimary.copy(alpha = 0.10f)
-                                        ),
-                                        modifier = Modifier.weight(1f).testTag("device_output_volume_slider")
-                                            .semantics { contentDescription = "Output volume" }
+                                        if (currentVolume > 0) "Mute" else "Unmute",
+                                        tint = appColors.textSecondary, modifier = Modifier.size(18.dp)
                                     )
                                 }
+                                Slider(
+                                    value = currentVolume.toFloat(),
+                                    onValueChange = { value ->
+                                        val volume = value.roundToInt().coerceIn(0, maxVolume)
+                                        if (volume != currentVolume) {
+                                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, volume, 0)
+                                            currentVolume = volume
+                                        }
+                                    },
+                                    valueRange = 0f..maxVolume.toFloat(),
+                                    thumb = {
+                                        Box(Modifier.size(12.dp).background(appColors.primaryAccent, CircleShape)
+                                            .testTag("device_output_volume_thumb"))
+                                    },
+                                    track = { state ->
+                                        Canvas(Modifier.fillMaxWidth().height(4.dp).testTag("device_output_volume_track")) {
+                                            val progress = (state.value / maxVolume).coerceIn(0f, 1f)
+                                            val center = size.height / 2f
+                                            drawLine(appColors.textPrimary.copy(alpha = 0.14f), Offset(0f, center),
+                                                Offset(size.width, center), strokeWidth = size.height, cap = StrokeCap.Round)
+                                            if (progress > 0f) drawLine(appColors.primaryAccent,
+                                                Offset(if (rtl) size.width * (1f - progress) else 0f, center),
+                                                Offset(if (rtl) size.width else size.width * progress, center),
+                                                strokeWidth = size.height, cap = StrokeCap.Round)
+                                        }
+                                    },
+                                    modifier = Modifier.weight(1f).height(48.dp).testTag("device_output_volume_slider")
+                                        .semantics { contentDescription = "Output volume" }
+                                )
+                                Spacer(Modifier.width(8.dp))
+                                Text("${(currentVolume.toFloat() / maxVolume * 100).roundToInt()}%",
+                                    color = appColors.textSecondary, fontSize = 11.sp, fontWeight = FontWeight.Medium,
+                                    textAlign = TextAlign.End, maxLines = 1, modifier = Modifier.widthIn(min = 34.dp))
                             }
                         }
                     }
@@ -389,7 +395,7 @@ fun SoundOutputDeviceDialog(
 private fun ModernDeviceItemRow(device: SoundOutputDevice, onClick: () -> Unit) {
     val colors = LocalAppColors.current
     val selected = device.isSelected
-    val shape = RoundedCornerShape(20.dp)
+    val shape = RoundedCornerShape(16.dp)
     val iconBackground = if (selected) colors.primaryAccent.copy(alpha = 0.12f) else colors.cardBackground
     val categoryLabel = when (device.category) {
         AudioDeviceCategory.PHONE -> "Phone speaker"
@@ -405,29 +411,22 @@ private fun ModernDeviceItemRow(device: SoundOutputDevice, onClick: () -> Unit) 
         shape = shape,
         color = if (selected) androidx.compose.ui.graphics.lerp(colors.cardBackground, colors.primaryAccent, 0.08f)
             else colors.cardBackgroundElevated,
-        border = if (selected) BorderStroke(1.dp, colors.primaryAccent.copy(alpha = 0.40f)) else null,
+        border = if (selected) BorderStroke(1.dp, colors.primaryAccent.copy(alpha = 0.22f)) else null,
         modifier = Modifier.fillMaxWidth().clip(shape)
             .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
-            .semantics { stateDescription = if (selected) "Playing here" else "Connected" }
             .testTag("device_row_${device.id}")
     ) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(46.dp).background(iconBackground, RoundedCornerShape(15.dp)),
+            Box(Modifier.size(36.dp).background(iconBackground, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center) {
                 Icon(deviceIcon(device.category), categoryLabel,
                     tint = if (selected) colors.primaryAccent else colors.textSecondary,
-                    modifier = Modifier.size(25.dp))
+                    modifier = Modifier.size(20.dp))
             }
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text(device.name, color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height(4.dp))
-                Text(if (selected) "Playing here · ${device.typeName}" else device.typeName,
-                    color = if (selected) colors.primaryAccent else colors.textMuted, fontSize = 11.sp,
-                    maxLines = 2, overflow = TextOverflow.Ellipsis)
-            }
+            Spacer(Modifier.width(10.dp))
+            Text(device.name, color = colors.textPrimary, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
+                maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Spacer(Modifier.width(10.dp))
             Box(Modifier.size(22.dp).then(
                 if (selected) Modifier.background(colors.primaryAccent, CircleShape)

@@ -72,4 +72,26 @@ class SongArtworkResolutionTest {
         val credited = video.copy(title = "Singer - My Song (Official Video)", artist = "Unknown")
         assertEquals(square, YouTubePlayerArtworkResolver.matchingSongCover(JSONObject(results()), credited))
     }
+
+    @Test fun watchChannelCreditsCannotReplaceTheKnownSingerForReportedVideoIds() = runBlocking {
+        for (id in listOf("hPZcZpNn3KY", "BPZkZpGMpXA")) {
+            val credit = text("Uploading Label")
+            credit.getJSONArray("runs").getJSONObject(0).put("navigationEndpoint", JSONObject()
+                .put("browseEndpoint", JSONObject().put("browseId", "UC-uploading-label")))
+            val root = JSONObject().put("playlistPanelVideoRenderer", JSONObject().put("videoId", id)
+                .put("title", text("My Song")).put("longBylineText", credit).put("musicVideoType", "MUSIC_VIDEO_TYPE_OMV"))
+            var searches = 0
+            val resolver = YouTubePlayerArtworkResolver({ root.toString() }, { query ->
+                searches++
+                assertEquals("My Song singer", query)
+                results()
+            })
+            val title = if (id == "BPZkZpGMpXA") "My Song (Full Video)" else "My Song"
+            val selected = video.copy(id = "yt_$id", title = title, primaryArtists = listOf("Singer"),
+                coverUrl = "https://i.ytimg.com/vi/$id/maxresdefault.jpg")
+            assertEquals(square, resolver.resolve(selected, essential = true))
+            assertEquals(1, searches)
+            assertEquals("Singer", selected.artist)
+        }
+    }
 }

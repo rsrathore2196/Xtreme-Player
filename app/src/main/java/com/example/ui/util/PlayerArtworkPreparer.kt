@@ -34,13 +34,29 @@ import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /** Presentation-only cover; playback/catalog identity and the native shelf image stay intact. */
 internal data class ResolvedPlayerCover(val identity: String, val url: String)
 // Remember only selected, verified song-cover identities. Image bytes remain owned by Coil.
-private val selectedSongCovers = android.util.LruCache<String, String>(64)
+private val selectedSongCovers = android.util.LruCache<String, ResolvedPlayerCover>(64)
+private val recordingCovers = android.util.LruCache<String, ResolvedPlayerCover>(64)
+private val currentSelectedCover = MutableStateFlow<ResolvedPlayerCover?>(null)
+internal val selectedPlayerCover = currentSelectedCover.asStateFlow()
 internal fun isSelectedSongCover(trackId: String?, url: String): Boolean =
-    trackId != null && selectedSongCovers.get(trackId) == url
+    trackId != null && selectedSongCovers.get(trackId)?.url == url
+
+internal fun cachedPlayerCover(track: MusicTrack): ResolvedPlayerCover? = recordingCovers.get(playerCoverIdentity(track))
+
+/** Every successful lookup, including a visible-player retry, updates both players. */
+private fun publishPlayerCover(track: MusicTrack, url: String): ResolvedPlayerCover {
+    val cover = ResolvedPlayerCover(playerCoverIdentity(track), url)
+    selectedSongCovers.put(track.id, cover)
+    recordingCovers.put(cover.identity, cover)
+    currentSelectedCover.value = cover
+    return cover
+}
 internal fun hasNativeSquareCover(url: String): Boolean {
     val uri = try { java.net.URI(url) } catch (_: Exception) { return false }
     val host = uri.host.orEmpty().lowercase(java.util.Locale.ROOT)
@@ -51,8 +67,9 @@ internal fun hasNativeSquareCover(url: String): Boolean {
 }
 internal fun playerCoverState(state: PlayerUiState, cover: ResolvedPlayerCover?): PlayerUiState {
     val track = state.currentTrack ?: return state
-    if (cover == null || cover.identity != playerCoverIdentity(track) || cover.url == track.coverUrl) return state
-    return state.copy(currentTrack = track.copy(coverUrl = cover.url))
+    val selected = cover?.takeIf { it.identity == playerCoverIdentity(track) } ?: cachedPlayerCover(track) ?: return state
+    if (selected.url == track.coverUrl) return state
+    return state.copy(currentTrack = track.copy(coverUrl = selected.url))
 }
 
 /** Use the original provider's highest suitable cover, including full-screen art. */
@@ -97,8 +114,7 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
                         return@collectLatest
                     }
                     currentCoroutineContext().ensureActive()
-                    selectedSongCovers.put(track.id, cover)
-                    onCoverResolved(ResolvedPlayerCover(playerCoverIdentity(track), cover))
+                    onCoverResolved(publishPlayerCover(track, cover))
                 }
                 if (!com.example.data.local.OtherSettingsPreferences.isDynamicGlassEnabled(context) ||
                     !com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(context).dynamicAlbumGlow) return@collectLatest
@@ -150,7 +166,7 @@ internal fun rememberPlayerArtworkRequest(track: MusicTrack, active: Boolean,
         playerArtworkDecodeSize(context)
     }
     val identity = remember(track) { playerCoverLookupIdentity(track) }
-    var resolved by remember(identity) { mutableStateOf<String?>(null) }
+    var resolved by remember(identity) { mutableStateOf(cachedPlayerCover(track)?.url) }
     LaunchedEffect(identity, active, sourceSize) {
         if (!active || resolved != null || isSelectedSongCover(track.id, track.coverUrl)) return@LaunchedEffect
         // The visible player also owns its lookup. A cancelled/unfinished optional
@@ -166,7 +182,7 @@ internal fun rememberPlayerArtworkRequest(track: MusicTrack, active: Boolean,
                 val height = bitmap?.height ?: result.drawable.intrinsicHeight
                 if (width <= 0 || width != height) return@withContext
                 currentCoroutineContext().ensureActive()
-                selectedSongCovers.put(track.id, cover)
+                publishPlayerCover(track, cover)
                 resolved = cover
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* Keep the same-track cover if song artwork is unavailable. */ }

@@ -54,6 +54,8 @@ import org.junit.runner.RunWith
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.runBlocking
 import com.example.data.local.OtherSettingsPreferences
 
@@ -189,6 +191,42 @@ class ArtworkPresentationTest {
         compose.waitUntil(30_000) { request.get().data.toString().contains("song-album") }
         assertEquals(1, calls.get())
         assertEquals("https://lh3.googleusercontent.com/video-crop=w600-h600-l90-rj", cropped.coverUrl)
+    }
+
+    @Test fun visibleLookupPublishesTheSameOfficialCoverToBothPlayersAndReusesItOnReplay() {
+        val ids = listOf("hPZcZpNn3KY", "BPZkZpGMpXA")
+        fun video(id: String) = track.copy(id = "yt_$id", title = "Artwork regression $id",
+            coverUrl = "https://i.ytimg.com/vi/$id/maxresdefault.jpg")
+        fun cover(id: String) = "https://lh3.googleusercontent.com/official-$id=w600-h600-l90-rj"
+        val raw = MutableStateFlow(com.example.playback.PlayerUiState(currentTrack = video(ids[0]), queue = ids.map(::video)))
+        val presentation = combine(raw, selectedPlayerCover, ::playerCoverState)
+        val mini = AtomicReference<ImageRequest>()
+        val expanded = AtomicReference<ImageRequest>()
+        val calls = AtomicInteger()
+        compose.setContent {
+            val state by presentation.collectAsState(initial = raw.value)
+            val shown = state.currentTrack!!
+            val miniArtwork = rememberOptimizedImageRequest(shown, ImageConfig.MINI_PLAYER_SIZE)
+            val playerArtwork = rememberPlayerArtworkRequest(shown, true, resolveCover = {
+                calls.incrementAndGet(); cover(it.id.removePrefix("yt_"))
+            })
+            SideEffect { mini.set(miniArtwork); expanded.set(playerArtwork) }
+        }
+        fun verify(id: String) {
+            compose.waitUntil(30_000) {
+                mini.get()?.parameters?.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)?.providerUrl == cover(id) &&
+                    expanded.get()?.parameters?.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)?.providerUrl == cover(id)
+            }
+            assertFalse(mini.get().parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)!!.allowVideoFallback)
+            assertTrue(raw.value.currentTrack!!.coverUrl.contains("i.ytimg.com"))
+            assertEquals(ids.map(::video), raw.value.queue)
+        }
+        verify(ids[0])
+        compose.runOnIdle { raw.value = raw.value.copy(currentTrack = video(ids[1])) }
+        verify(ids[1])
+        compose.runOnIdle { raw.value = raw.value.copy(currentTrack = video(ids[0])) }
+        verify(ids[0])
+        assertEquals("Replay must keep the verified album cover", 2, calls.get())
     }
 
     @Test fun preparedBackdropKeepsHorizontalColorsAndSettlesWithoutRepeatedRenderingChanges() {

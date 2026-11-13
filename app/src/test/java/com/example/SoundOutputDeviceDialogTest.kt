@@ -19,6 +19,7 @@ import androidx.compose.ui.platform.ViewRootForTest
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.test.core.app.ApplicationProvider
 import com.example.playback.SoundOutputDevice
@@ -78,6 +79,11 @@ class SoundOutputDeviceDialogTest {
         }
         settle()
         compose.onNodeWithTag("output_device_count").assertTextEquals("2")
+        compose.onNodeWithText("Playing here", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("Built-in speaker").assertDoesNotExist()
+        compose.onNodeWithText("Choose where to listen").assertDoesNotExist()
+        compose.onNodeWithTag("device_output_volume_track", useUnmergedTree = true).assertHeightIsEqualTo(4.dp)
+        compose.onNodeWithTag("device_output_volume_thumb", useUnmergedTree = true).assertWidthIsEqualTo(12.dp)
         compose.onNodeWithTag("device_row_2").assertIsSelected()
         compose.onNodeWithContentDescription("Earbuds", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Phone speaker", useUnmergedTree = true).assertIsDisplayed()

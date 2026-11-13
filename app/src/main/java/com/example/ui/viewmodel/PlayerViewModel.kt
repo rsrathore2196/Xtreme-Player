@@ -147,23 +147,23 @@ class PlayerViewModel(
     private val derivedStateDispatcher = AppDispatchers.CpuBounded
     private val derivedStateScope = viewModelScope + derivedStateDispatcher
     val playerUiState: StateFlow<PlayerUiState> = playbackManager.uiState
-    private val playerCover = MutableStateFlow<com.example.ui.util.ResolvedPlayerCover?>(null)
+    private val playerCover = com.example.ui.util.selectedPlayerCover
     private val playerArtworkPrefetch = com.example.ui.util.prepareCurrentPlayerArtwork(
         application, playerUiState.map { it.currentTrack },
-        com.example.performance.BackgroundWorkCoordinator.uiForeground, viewModelScope,
-        onCoverResolved = { playerCover.value = it })
+        com.example.performance.BackgroundWorkCoordinator.uiForeground, viewModelScope)
     // Progress has dedicated flows/providers. It must not invalidate the entire navigation tree.
     // Paused positions remain observable so external seeks still update the stationary player.
     val playbackPresentationState = kotlinx.coroutines.flow.combine(playerUiState.map { state ->
         state.copy(currentPositionMs = if (state.isPlaying) 0L else state.currentPositionMs, bufferedPositionMs = 0L)
     }.distinctUntilChanged(), playerCover) { state, cover -> com.example.ui.util.playerCoverState(state, cover) }
         .distinctUntilChanged().flowOn(derivedStateDispatcher)
-        .stateIn(derivedStateScope, SharingStarted.WhileSubscribed(5_000L), playerUiState.value)
+        .stateIn(derivedStateScope, SharingStarted.WhileSubscribed(5_000L), com.example.ui.util.playerCoverState(playerUiState.value, playerCover.value))
     val navigationPlayerUiState = kotlinx.coroutines.flow.combine(
         playerUiState.map(::navigationPlayerSnapshot).distinctUntilChanged(), playerCover
     ) { state, cover -> com.example.ui.util.playerCoverState(state, cover) }
         .distinctUntilChanged().flowOn(derivedStateDispatcher)
-        .stateIn(derivedStateScope, SharingStarted.WhileSubscribed(5_000L), navigationPlayerSnapshot(playerUiState.value))
+        .stateIn(derivedStateScope, SharingStarted.WhileSubscribed(5_000L),
+            com.example.ui.util.playerCoverState(navigationPlayerSnapshot(playerUiState.value), playerCover.value))
 
     val playbackPosition: StateFlow<Long> = playbackManager.playbackPosition
     val bufferedPosition: StateFlow<Long> = playbackManager.bufferedPosition

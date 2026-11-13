@@ -9,16 +9,17 @@ import kotlin.math.abs
 private val videoSeparators = Regex("\\s*\\|\\s*|\\s+[–—-]\\s+|\\s*[•·]\\s*")
 private val videoPresentation = Regex("(?i)\\b(?:official|video|visualizer|lyric|full song)\\b")
 private val numberedPart = Regex("(?i)\\b(?:part|pt|chapter|vol(?:ume)?)\\.?\\s*\\d+")
+private val videoPackaging = Regex("(?i)\\s*[\\[(](?:(?:official|full|hd|4k)\\s+)*(?:(?:music|lyric)\\s+)?(?:video|audio|visualizer|lyrics)(?:\\s+(?:hd|4k))?[\\])]")
 
 /** Upload captions may contain cast/release credits; recording versions remain mandatory. */
 internal fun videoArtworkTitleVariants(track: MusicTrack): List<MusicTrack> {
-    val cleaned = StreamResolver.extractCleanTitle(track.title, track.artist)
+    val cleaned = StreamResolver.extractCleanTitle(track.title, track.artist).replace(videoPackaging, " ").trim()
     val parts = videoSeparators.split(cleaned)
     var head = parts.firstOrNull().orEmpty().trim()
     if (parts.drop(1).any { numberedPart.containsMatchIn(it) }) return emptyList()
     if (videoPresentation.containsMatchIn(track.originalProviderTitle.ifBlank { track.title }) && ':' in head)
         head = head.substringBefore(':').trim()
-    if (head.isBlank() || head == cleaned) return emptyList()
+    if (head.isBlank() || head == track.title) return emptyList()
     val versions = RecordingIdentity.signature(track).versions
     val headVersions = RecordingIdentity.signature(track.copy(title = head)).versions
     val missing = versions - headVersions
