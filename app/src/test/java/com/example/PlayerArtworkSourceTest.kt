@@ -34,7 +34,7 @@ class PlayerArtworkSourceTest {
 
     @Test fun originalProviderCoverIsReadyAtFirstCompositionWithoutLookupOrNavigationWait() {
         lateinit var request: ImageRequest
-        compose.setContent { val prepared = rememberPlayerArtworkRequest(track, true); SideEffect { request = prepared } }
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(track, true, resolveCover = { null }); SideEffect { request = prepared } }
         compose.runOnIdle {
             assertEquals(providerArtworkUrl(original, 1200), request.data)
             assertEquals(request.data, request.placeholderMemoryCacheKey?.key)
@@ -70,7 +70,7 @@ class PlayerArtworkSourceTest {
     @Test fun actualAudioProviderAndSignedUrlChangesDoNotRestartCatalogArtwork() {
         var song by mutableStateOf(track)
         lateinit var request: ImageRequest
-        compose.setContent { val prepared = rememberPlayerArtworkRequest(song, true); SideEffect { request = prepared } }
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(song, true, resolveCover = { null }); SideEffect { request = prepared } }
         compose.waitForIdle()
         val first = request
         compose.runOnIdle { song = song.copy(audioUrl = "new-stream", source = "JIOSAAVN", bitrateKbps = 320) }
@@ -80,7 +80,7 @@ class PlayerArtworkSourceTest {
     @Test fun switchingTracksImmediatelyUsesTheNewCatalogCover() {
         var song by mutableStateOf(track)
         lateinit var request: ImageRequest
-        compose.setContent { val prepared = rememberPlayerArtworkRequest(song, true); SideEffect { request = prepared } }
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(song, true, resolveCover = { null }); SideEffect { request = prepared } }
         compose.runOnIdle { song = song.copy(id = "yt_zyxwvutsrqp", coverUrl = original.replace("recording", "new-recording")) }
         compose.runOnIdle { assertTrue(request.data.toString().contains("new-recording")) }
     }
@@ -98,7 +98,7 @@ class PlayerArtworkSourceTest {
         val homeUrl = providerArtworkUrl(original, 600)
         loader!!.memoryCache!![MemoryCache.Key(homeUrl)] = MemoryCache.Value(Bitmap.createBitmap(600, 600, Bitmap.Config.ARGB_8888))
         lateinit var request: ImageRequest
-        compose.setContent { val prepared = rememberPlayerArtworkRequest(track, true); SideEffect { request = prepared } }
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(track, true, resolveCover = { null }); SideEffect { request = prepared } }
         compose.runOnIdle {
             assertEquals(providerArtworkUrl(original, 1200), request.data)
             assertEquals("Use the already visible provider image while the larger one loads", homeUrl, request.placeholderMemoryCacheKey?.key)

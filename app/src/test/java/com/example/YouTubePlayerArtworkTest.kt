@@ -238,7 +238,7 @@ class YouTubePlayerArtworkTest {
         audio.put("title", NativeFeedFixtures.text("Song 1")).put("longBylineText", NativeFeedFixtures.text("Singer 1"))
         assertTrue(RecordingIdentity.artistNames(missing).isEmpty())
         assertEquals(square, YouTubePlayerArtworkResolver.counterpartCover(pair, videoId, missing))
-        assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song()), missing))
+        assertEquals(square, YouTubePlayerArtworkResolver.matchingSongCover(search(song()), missing))
         audio.put("isrc", "USABC2400002")
         assertNull(YouTubePlayerArtworkResolver.counterpartCover(pair, videoId, missing.copy(isrc = "USABC2400001")))
     }
@@ -263,6 +263,53 @@ class YouTubePlayerArtworkTest {
         assertEquals(state.queue, playerCoverState(state, cover).queue)
         val other = state.copy(currentTrack = enriched.copy(title = "Other recording"))
         assertSame(other, playerCoverState(other, cover))
+    }
+
+    @Test fun videoCaptionCastAndReleaseTailsDoNotHideAnOfficialSongCover() {
+        val upload = video.copy(title = "Song 1 (Official Video) | Film cast | Singer 1",
+            originalProviderTitle = "Song 1 (Official Video) | Film cast | Singer 1", album = "Video release")
+        assertEquals(square, YouTubePlayerArtworkResolver.matchingSongCover(search(song()), upload))
+        assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song(title = "Song 1 (Live)")), upload))
+        assertNull(YouTubePlayerArtworkResolver.matchingSongCover(search(song(artist = "Other Singer")), upload))
+    }
+
+    @Test fun nativeVideoAudioPairOutranksUploadChannelAndPromotionalTitle() = runBlocking {
+        val native = linked()
+        native.getJSONObject("contents").getJSONObject("playlistPanelVideoWrapperRenderer")
+            .getJSONArray("counterpart").getJSONObject(0).getJSONObject("counterpartRenderer")
+            .getJSONObject("playlistPanelVideoRenderer").put("title", NativeFeedFixtures.text("Song 1"))
+            .put("longBylineText", NativeFeedFixtures.text("Singer 1"))
+        val resolver = YouTubePlayerArtworkResolver({ native.toString() }, { error("A native official pair must not search") })
+        val upload = video.copy(title = "Film promotional music video", artist = "Record Label",
+            coverUrl = "https://lh3.googleusercontent.com/cropped-video=w600-h600-l90-rj")
+        assertEquals(square, resolver.resolve(upload))
+    }
+
+    @Test fun requestedWatchRowRestoresMissingShelfPerformerCredits() = runBlocking {
+        val byline = NativeFeedFixtures.text("Singer 1")
+        byline.getJSONArray("runs").getJSONObject(0).put("navigationEndpoint", JSONObject()
+            .put("browseEndpoint", JSONObject().put("browseId", "UC-singer-1")))
+        val native = JSONObject().put("playlistPanelVideoRenderer", JSONObject().put("videoId", videoId)
+            .put("title", NativeFeedFixtures.text("Song 1")).put("longBylineText", byline)
+            .put("musicVideoType", "MUSIC_VIDEO_TYPE_OMV").put("thumbnail", thumbnail(video.coverUrl, 1280, 720)))
+        val resolver = YouTubePlayerArtworkResolver({ native.toString() }, { query ->
+            assertEquals("Song 1 singer 1", query); search(song()).toString()
+        })
+        assertEquals(square, resolver.resolve(video.copy(artist = "Unknown", primaryArtists = emptyList())))
+    }
+
+    @Test fun transientMetadataFailuresNeverCacheAnUnavailableCover() = runBlocking {
+        var failed = true
+        val resolver = YouTubePlayerArtworkResolver({ if (failed) throw IOException("Temporary outage") else linked().toString() },
+            { throw IOException("Temporary outage") })
+        assertNull(resolver.resolve(video))
+        failed = false
+        assertEquals(square, resolver.resolve(video))
+    }
+
+    @Test fun absentPerformerAndAbsentTitleCreditsDoNotGuessAnUnrelatedRecording() = runBlocking {
+        val resolver = YouTubePlayerArtworkResolver({ "{}" }, { search(song()).toString() })
+        assertNull(resolver.resolve(video.copy(artist = "Unknown", primaryArtists = emptyList())))
     }
 
 }

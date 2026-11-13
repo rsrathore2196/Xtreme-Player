@@ -157,7 +157,7 @@ internal fun extractPlayerArtworkColors(pixels: IntArray, w: Int, h: Int): Extra
     val domB = if (mergedTotalW > 0f) (mergedSumB / mergedTotalW).roundToInt().coerceIn(0, 255)
         else (binSumB[bestBin] / binTotalW[bestBin]).roundToInt().coerceIn(0, 255)
 
-    val dominant = backgroundTone(Color(domR, domG, domB))
+    val dominant = playerBackdropTone(backgroundTone(Color(domR, domG, domB)))
     // Scale RGB together: retain the selected hue without mixing in a white tint.
     fun scaled(factor: Float): Color {
         val scale = minOf(factor, 1f / maxOf(dominant.red, dominant.green, dominant.blue).coerceAtLeast(0.001f))
@@ -165,7 +165,8 @@ internal fun extractPlayerArtworkColors(pixels: IntArray, w: Int, h: Int): Extra
     }
     return ExtractedTrackColors(dominant, scaled(1.12f), scaled(0.90f),
         edgeColor(pixels, w, h, bottom = false, fallback = dominant),
-        edgeColor(pixels, w, h, bottom = true, fallback = dominant))
+        edgeColor(pixels, w, h, bottom = true, fallback = dominant),
+        artworkColorField(pixels, w, h, dominant))
 }
 
 private fun isLightNeutral(color: Color): Boolean =
