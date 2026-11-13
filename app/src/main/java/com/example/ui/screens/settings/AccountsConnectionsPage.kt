@@ -1,19 +1,27 @@
+@file:OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+
 package com.example.ui.screens.settings
 
 import android.content.Intent
-import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.connections.*
@@ -40,6 +48,7 @@ fun AccountsConnectionsPage(modifier: Modifier = Modifier) {
     }
     LaunchedEffect(store) {
         try { store.load(); ready = true }
+        catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { error = "Secure account storage is unavailable. Unlock your device and reopen this page." }
     }
     if (lastFmDialog) LastFmConnectDialog(state.lastFm, onDismiss = { lastFmDialog = false })
@@ -50,44 +59,46 @@ fun AccountsConnectionsPage(modifier: Modifier = Modifier) {
     }
     LazyColumn(modifier.fillMaxSize().testTag("accounts_connections_page"), contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 160.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { Text("Connect your music", color = colors.textPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+        item {
+            Text("Connect your music", color = colors.textPrimary, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text("Bring your library together and keep your listening history in sync. Connections don’t change your audio source.",
-                color = colors.textSecondary, modifier = Modifier.padding(top = 6.dp)) }
+                color = colors.textSecondary, modifier = Modifier.padding(top = 6.dp))
+        }
         error?.let { message -> item { Text(message, color = colors.primaryAccent) } }
-        item { ConnectionCard("YouTube Music", "Your playlists, saved albums and liked songs") {
+        item { ConnectionCard(ConnectionService.YouTube, "Your playlists, saved albums and liked songs") {
             if (state.youtube.isEmpty()) Text("Not connected", color = colors.textSecondary)
             state.youtube.forEach { account ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Row(Modifier.weight(1f)) {
-                        RadioButton(account.id == state.selectedYouTube, { action { store.change { it.copy(selectedYouTube = account.id) } } })
-                        Text(account.name, color = colors.textPrimary, modifier = Modifier.padding(top = 13.dp))
-                    }
-                    TextButton(onClick = { action {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    RadioButton(account.id == state.selectedYouTube,
+                        { action { store.change { it.copy(selectedYouTube = account.id) } } },
+                        colors = RadioButtonDefaults.colors(selectedColor = ConnectionService.YouTube.accent))
+                    Text(account.name, color = colors.textPrimary, modifier = Modifier.weight(1f).padding(end = 8.dp))
+                    ConnectionActionButton("Remove", onClick = { action {
                         store.change { current -> val remaining = current.youtube.filterNot { it.id == account.id }
                             current.copy(youtube = remaining, selectedYouTube = if (current.selectedYouTube == account.id) remaining.firstOrNull()?.id.orEmpty() else current.selectedYouTube) }
                         clearConnectionCookies("youtube")
-                    } }) { Text("Remove") }
+                    } })
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(enabled = ready, onClick = { signIn("youtube") }, modifier = Modifier.testTag("connect_youtube")) {
-                    Text(if (state.youtube.isEmpty()) "Connect" else "Add account") }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ConnectionActionButton(if (state.youtube.isEmpty()) "Connect" else "Add account", { signIn("youtube") },
+                    Modifier.testTag("connect_youtube"), enabled = ready, primary = true)
                 if (state.activeYouTube != null) {
-                    TextButton(onClick = { signIn("youtube", manage = true) }) { Text("Choose profile") }
-                    TextButton(onClick = { library = "youtube" }) { Text("Library") }
+                    ConnectionActionButton("Choose profile", { signIn("youtube", manage = true) })
+                    ConnectionActionButton("Library", { library = "youtube" })
                 }
             }
         } }
-        item { ConnectionCard("Last.fm", "Scrobble the music you listen to") {
+        item { ConnectionCard(ConnectionService.LastFm, "Scrobble the music you listen to") {
             val fm = state.lastFm
             Text(if (fm.session.isNotBlank()) "Connected as ${fm.username}" else if (fm.username.isNotBlank()) "Session expired · reconnect ${fm.username}" else "Not connected",
                 color = colors.textSecondary)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(enabled = ready, onClick = { lastFmDialog = true }, modifier = Modifier.testTag("connect_lastfm")) {
-                    Text(if (fm.session.isBlank()) "Connect" else "Account settings") }
-                if (fm.session.isNotBlank() || fm.username.isNotBlank()) TextButton(onClick = { action {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ConnectionActionButton(if (fm.session.isBlank()) "Connect" else "Account settings", { lastFmDialog = true },
+                    Modifier.testTag("connect_lastfm"), enabled = ready, primary = true)
+                if (fm.session.isNotBlank() || fm.username.isNotBlank()) ConnectionActionButton("Disconnect", { action {
                     store.change { it.copy(lastFm = LastFmConnection()) }; ScrobbleOutbox.get(context).clear()
-                } }) { Text("Disconnect") }
+                } })
             }
             if (fm.session.isNotBlank()) {
                 ConnectionToggle("Scrobbling", "Send qualified plays to your Last.fm profile", fm.enabled) { value ->
@@ -106,14 +117,14 @@ fun AccountsConnectionsPage(modifier: Modifier = Modifier) {
                     action { store.change { it.copy(lastFm = it.lastFm.copy(minDurationSeconds = value)) } } }
             }
         } }
-        item { ConnectionCard("Spotify", "Import playlists and liked songs into your library") {
+        item { ConnectionCard(ConnectionService.Spotify, "Import playlists and liked songs into your library") {
             Text(if (state.spotify == null) "Not connected" else "Connected", color = colors.textSecondary)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(enabled = ready, onClick = { signIn("spotify") }, modifier = Modifier.testTag("connect_spotify")) {
-                    Text(if (state.spotify == null) "Connect" else "Reconnect") }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                ConnectionActionButton(if (state.spotify == null) "Connect" else "Reconnect", { signIn("spotify") },
+                    Modifier.testTag("connect_spotify"), enabled = ready, primary = true)
                 if (state.spotify != null) {
-                    TextButton(onClick = { library = "spotify" }) { Text("Library") }
-                    TextButton(onClick = { action { store.change { it.copy(spotify = null) }; clearConnectionCookies("spotify") } }) { Text("Disconnect") }
+                    ConnectionActionButton("Library", { library = "spotify" })
+                    ConnectionActionButton("Disconnect", { action { store.change { it.copy(spotify = null) }; clearConnectionCookies("spotify") } })
                 }
             }
         } }
@@ -121,90 +132,126 @@ fun AccountsConnectionsPage(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ConnectionCard(title: String, subtitle: String, content: @Composable ColumnScope.() -> Unit) {
+private fun ConnectionCard(service: ConnectionService, subtitle: String, content: @Composable ColumnScope.() -> Unit) {
     val colors = LocalAppColors.current
-    Surface(shape = RoundedCornerShape(20.dp), color = colors.cardBackground, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text(title, color = colors.textPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-            Text(subtitle, color = colors.textSecondary, style = MaterialTheme.typography.bodySmall)
-            HorizontalDivider(Modifier.padding(vertical = 6.dp), color = colors.cardBorder)
-            content()
+    CompositionLocalProvider(LocalConnectionService provides service) {
+        Surface(shape = RoundedCornerShape(24.dp), color = connectionSurface(service),
+            border = BorderStroke(1.dp, service.accent.copy(alpha = .4f)),
+            modifier = Modifier.fillMaxWidth().testTag("connection_card_${service.name.lowercase()}")) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Surface(shape = RoundedCornerShape(14.dp),
+                        color = if (service == ConnectionService.Spotify) Color.Black else service.accent,
+                        contentColor = if (service == ConnectionService.Spotify) service.accent else service.onButton) {
+                        Icon(painterResource(service.icon), null, Modifier.padding(10.dp).size(28.dp))
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(service.title, color = colors.textPrimary, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                        Text(subtitle, color = colors.textSecondary, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                HorizontalDivider(color = service.accent.copy(alpha = .22f))
+                content()
+            }
         }
-    }
-}
-@Composable
-private fun ConnectionToggle(title: String, subtitle: String, value: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
-    val colors = LocalAppColors.current
-    Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-        Column(Modifier.weight(1f).padding(end = 12.dp)) { Text(title, color = colors.textPrimary)
-            Text(subtitle, color = colors.textSecondary, style = MaterialTheme.typography.bodySmall) }
-        Switch(value, onChange, enabled = enabled)
-    }
-}
-@Composable
-private fun ChoiceSetting(title: String, choices: List<Int>, selected: Int, label: (Int) -> String, onSelect: (Int) -> Unit) {
-    Column {
-        Text(title, color = LocalAppColors.current.textPrimary, style = MaterialTheme.typography.bodySmall)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { choices.forEach { choice ->
-            FilterChip(selected == choice, { onSelect(choice) }, label = { Text(label(choice)) })
-        } }
     }
 }
 
 @Composable
-private fun LastFmConnectDialog(initial: LastFmConnection, onDismiss: () -> Unit) {
+private fun ConnectionToggle(title: String, subtitle: String, value: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    val colors = LocalAppColors.current
+    val service = LocalConnectionService.current
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).padding(end = 12.dp)) {
+            Text(title, color = colors.textPrimary)
+            Text(subtitle, color = colors.textSecondary, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(value, onChange, enabled = enabled, colors = SwitchDefaults.colors(
+            checkedTrackColor = service.button, checkedThumbColor = service.onButton))
+    }
+}
+
+@Composable
+private fun ChoiceSetting(title: String, choices: List<Int>, selected: Int, label: (Int) -> String, onSelect: (Int) -> Unit) {
+    val service = LocalConnectionService.current
+    Column {
+        Text(title, color = LocalAppColors.current.textPrimary, style = MaterialTheme.typography.bodySmall)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            choices.forEach { choice ->
+                FilterChip(selected == choice, { onSelect(choice) }, label = { Text(label(choice)) },
+                    border = BorderStroke(1.dp, service.accent.copy(alpha = .4f)),
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = service.accent.copy(alpha = .09f).compositeOver(connectionSurface(service)),
+                        labelColor = LocalAppColors.current.textPrimary,
+                        selectedContainerColor = service.button, selectedLabelColor = service.onButton))
+            }
+        }
+    }
+}
+
+@Composable
+internal fun LastFmConnectDialog(initial: LastFmConnection, onDismiss: () -> Unit,
+    authenticate: suspend (String, String, LastFmConnection) -> LastFmConnection = { username, password, previous ->
+        LastFmClient.signIn(username, password, previous)
+    }) {
     val context = LocalContext.current
     val store = remember(context) { ConnectionStore.get(context) }
     val scope = rememberCoroutineScope()
-    var apiKey by remember { mutableStateOf(initial.apiKey) }
-    var secret by remember { mutableStateOf(initial.secret) }
-    var token by remember { mutableStateOf(initial.pendingToken) }
+    var username by remember { mutableStateOf(initial.username) }
+    var password by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    fun browser(url: String) { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
-    AlertDialog(onDismissRequest = { if (!busy) onDismiss() }, title = { Text("Connect Last.fm") }, text = {
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Use a Last.fm API key and shared secret from your API account. You’ll authorize access on Last.fm’s website.")
-            OutlinedTextField(apiKey, { apiKey = it.trim(); token = "" }, label = { Text("API key") }, singleLine = true, enabled = !busy)
-            OutlinedTextField(secret, { secret = it.trim(); token = "" }, label = { Text("Shared secret") }, singleLine = true,
-                enabled = !busy, visualTransformation = PasswordVisualTransformation())
-            TextButton(onClick = { browser("https://www.last.fm/api/account/create") }) { Text("Get an API key") }
-            if (token.isNotBlank()) Text("Approve the request in your browser, return here and complete the connection.")
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-            if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
-        }
-    }, confirmButton = {
-        TextButton(enabled = !busy && apiKey.isNotBlank() && secret.isNotBlank(), onClick = { scope.launch {
-            busy = true; error = null
-            try {
-                val credentials = initial.copy(apiKey = apiKey, secret = secret)
-                if (token.isBlank()) {
-                    token = LastFmClient.call(credentials, "auth.getToken").getString("token")
-                    store.change { it.copy(lastFm = credentials.copy(session = "", pendingToken = token)) }
-                    browser(Uri.parse("https://www.last.fm/api/auth/").buildUpon().appendQueryParameter("api_key", apiKey)
-                        .appendQueryParameter("token", token).build().toString())
-                } else {
-                    val session = LastFmClient.call(credentials, "auth.getSession", mapOf("token" to token)).getJSONObject("session")
-                    store.change { it.copy(lastFm = credentials.copy(session = session.getString("key"), username = session.getString("name"), pendingToken = "")) }
-                    ScrobbleOutbox.get(context).schedule(); onDismiss()
+    DisposableEffect(Unit) { onDispose { password = "" } }
+    CompositionLocalProvider(LocalConnectionService provides ConnectionService.LastFm) {
+        val service = LocalConnectionService.current
+        val colors = LocalAppColors.current
+        val fields = OutlinedTextFieldDefaults.colors(focusedTextColor = colors.textPrimary,
+            unfocusedTextColor = colors.textPrimary, focusedBorderColor = service.accent,
+            unfocusedBorderColor = service.accent.copy(alpha = .45f), focusedLabelColor = service.accent,
+            unfocusedLabelColor = colors.textSecondary, cursorColor = service.accent)
+        AlertDialog(onDismissRequest = { if (!busy) { password = ""; onDismiss() } },
+            containerColor = connectionSurface(service), shape = RoundedCornerShape(24.dp),
+            titleContentColor = colors.textPrimary, textContentColor = colors.textSecondary,
+            icon = { Icon(painterResource(service.icon), null, Modifier.size(32.dp), tint = service.accent) },
+            title = { Text("Sign in to Last.fm") }, text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Sign in with your Last.fm account to sync your listening history. Your password is not saved.")
+                    OutlinedTextField(username, { username = it; error = null }, label = { Text("Username") },
+                        singleLine = true, enabled = !busy, colors = fields,
+                        modifier = Modifier.fillMaxWidth().testTag("lastfm_username"))
+                    OutlinedTextField(password, { password = it; error = null }, label = { Text("Password") },
+                        singleLine = true, enabled = !busy, colors = fields, visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
+                        modifier = Modifier.fillMaxWidth().testTag("lastfm_password"))
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("lastfm_login_error")) }
+                    if (busy) LinearProgressIndicator(Modifier.fillMaxWidth(), color = service.accent)
                 }
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failed: LastFmException) {
-                if (failed.code in setOf(4, 15)) {
-                    token = ""
-                    try { store.change { it.copy(lastFm = it.lastFm.copy(pendingToken = "")) } }
-                    catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { }
-                }
-                error = when (failed.code) {
-                14 -> "Approve access on Last.fm first, then try again."
-                4, 15 -> "This authorization expired. Start again."
-                10, 13 -> "Check your API key and shared secret."
-                else -> "Last.fm could not complete the connection. Please retry."
-            } }
-            catch (_: Exception) { error = "Could not reach Last.fm. Check your connection and retry." }
-            finally { busy = false }
-        } }) { Text(if (token.isBlank()) "Authorize" else "Complete connection") }
-    }, dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Close") } })
+            }, confirmButton = {
+                ConnectionActionButton(if (busy) "Signing in…" else "Sign in", modifier = Modifier.testTag("lastfm_sign_in"),
+                    enabled = !busy && username.isNotBlank() && password.isNotBlank(), primary = true, onClick = { scope.launch {
+                        busy = true; error = null
+                        try {
+                            val connected = authenticate(username.trim(), password, initial)
+                            store.change { it.copy(lastFm = it.lastFm.copy(apiKey = connected.apiKey, secret = connected.secret,
+                                session = connected.session, username = connected.username, pendingToken = "")) }
+                            password = ""
+                            ScrobbleOutbox.get(context).schedule()
+                            onDismiss()
+                        } catch (cancelled: CancellationException) { throw cancelled }
+                        catch (_: LastFmConfigurationException) { error = "Last.fm sign-in is not configured in this build. Please use a configured release." }
+                        catch (failed: LastFmException) { error = when (failed.code) {
+                            4 -> "Incorrect username or password. Please try again."
+                            10, 13, 26 -> "Last.fm sign-in is unavailable in this build. Please update the app or contact support."
+                            29 -> "Too many attempts. Please wait and try again."
+                            else -> "Last.fm could not sign in. Please try again."
+                        } }
+                        catch (_: Exception) { error = "Could not reach Last.fm. Check your connection and retry." }
+                        finally { busy = false }
+                    } })
+            }, dismissButton = {
+                ConnectionActionButton("Cancel", { password = ""; onDismiss() }, enabled = !busy)
+            })
+    }
 }
 
 @Composable
@@ -212,6 +259,7 @@ private fun ConnectedLibraryPage(provider: String, onBack: () -> Unit, modifier:
     val context = LocalContext.current
     val client = remember(context) { ConnectedLibraries(context) }
     val colors = LocalAppColors.current
+    val service = if (provider == "youtube") ConnectionService.YouTube else ConnectionService.Spotify
     val scope = rememberCoroutineScope()
     var collections by remember(provider) { mutableStateOf<List<ConnectedCollection>>(emptyList()) }
     var loading by remember(provider) { mutableStateOf(true) }
@@ -228,22 +276,23 @@ private fun ConnectedLibraryPage(provider: String, onBack: () -> Unit, modifier:
         finally { loading = false }
     }
     DisposableEffect(Unit) { onDispose { importJob?.cancel() } }
+    CompositionLocalProvider(LocalConnectionService provides service) {
     LazyColumn(modifier.fillMaxSize().testTag("connected_library_page"), contentPadding = PaddingValues(16.dp, 8.dp, 16.dp, 160.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { TextButton(onClick = { importJob?.cancel(); onBack() }) { Text("Back to accounts") }
+        item { ConnectionActionButton("Back to accounts", { importJob?.cancel(); onBack() })
             Text(if (provider == "youtube") "YouTube Music library" else "Spotify library", color = colors.textPrimary,
                 style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             Text("Import a collection into your local library. Import again to refresh it.", color = colors.textSecondary) }
         if (loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         error?.let { message -> item { Text(message, color = colors.primaryAccent)
-            TextButton(onClick = { reload++ }) { Text("Retry") } } }
+            ConnectionActionButton("Retry", { reload++ }) } }
         if (progress.isNotBlank()) item { Text(progress, color = colors.textSecondary) }
         if (!loading && collections.isEmpty() && error == null) item { Text("No saved collections found.", color = colors.textSecondary) }
         items(collections, key = { it.id }) { collection ->
-            Surface(shape = RoundedCornerShape(16.dp), color = colors.cardBackground) {
+            Surface(shape = RoundedCornerShape(16.dp), color = connectionSurface(service), border = BorderStroke(1.dp, service.accent.copy(alpha = .35f))) {
                 Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                     Text(collection.title, color = colors.textPrimary, modifier = Modifier.weight(1f))
-                    TextButton(enabled = importing == null, onClick = {
+                    ConnectionActionButton(if (importing == collection.id) "Importing…" else "Import", enabled = importing == null, primary = true, onClick = {
                         importing = collection.id
                         importJob = scope.launch {
                             try {
@@ -255,9 +304,10 @@ private fun ConnectedLibraryPage(provider: String, onBack: () -> Unit, modifier:
                             catch (_: Exception) { progress = "Import could not finish. Your existing library was kept. Please retry." }
                             finally { importing = null }
                         }
-                    }) { Text(if (importing == collection.id) "Importing…" else "Import") }
+                    })
                 }
             }
         }
     }
+}
 }

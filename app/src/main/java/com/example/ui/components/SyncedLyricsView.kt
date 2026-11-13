@@ -21,7 +21,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
@@ -60,6 +59,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
@@ -237,18 +237,18 @@ fun SyncedLyricsView(
         }
     }
 
-    val viewportSize by remember { derivedStateOf { listState.layoutInfo.viewportSize } }
+    val viewportWidth by remember(listState) { derivedStateOf { listState.layoutInfo.viewportSize.width } }
     val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
     val lyricStyle = LocalTextStyle.current.copy(fontSize = lyricsTextSize.sp, lineHeight = (40 * lyricsTextScale).sp,
         fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.SansSerif, textAlign = TextAlign.Start)
     val romanizationStyle = LocalTextStyle.current.copy(fontSize = (14 * lyricsTextScale).sp, lineHeight = (18 * lyricsTextScale).sp,
         fontWeight = FontWeight.Medium, textAlign = TextAlign.Start)
-    val rowHeights = remember(lyrics?.trackId, lines, viewportSize.width, density, lyricStyle, romanizationStyle,
+    val rowHeights = remember(lyrics?.trackId, lines, viewportWidth, density, lyricStyle, romanizationStyle,
         showRomanization, showTranslation) { mutableMapOf<Int, Int>() }
     var hasInitialScrolled by remember(lyrics?.trackId) { mutableStateOf(false) }
     var centeredLineIndex by remember(lyrics?.trackId) { mutableIntStateOf(-1) }
-    LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportSize, rowHeights, viewportAnimating) {
+    LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportWidth, rowHeights, viewportAnimating) {
         // Center the incoming vocal before revealing it, even if a quick reopen
         // retains this view. Later resizes wait for stable bounds instead of restarting a scroll.
         val targetIndex = activeLineIndex.coerceAtLeast(0)
@@ -305,15 +305,18 @@ fun SyncedLyricsView(
         if (isDark) Color.White.copy(alpha = 0.90f) else Color.Black.copy(alpha = 0.90f)
     } else if (isDark) Color(0xFFFFFFFF).copy(alpha = 0.62f) else Color(0xFF000000).copy(alpha = 0.60f)
 
-    BoxWithConstraints(
+    val centeredPadding = remember(density) { LyricsViewportPadding(density) }
+    Box(
         modifier = modifier
             .fillMaxSize()
+            .layout { measurable, constraints ->
+                centeredPadding.heightPx = if (constraints.hasBoundedHeight) constraints.maxHeight else constraints.minHeight
+                val child = measurable.measure(constraints)
+                layout(child.width, child.height) { child.placeRelative(0, 0) }
+            }
             .clip(RoundedCornerShape(24.dp))
             .testTag("synced_lyrics_view")
     ) {
-        val boxHeight = maxHeight
-        // Half a viewport permits exact centering even for the first and last wrapped rows.
-        val verticalCenterPadding = boxHeight / 2
         if (lyrics == null) {
             Box(
                 modifier = Modifier.fillMaxSize(),
@@ -394,7 +397,7 @@ fun SyncedLyricsView(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 22.dp),
-                contentPadding = if (isSynced) PaddingValues(top = verticalCenterPadding, bottom = verticalCenterPadding) else PaddingValues(top = 36.dp, bottom = 48.dp),
+                contentPadding = if (isSynced) centeredPadding else PaddingValues(top = 36.dp, bottom = 48.dp),
                 verticalArrangement = if (isSynced) Arrangement.spacedBy(24.dp) else Arrangement.spacedBy(16.dp)
             ) {
                 itemsIndexed(lines, key = { index, item -> "${item.timestampMs}_$index" }) { index, item ->

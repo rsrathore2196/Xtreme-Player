@@ -356,7 +356,7 @@ fun ExpandedPlayerScreen(
     val lyricsExpanded = showLyrics && maximizeLyrics
     val lyricsExpansion = animateFloatAsState(
         targetValue = if (lyricsExpanded) 1f else 0f,
-        animationSpec = tween(LYRICS_EXPANSION_MS, easing = FastOutSlowInEasing),
+        animationSpec = tween(LYRICS_EXPANSION_MS, easing = LyricsExpansionEasing),
         label = "lyrics_expansion"
     )
     val expandedLyricsVisible by remember { derivedStateOf { lyricsExpansion.value > 0f } }
@@ -1364,18 +1364,7 @@ fun ExpandedPlayerScreen(
                                 onClick = { maximizeLyrics = false }
                             )
                         }
-                        PlayerTimelineSection(
-                            trackId = track.id,
-                            currentPositionProvider = currentPositionProvider,
-                            playbackPositionFlow = playbackPositionFlow,
-                            trackDurationProvider = trackDurationProvider,
-                            qualityChipText = "",
-                            onSeekTo = onSeekTo,
-                            isDark = isDark,
-                            isPlaying = uiState.isPlaying && lyricsExpanded,
-                            active = lyricsExpanded,
-                            dominantColor = animatedDominantColor
-                        )
+
                     } else Box(Modifier)
                 }
             } else {
@@ -1906,6 +1895,10 @@ fun ExpandedPlayerScreen(
             }
 
             // TIMELINE SCRUB BAR (Isolated recomposition)
+            Column(Modifier.fillMaxWidth()
+                .collapsingPlayerControls(lyricsExpansion)
+                .graphicsLayer { alpha = 1f - lyricsExpansion.value }
+                .then(if (lyricsExpanded) Modifier.clearAndSetSemantics { } else Modifier)) {
             PlayerTimelineSection(
                 trackId = track.id,
                 currentPositionProvider = currentPositionProvider,
@@ -1913,12 +1906,14 @@ fun ExpandedPlayerScreen(
                 trackDurationProvider = trackDurationProvider,
                 qualityChipText = displayedQuality,
                 showQuality = !lyricsExpanded,
+                active = !lyricsExpanded,
                 qualityFade = lyricsExpansion,
                 onSeekTo = onSeekTo,
                 isDark = isDark,
-                isPlaying = uiState.isPlaying,
+                isPlaying = uiState.isPlaying && !lyricsExpanded,
                 dominantColor = animatedDominantColor
             )
+            }
 
             }
             Column(
@@ -2984,7 +2979,7 @@ private fun PlayerTimelineSection(
     val formattedCurrentTime = remember(currentSeconds) { formatTime(currentPosition) }
     val formattedDuration = remember(trackDuration) { formatTime(trackDuration) }
 
-    Column(modifier = modifier.fillMaxWidth().graphicsLayer()) {
+    Column(modifier = modifier.fillMaxWidth().graphicsLayer().testTag("player_timeline_section")) {
         WavyScrubberBar(
             progress = sliderValue,
             isPlaying = isPlaying,
@@ -3037,7 +3032,8 @@ private fun PlayerTimelineSection(
 
 private const val LYRICS_ENTRANCE_MS = 460
 private const val LYRICS_EXIT_MS = 440
-private const val LYRICS_EXPANSION_MS = 420
+private const val LYRICS_EXPANSION_MS = 280
+private val LyricsExpansionEasing: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
 private val LyricsSharedEasing: Easing = CubicBezierEasing(0.22f, 0.0f, 0.18f, 1.0f)
 
 /** One transition owns foreground admission until its existing content/shared bounds settle. */

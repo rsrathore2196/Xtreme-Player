@@ -1,5 +1,6 @@
 package com.example.ui.screens.settings
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -50,7 +51,8 @@ fun DownloadsPage(modifier: Modifier = Modifier, store: OfflineDownloads = Offli
                 color = colors.textSecondary, modifier = Modifier.padding(top = 4.dp))
         }
         item {
-            Surface(shape = RoundedCornerShape(20.dp), color = colors.cardBackground) {
+            Surface(shape = RoundedCornerShape(20.dp), color = colors.cardBackground,
+                border = BorderStroke(1.dp, colors.cardBorder), modifier = Modifier.testTag("downloads_options_frame")) {
                 Column(Modifier.padding(16.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {

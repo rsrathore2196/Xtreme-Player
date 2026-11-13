@@ -51,6 +51,7 @@ class SettingsConnectionsDownloadsTest {
     @Test fun downloadsShowsStorageAndExposesNetworkControls() {
         compose.setContent { MyApplicationTheme { DownloadsPage() } }
         compose.onNodeWithTag("downloads_wifi_only").assertExists()
+        compose.onNodeWithTag("downloads_options_frame").assertExists()
         compose.onNodeWithText("Download quality").assertExists()
         compose.onNodeWithText("Find and play your saved tracks in Library → Downloads.").assertDoesNotExist()
         compose.onNodeWithTag("download_storage_summary").assertExists()
