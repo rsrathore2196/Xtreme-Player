@@ -21,8 +21,17 @@ data class DownloadRecord(
     val fraction: Float get() = if (total > 0) (bytes.toFloat() / total).coerceIn(0f, 1f) else 0f
 }
 
-internal fun downloadKey(id: String): String = MessageDigest.getInstance("SHA-256")
-    .digest(id.toByteArray()).joinToString("") { "%02x".format(it) }
+internal fun downloadKey(id: String): String {
+    val bytes = MessageDigest.getInstance("SHA-256").digest(id.toByteArray())
+    val digits = "0123456789abcdef"
+    return CharArray(bytes.size * 2).also { chars ->
+        bytes.forEachIndexed { index, value ->
+            val byte = value.toInt() and 255
+            chars[index * 2] = digits[byte ushr 4]
+            chars[index * 2 + 1] = digits[byte and 15]
+        }
+    }.concatToString()
+}
 
 /** Deliberately stores song metadata only; account credentials never enter download requests. */
 internal object OfflineJson {

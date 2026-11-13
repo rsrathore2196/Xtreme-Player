@@ -19,12 +19,36 @@ internal fun extractPlayerArtworkColors(pixels: IntArray, w: Int, h: Int): Extra
         1.8f, 1.2f, 1.8f
     )
 
-    val binSumR = FloatArray(32768)
-    val binSumG = FloatArray(32768)
-    val binSumB = FloatArray(32768)
-    val binTotalW = FloatArray(32768)
-    val binZoneMask = ShortArray(32768)
-    val populations = FloatArray(32768)
+    // A 120px palette sample usually occupies only a small fraction of the 5-bit
+    // RGB cube. Keep its accumulators compact; retain bin order for identical ties.
+    val slots = if (w * h < 32768) IntArray(32768) else null
+    var binCount = if (slots == null) 32768 else 0
+    if (slots != null) {
+        for (i in 0 until w * h) {
+            val pixel = pixels[i]
+            if ((pixel ushr 24) < 128) continue
+            val bin = (((pixel ushr 19) and 31) shl 10) or
+                (((pixel ushr 11) and 31) shl 5) or ((pixel ushr 3) and 31)
+            if (slots[bin] == 0) { slots[bin] = 1; binCount++ }
+        }
+        if (binCount == 0) return null
+    }
+    val activeBins = slots?.let {
+        IntArray(binCount).also { bins ->
+            var slot = 0
+            for (bin in slots.indices) if (slots[bin] != 0) {
+                bins[slot] = bin
+                slots[bin] = ++slot
+            }
+        }
+    }
+
+    val binSumR = FloatArray(binCount)
+    val binSumG = FloatArray(binCount)
+    val binSumB = FloatArray(binCount)
+    val binTotalW = FloatArray(binCount)
+    val binZoneMask = ShortArray(binCount)
+    val populations = FloatArray(binCount)
     var opaquePopulation = 0f
     var chromaticPopulation = 0f
 
@@ -50,7 +74,8 @@ internal fun extractPlayerArtworkColors(pixels: IntArray, w: Int, h: Int): Extra
 
             val alpha = a / 255f
             val weight = zoneWeights[zone] * alpha
-            val bin = ((r shr 3) shl 10) or ((g shr 3) shl 5) or (b shr 3)
+            val quantized = ((r shr 3) shl 10) or ((g shr 3) shl 5) or (b shr 3)
+            val bin = slots?.get(quantized)?.minus(1) ?: quantized
 
             populations[bin] += alpha
             opaquePopulation += alpha
@@ -69,7 +94,7 @@ internal fun extractPlayerArtworkColors(pixels: IntArray, w: Int, h: Int): Extra
     var bestBin = -1
     var bestScore = -1f
 
-    for (i in 0 until 32768) {
+    for (i in 0 until binCount) {
         val totalW = binTotalW[i]
         if (totalW <= 0f) continue
 
@@ -120,9 +145,10 @@ internal fun extractPlayerArtworkColors(pixels: IntArray, w: Int, h: Int): Extra
     }
 
     // Merge adjacent bins (Manhattan distance <= 1 in 5-bit space) to avoid quantization split
-    val bestR5 = (bestBin shr 10) and 0x1F
-    val bestG5 = (bestBin shr 5) and 0x1F
-    val bestB5 = bestBin and 0x1F
+    val quantizedBest = activeBins?.get(bestBin) ?: bestBin
+    val bestR5 = (quantizedBest shr 10) and 0x1F
+    val bestG5 = (quantizedBest shr 5) and 0x1F
+    val bestB5 = quantizedBest and 0x1F
 
     var mergedSumR = 0f
     var mergedSumG = 0f
@@ -139,8 +165,9 @@ internal fun extractPlayerArtworkColors(pixels: IntArray, w: Int, h: Int): Extra
                 if (kotlin.math.abs(dr) + kotlin.math.abs(dg) + kotlin.math.abs(db) > 1) continue
                 val b5 = bestB5 + db
                 if (b5 !in 0..31) continue
-                val neighborBin = (r5 shl 10) or (g5 shl 5) or b5
-                if (binTotalW[neighborBin] > 0f) {
+                val quantizedNeighbor = (r5 shl 10) or (g5 shl 5) or b5
+                val neighborBin = slots?.get(quantizedNeighbor)?.minus(1) ?: quantizedNeighbor
+                if (neighborBin >= 0 && binTotalW[neighborBin] > 0f) {
                     mergedSumR += binSumR[neighborBin]
                     mergedSumG += binSumG[neighborBin]
                     mergedSumB += binSumB[neighborBin]

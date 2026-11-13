@@ -27,6 +27,7 @@ import androidx.media3.datasource.ByteArrayDataSource
 import androidx.media3.datasource.DataSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import org.junit.*
 import org.junit.Assert.*
 import org.junit.runner.RunWith
@@ -228,6 +229,46 @@ class LibraryDownloadsUiTest {
     @Test fun emptyDownloadsHaveNoDirectPlayAction() {
         showLibrary()
         compose.onNodeWithTag("play_downloads").assertDoesNotExist()
+    }
+
+    @Test fun delayedDownloadsPreparationCannotReplaceANewerLikedSongsSelection() {
+        val saved = save("delayed-download", 1)
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Main.immediate)
+        val owner = com.example.ui.viewmodel.PlaybackLaunchOwner()
+        val gate = kotlinx.coroutines.CompletableDeferred<List<MusicTrack>>()
+        var pending: kotlinx.coroutines.Deferred<Boolean>? = null
+        try {
+            compose.setContent { MaterialTheme {
+                CompositionLocalProvider(LocalAppColors provides DarkAppColors.copy(dynamicGlassEnabled = false),
+                    LocalDynamicGlassEnabled provides false, LocalVisualEffectsActive provides false,
+                    LocalArtworkRequestsActive provides false) {
+                    LibraryScreen(listOf(liked), playlists, onTrackClick = { track, queue -> play = track to queue },
+                        onToggleFavorite = {}, onOpenPlaylist = {}, onCreatePlaylistClick = {}, downloadStore = store,
+                        onPlayLikedSongs = { owner.current = scope.launch { play = liked to listOf(liked) } },
+                        onPrepareDownloads = {
+                            val request = owner.prepare(scope, load = {
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { gate.await() }
+                            }) { songs -> play = songs.first() to songs; true }
+                            pending = request
+                            request.await()
+                        })
+                }
+            } }
+            compose.waitUntil(30_000) { compose.onAllNodesWithTag("play_downloads").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("play_downloads").performClick()
+            compose.waitUntil(30_000) { pending?.isActive == true }
+            compose.onNodeWithTag("play_liked_songs").performClick()
+            gate.complete(listOf(saved))
+            runBlocking { kotlinx.coroutines.withTimeout(30_000) { pending!!.join() } }
+            compose.waitUntil(30_000) { play?.first?.id == liked.id }
+            compose.runOnIdle {
+                assertEquals(listOf(liked.id), play!!.second.map { it.id })
+                assertTrue(pending!!.isCancelled)
+            }
+        } finally {
+            gate.complete(listOf(saved))
+            scope.coroutineContext[kotlinx.coroutines.Job]?.cancel()
+        }
     }
 
     @Test fun customPlaylistPlayUsesItsIdentityWithoutOpeningItsPage() {

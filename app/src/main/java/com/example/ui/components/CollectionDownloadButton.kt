@@ -36,8 +36,6 @@ internal fun rememberCollectionDownloadAction(
     store: OfflineDownloads = OfflineDownloads.get(LocalContext.current)
 ): CollectionDownloadAction {
     val context = LocalContext.current
-    val records by store.records.collectAsStateWithLifecycle()
-    val collections by store.collections.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     var loading by remember(collectionKey) { mutableStateOf(false) }
     var error by remember(collectionKey) { mutableStateOf(false) }
@@ -46,9 +44,9 @@ internal fun rememberCollectionDownloadAction(
         catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { error = true }
     }
-    val progress = remember(tracks, records, collections[collectionKey], collectionComplete) {
-        collectionDownloadProgress(tracks, records, collections[collectionKey], collectionComplete)
-    }
+    val progress by remember(store, tracks, collectionKey, collectionComplete) {
+        store.observeCollectionProgress(tracks, collectionKey, collectionComplete)
+    }.collectAsStateWithLifecycle(CollectionDownloadProgress(null, 0, tracks.size, false, false))
     val busy = loading || progress.active
     val percentage = progress.fraction?.let { floor(it * 100).toInt().coerceIn(0, if (progress.complete) 100 else 99) }
     val description = when {

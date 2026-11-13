@@ -14,6 +14,8 @@ import androidx.annotation.RequiresApi
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.RenderEffect
+import androidx.compose.ui.graphics.BlurEffect
+import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.unit.Density
@@ -46,6 +48,21 @@ internal abstract class BackdropEffectScopeImpl : BackdropEffectScope, RuntimeSh
     override var renderEffect: RenderEffect? = null
 
     private val runtimeShaderCache = RuntimeShaderCacheImpl()
+    private var cachedBlur: BlurEffect? = null
+    private var cachedBlurInput: RenderEffect? = null
+    private var cachedBlurRadius = 0f
+    private var cachedBlurTile = TileMode.Clamp
+
+    internal fun blurEffect(input: RenderEffect?, radius: Float, tile: TileMode): BlurEffect {
+        val previous = cachedBlur
+        if (previous != null && input === cachedBlurInput && radius == cachedBlurRadius && tile == cachedBlurTile) return previous
+        return BlurEffect(input, radius, radius, tile).also {
+            cachedBlur = it
+            cachedBlurInput = input
+            cachedBlurRadius = radius
+            cachedBlurTile = tile
+        }
+    }
 
     @RequiresApi(33)
     override fun obtainRuntimeShader(key: String, string: String): RuntimeShader {
@@ -94,5 +111,7 @@ internal abstract class BackdropEffectScopeImpl : BackdropEffectScope, RuntimeSh
         padding = 0f
         renderEffect = null
         runtimeShaderCache.clear()
+        cachedBlur = null
+        cachedBlurInput = null
     }
 }

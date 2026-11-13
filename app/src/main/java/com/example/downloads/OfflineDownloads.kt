@@ -2,7 +2,6 @@ package com.example.downloads
 
 import android.content.Context
 import android.net.Uri
-import android.util.AtomicFile
 import androidx.media3.common.MediaItem
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
@@ -36,12 +35,16 @@ import java.io.IOException
 
 /** Permanent, non-evicting storage, independent of the temporary streaming cache. */
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-class OfflineDownloads internal constructor(context: Context) {
+class OfflineDownloads internal constructor(
+    context: Context,
+    index: DownloadIndex? = null
+) {
     private val context = context.applicationContext
+    private val index = index ?: AtomicDownloadIndex { File(this.context.noBackupFilesDir, "offline_audio/index.json") }
     private val lock = Mutex()
+    private val commands = Mutex()
     private var loaded = false
     private val root get() = File(context.noBackupFilesDir, "offline_audio").apply { mkdirs() }
-    private val index get() = AtomicFile(File(root, "index.json"))
     private val _records = MutableStateFlow<Map<String, DownloadRecord>>(emptyMap())
     val records = _records.asStateFlow()
     private val _preferences = MutableStateFlow(DownloadPreferences())
@@ -73,8 +76,8 @@ class OfflineDownloads internal constructor(context: Context) {
     }
     private fun loadLocked() {
         if (loaded) return
-        if (index.baseFile.exists()) {
-            val saved = JSONObject(index.openRead().bufferedReader().use { it.readText() })
+        index.read()?.let { bytes ->
+            val saved = JSONObject(String(bytes, Charsets.UTF_8))
             val items = saved.optJSONArray("records") ?: JSONArray()
             _records.value = (0 until items.length()).map { OfflineJson.record(items.getJSONObject(it)) }
                 .associateBy { it.track.id }
@@ -88,16 +91,22 @@ class OfflineDownloads internal constructor(context: Context) {
         }
         loaded = true
     }
-    private fun saveLocked() {
-        val payload = JSONObject().put("version", 1).put("wifi", _preferences.value.wifiOnly)
-            .put("quality", _preferences.value.quality.name)
+    private fun commitLocked(
+        records: Map<String, DownloadRecord> = _records.value,
+        preferences: DownloadPreferences = _preferences.value,
+        collections: Map<String, List<String>> = _collections.value
+    ) {
+        val payload = JSONObject().put("version", 1).put("wifi", preferences.wifiOnly)
+            .put("quality", preferences.quality.name)
             .put("collections", JSONObject().also { saved ->
-                _collections.value.forEach { (key, ids) -> saved.put(key, JSONArray(ids)) }
+                collections.forEach { (key, ids) -> saved.put(key, JSONArray(ids)) }
             })
-            .put("records", JSONArray(_records.value.values.map(OfflineJson::record))).toString().toByteArray()
-        val output = index.startWrite()
-        try { output.write(payload); index.finishWrite(output) }
-        catch (error: Exception) { index.failWrite(output); throw error }
+            .put("records", JSONArray(records.values.map(OfflineJson::record))).toString().toByteArray()
+        index.write(payload)
+        // Observers must never see a completed mutation that failed to reach disk.
+        _records.value = records
+        _preferences.value = preferences
+        _collections.value = collections
     }
     internal suspend fun update(id: String, persist: Boolean = true, transform: (DownloadRecord) -> DownloadRecord) = withContext(Dispatchers.IO) {
         lock.withLock {
@@ -106,44 +115,38 @@ class OfflineDownloads internal constructor(context: Context) {
                 val changed = transform(before)
                 if (changed == before) return@let
                 val next = _records.value + (id to changed)
-                val old = _records.value
-                _records.value = next
-                try { if (persist) saveLocked() } catch (error: Exception) { _records.value = old; throw error }
+                if (persist) commitLocked(records = next) else _records.value = next
             }
         }
     }
     internal suspend fun put(record: DownloadRecord) = withContext(Dispatchers.IO) {
-        lock.withLock { loadLocked(); _records.value = _records.value + (record.track.id to record); saveLocked() }
+        lock.withLock { loadLocked(); commitLocked(records = _records.value + (record.track.id to record)) }
     }
     suspend fun enqueue(tracks: List<MusicTrack>, collection: String = "", collectionKey: String? = null) = withContext(Dispatchers.IO) {
-        load()
-        val queued = lock.withLock {
-            val old = _records.value
-            val oldCollections = _collections.value
-            val next = old.toMutableMap()
-            val ids = mutableListOf<String>()
-            for (track in tracks.distinctBy { it.id }) {
-                if (Uri.parse(track.audioUrl).scheme in setOf("file", "content", SCHEME)) continue
-                val previous = next[track.id]
-                if (previous?.status in setOf(DownloadStatus.COMPLETE, DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED)) continue
-                synchronized(caches) { check(track.id !in pendingDeletion) { "The removed audio is still in use" } }
-                next[track.id] = previous?.copy(status = DownloadStatus.QUEUED, error = null) ?: DownloadRecord(track, collection = collection)
-                ids += track.id
+        commands.withLock {
+            load()
+            val queued = lock.withLock {
+                val old = _records.value
+                val oldCollections = _collections.value
+                val next = old.toMutableMap()
+                val ids = mutableListOf<String>()
+                for (track in tracks.distinctBy { it.id }) {
+                    if (Uri.parse(track.audioUrl).scheme in setOf("file", "content", SCHEME)) continue
+                    val previous = next[track.id]
+                    if (previous?.status in setOf(DownloadStatus.COMPLETE, DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED)) continue
+                    synchronized(caches) { check(track.id !in pendingDeletion) { "The removed audio is still in use" } }
+                    next[track.id] = previous?.copy(status = DownloadStatus.QUEUED, error = null) ?: DownloadRecord(track, collection = collection)
+                    ids += track.id
+                }
+                val collections = if (collectionKey == null) oldCollections else oldCollections +
+                    (collectionKey to tracks.distinctBy { it.id }.filter {
+                        Uri.parse(it.audioUrl).scheme !in setOf("file", "content", SCHEME) || it.id in next
+                    }.map { it.id })
+                if (next != old || collections != oldCollections) commitLocked(records = next, collections = collections)
+                ids
             }
-            _records.value = next
-            if (collectionKey != null) {
-                _collections.value = oldCollections + (collectionKey to tracks.distinctBy { it.id }.filter {
-                    Uri.parse(it.audioUrl).scheme !in setOf("file", "content", SCHEME) || it.id in next
-                }.map { it.id })
-            }
-            try { saveLocked() } catch (error: Exception) {
-                _records.value = old
-                _collections.value = oldCollections
-                throw error
-            }
-            ids
+            queued.forEach(::schedule)
         }
-        queued.forEach(::schedule)
     }
     private fun schedule(id: String) {
         val request = OneTimeWorkRequestBuilder<OfflineDownloadWorker>()
@@ -154,42 +157,78 @@ class OfflineDownloads internal constructor(context: Context) {
             .addTag(WORK_TAG).build()
         WorkManager.getInstance(context).enqueueUniqueWork(workName(id), ExistingWorkPolicy.REPLACE, request).result.get()
     }
-    suspend fun setPreferences(value: DownloadPreferences) = withContext(Dispatchers.IO) {
-        val networkChanged = lock.withLock {
-            loadLocked(); val changed = value.wifiOnly != _preferences.value.wifiOnly
-            _preferences.value = value; saveLocked(); changed
+    suspend fun setPreferences(value: DownloadPreferences) = updatePreferences { value }
+    suspend fun updatePreferences(transform: (DownloadPreferences) -> DownloadPreferences) = withContext(Dispatchers.IO) {
+        commands.withLock {
+            load()
+            val reschedule = lock.withLock {
+                val value = transform(_preferences.value)
+                val networkChanged = value.wifiOnly != _preferences.value.wifiOnly
+                val ids = if (networkChanged) _records.value.values.filter {
+                    it.status == DownloadStatus.QUEUED || it.status == DownloadStatus.DOWNLOADING
+                }.map { it.track.id } else emptyList()
+                val next = if (ids.isEmpty()) _records.value else _records.value.toMutableMap().apply {
+                    ids.forEach { id -> get(id)?.let { put(id, it.copy(status = DownloadStatus.PAUSED)) } }
+                }
+                if (value != _preferences.value) commitLocked(records = next, preferences = value)
+                ids
+            }
+            if (reschedule.isNotEmpty()) {
+                // Stop the old requests while their records are PAUSED. Their
+                // cancellation handlers must not pause a newly queued replacement.
+                val workManager = WorkManager.getInstance(context)
+                reschedule.forEach { workManager.cancelUniqueWork(workName(it)).result.get() }
+                lock.withLock {
+                    val next = _records.value.toMutableMap()
+                    reschedule.forEach { id -> next[id]?.let {
+                        if (it.status == DownloadStatus.PAUSED) next[id] = it.copy(status = DownloadStatus.QUEUED, error = null)
+                    } }
+                    commitLocked(records = next)
+                }
+                reschedule.forEach(::schedule)
+            }
         }
-        if (networkChanged) records.value.values.filter { it.status in setOf(DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING) }
-            .forEach { pause(it.track.id); resume(it.track.id) }
     }
-    suspend fun pause(id: String) {
+    suspend fun pause(id: String): Unit = commands.withLock {
         update(id) { if (it.status == DownloadStatus.COMPLETE) it else it.copy(status = DownloadStatus.PAUSED) }
         withContext(Dispatchers.IO) { WorkManager.getInstance(context).cancelUniqueWork(workName(id)).result.get() }
     }
-    suspend fun resume(id: String) {
+    suspend fun resume(id: String) = commands.withLock {
         update(id) { if (it.status == DownloadStatus.COMPLETE) it else it.copy(status = DownloadStatus.QUEUED, error = null) }
         if (records.value[id]?.status == DownloadStatus.QUEUED) withContext(Dispatchers.IO) { schedule(id) }
     }
-    suspend fun remove(id: String) = withContext(Dispatchers.IO) {
-        pause(id)
-        lock.withLock {
-            synchronized(caches) {
-                pendingDeletion += id
-                if (owners[id] == null) disposeCacheLocked(id)
+    suspend fun remove(id: String): Unit = removeRecords(setOf(id))
+    suspend fun clear(): Unit = removeRecords(null)
+
+    private suspend fun removeRecords(selected: Set<String>?): Unit = withContext(Dispatchers.IO) {
+        commands.withLock {
+            load()
+            val removed = lock.withLock {
+                val ids = selected ?: _records.value.keys.toSet()
+                val next = _records.value - ids
+                if (next != _records.value) commitLocked(records = next)
+                synchronized(caches) {
+                    pendingDeletion += ids
+                    ids.forEach { if (owners[it] == null) disposeCacheLocked(it) }
+                }
+                ids
             }
-            _records.value = _records.value - id
-            saveLocked()
+            // One index commit for an entire collection. Existing readers hold leases
+            // until close, while the removed entries cannot acquire new playback leases.
+            val workManager = WorkManager.getInstance(context)
+            if (selected == null) workManager.cancelAllWorkByTag(WORK_TAG).result.get()
+            else removed.forEach { workManager.cancelUniqueWork(workName(it)).result.get() }
         }
     }
-    suspend fun clear() { load(); records.value.keys.toList().forEach { remove(it) } }
     internal fun directory(id: String): File = File(root, downloadKey(id)).apply { mkdirs() }
     internal fun cache(id: String): SimpleCache = synchronized(caches) {
         caches.getOrPut(id) { SimpleCache(File(directory(id), "media"), NoOpCacheEvictor(), database) }
     }
     internal fun releaseCache(id: String) = synchronized(caches) { caches.remove(id)?.release(); Unit }
-    internal fun retainCache(id: String) = synchronized(caches) {
-        check(id !in pendingDeletion) { "This download has been removed" }
+    internal fun retainCache(id: String, expected: DownloadRecord? = null): Boolean = synchronized(caches) {
+        if (id in pendingDeletion || expected != null && _records.value[id] != expected) return@synchronized false
         owners[id] = (owners[id] ?: 0) + 1
+        true
     }
     internal fun releaseOwner(id: String) = synchronized(caches) {
         val count = (owners[id] ?: 1) - 1
@@ -197,11 +236,12 @@ class OfflineDownloads internal constructor(context: Context) {
     }
     private fun disposeCacheLocked(id: String) {
         caches.remove(id)?.release()
-        if (pendingDeletion.remove(id)) {
+        if (id in pendingDeletion) {
             val folder = File(root, downloadKey(id))
             val media = File(folder, "media")
             if (media.exists()) SimpleCache.delete(media, database)
-            folder.deleteRecursively()
+            check(!folder.exists() || folder.deleteRecursively()) { "Could not remove saved audio" }
+            pendingDeletion.remove(id)
         }
     }
     internal fun clearPartial(id: String) {
@@ -217,12 +257,13 @@ class OfflineDownloads internal constructor(context: Context) {
         load()
         val saved = records.value[track.id]?.takeIf { it.status == DownloadStatus.COMPLETE && it.plan != null } ?: return@withContext null
         // Check the cache on disk as well as the ledger. Clearing app data/files must never leave phantom downloads.
-        retainCache(track.id)
+        if (!retainCache(track.id, saved)) return@withContext null
         val missing = try { cache(track.id).keys.isEmpty() } finally { releaseOwner(track.id) }
         if (missing) {
-            update(track.id) { it.copy(status = DownloadStatus.FAILED, error = "Saved audio is missing. Download again.") }
+            update(track.id) { if (it != saved) it else it.copy(status = DownloadStatus.FAILED, error = "Saved audio is missing. Download again.") }
             return@withContext null
         }
+        if (records.value[track.id] != saved) return@withContext null
         asOfflineTrack(track, saved)
     }
     internal suspend fun localQueue(tracks: List<MusicTrack>): List<MusicTrack> = withContext(Dispatchers.IO) {
@@ -247,7 +288,7 @@ class OfflineDownloads internal constructor(context: Context) {
                 override fun addTransferListener(listener: TransferListener) { listeners += listener; delegate?.addTransferListener(listener) }
                 override fun open(dataSpec: DataSpec): Long {
                     check(delegate == null) { "Offline data source is already open" }
-                    retainCache(item.mediaId)
+                    if (!retainCache(item.mediaId, record)) throw IOException("This download is no longer on the device")
                     try {
                         val source = dataSource(item.mediaId, plan.progressive).createDataSource()
                         delegate = source

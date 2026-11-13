@@ -30,7 +30,7 @@ import com.example.data.local.TrackEntity
 import com.example.data.model.MusicTrack
 import com.example.downloads.DownloadStatus
 import com.example.downloads.OfflineDownloads
-import com.example.downloads.savedDownloadRecords
+import com.example.downloads.observeSavedRecords
 import com.example.performance.AppDispatchers
 import com.example.ui.theme.LocalAppColors
 import kotlinx.coroutines.CancellationException
@@ -60,8 +60,7 @@ fun LibraryDownloadsScreen(
     listState: LazyListState = rememberLazyListState(),
     likedIds: Set<String> = emptySet()
 ) {
-    val records by store.records.collectAsStateWithLifecycle()
-    val saved = remember(records) { savedDownloadRecords(records) }
+    val saved by remember(store) { store.observeSavedRecords() }.collectAsStateWithLifecycle(emptyList())
     var loading by remember(store) { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -72,7 +71,10 @@ fun LibraryDownloadsScreen(
         finally { loading = false }
     }
     val collection by produceState<PlaylistWithTracks?>(null, saved, likedIds) {
-        val offline = try { store.localQueue(saved.map { it.track.copy(isLiked = it.track.id in likedIds) }) }
+        val offline = try {
+            val tracks = withContext(AppDispatchers.CpuBounded) { saved.map { it.track.copy(isLiked = it.track.id in likedIds) } }
+            store.localQueue(tracks)
+        }
         catch (cancelled: CancellationException) { throw cancelled }
         catch (_: Exception) { error = "Saved downloads could not be loaded."; emptyList() }
         value = withContext(AppDispatchers.CpuBounded) {
@@ -102,7 +104,7 @@ fun LibraryDownloadsScreen(
         } else {
             PlaylistDetailScreen(ready, currentPlayingTrackId = currentPlayingTrackId,
                 onBackClick = onBackClick, onPlayTrack = ::playSaved,
-                onToggleFavorite = { track -> onToggleFavorite((records[track.id]?.track ?: track).copy(isLiked = track.isLiked)) },
+                onToggleFavorite = { track -> onToggleFavorite((store.records.value[track.id]?.track ?: track).copy(isLiked = track.isLiked)) },
                 onDeletePlaylist = {}, onRemoveTrack = {}, readOnly = true, listState = listState,
                 showDownloadAction = false, artworkIcon = Icons.Default.Download,
                 collectionLabel = "OFFLINE COLLECTION", emptyTitle = "No downloads yet",

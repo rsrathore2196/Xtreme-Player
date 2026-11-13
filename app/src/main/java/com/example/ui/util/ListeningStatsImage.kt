@@ -236,6 +236,7 @@ internal object ListeningStatsImage {
 
     internal fun wrappedFeatureName(value: String): StaticLayout = wrappedText(value, 22f, Color.WHITE, true)
 
+    @android.annotation.SuppressLint("WrongConstant") // Layout's API 23 constant is identical to LineBreaker's API 29 constant (1).
     private fun wrappedText(value: String, size: Float, color: Int, heavy: Boolean = false): StaticLayout {
         val paint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             textSize = size; typeface = if (heavy) bold else regular; this.color = color

@@ -17,7 +17,10 @@ import kotlin.coroutines.CoroutineContext
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 object AppDispatchers {
     val Main: CoroutineDispatcher = Dispatchers.Main.immediate
-    val CpuBounded: CoroutineDispatcher = BackgroundDispatcher(Dispatchers.Default.limitedParallelism(2), preemptible = true)
+    val CpuBounded: CoroutineDispatcher = BackgroundDispatcher(
+        Dispatchers.Default.limitedParallelism(backgroundCpuParallelism(Runtime.getRuntime().availableProcessors())),
+        preemptible = true
+    )
     val Io: CoroutineDispatcher = BackgroundDispatcher(Dispatchers.IO)
     val Database: CoroutineDispatcher = BackgroundDispatcher(Dispatchers.IO.limitedParallelism(4))
     val HomeBookkeeping: CoroutineDispatcher = BackgroundDispatcher(Dispatchers.IO.limitedParallelism(1))

@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import com.example.downloads.observeRecord
+
 import com.example.performance.AppDispatchers
 
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -2672,7 +2674,9 @@ private fun PlayerOptionsMenu(
 
     val downloadScope = rememberCoroutineScope()
     val downloads = remember(context) { com.example.downloads.OfflineDownloads.get(context) }
-    val downloaded by downloads.records.collectAsStateWithLifecycle()
+    val observedDownload by remember(downloads, track.id) { downloads.observeRecord(track.id) }
+        .collectAsStateWithLifecycle(downloads.records.value[track.id])
+    val downloadRecord = observedDownload
     LaunchedEffect(expanded) { if (expanded) runCatching { downloads.load() } }
 
     PlayerPopupTheme(appColors) {
@@ -2786,7 +2790,6 @@ private fun PlayerOptionsMenu(
                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
             )
 
-            val downloadRecord = downloaded[track.id]
             val downloadStatus = downloadRecord?.status
             DropdownMenuItem(
                 text = {
@@ -2831,7 +2834,7 @@ private fun PlayerOptionsMenu(
                     AppHaptics.performTap(context)
                     downloadScope.launch {
                         try {
-                            when (downloaded[track.id]?.status) {
+                            when (downloadRecord?.status) {
                                 com.example.downloads.DownloadStatus.COMPLETE -> downloads.remove(track.id)
                                 com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> downloads.pause(track.id)
                                 com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> downloads.resume(track.id)

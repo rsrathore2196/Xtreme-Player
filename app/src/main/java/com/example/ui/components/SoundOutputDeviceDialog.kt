@@ -139,11 +139,15 @@ fun SoundOutputDeviceDialog(
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(ctx: Context?, intent: Intent?) {
                 try {
-                    currentVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
+                    val stream = intent?.getIntExtra("android.media.EXTRA_VOLUME_STREAM_TYPE", -1) ?: -1
+                    if (stream != -1 && stream != AudioManager.STREAM_MUSIC) return
+                    val volume = intent?.getIntExtra("android.media.EXTRA_VOLUME_STREAM_VALUE", -1) ?: -1
+                    currentVolume = if (volume >= 0) volume.coerceIn(0, maxVolume)
+                        else audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
                 } catch (_: Exception) {}
             }
         }
-        context.registerReceiver(receiver, filter)
+        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         onDispose {
             try {
                 context.unregisterReceiver(receiver)

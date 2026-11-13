@@ -1,6 +1,8 @@
 package com.example.ui.viewmodel
 
 import com.example.performance.AppDispatchers
+import com.example.downloads.playableSavedTracks
+import kotlinx.coroutines.isActive
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -144,6 +146,8 @@ class PlayerViewModel(
     private val playbackManager: PlaybackManager,
     private val application: android.app.Application = com.example.XtremeMusicApp.getInstance()
 ) : ViewModel() {
+    private val playbackLaunches = PlaybackLaunchOwner()
+
 
     private val derivedStateDispatcher = AppDispatchers.CpuBounded
     private val derivedStateScope = viewModelScope + derivedStateDispatcher
@@ -281,9 +285,13 @@ class PlayerViewModel(
         repository.getFavoriteTracks()
     }
     val favoriteTrackCount: StateFlow<Int> = retainedLibraryData(repository.retainedFavoriteTracks.size) { repository.observeFavoriteCount() }
-    fun playLikedSongs() = viewModelScope.launch {
-        val songs = withContext(AppDispatchers.Io) { repository.getFavoriteTracks().first() }
-        songs.firstOrNull()?.let { playTrack(it, songs) }
+    fun playLikedSongs() {
+        activePlaybackLaunchJob?.cancel()
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main.immediate) {
+            val songs = withContext(AppDispatchers.Io) { repository.getFavoriteTracks().first() }
+            ensureActive()
+            songs.firstOrNull()?.let { playbackManager.playTrack(it, songs) }
+        }
     }
 
     val recentlyPlayed: StateFlow<List<MusicTrack>> = retainedLibraryData(repository.retainedRecentlyPlayed) {
@@ -831,7 +839,21 @@ class PlayerViewModel(
         playbackManager.addToQueue(track)
     }
 
-    private var activePlaybackLaunchJob: Job? = null
+    private var activePlaybackLaunchJob: Job?
+        get() = playbackLaunches.current
+        set(value) { playbackLaunches.current = value }
+
+    suspend fun playDownloads(store: com.example.downloads.OfflineDownloads): Boolean = withContext(Dispatchers.Main.immediate) {
+        val request = playbackLaunches.prepare(viewModelScope, load = { store.playableSavedTracks() }) { songs ->
+            val first = songs.firstOrNull()
+            if (first == null) false else {
+                playbackManager.playTrack(first, songs, isExplicitPlaylist = true)
+                true
+            }
+        }
+        try { request.await() }
+        finally { if (!kotlinx.coroutines.currentCoroutineContext().isActive) request.cancel() }
+    }
     private var lastMediaSearchRequestId: String? = null
 
     /** Explicit voice requests share cancellation and source policy with ordinary playback. */

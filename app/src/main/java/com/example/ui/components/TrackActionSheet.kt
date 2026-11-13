@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import com.example.downloads.observeStatus
+
 import android.content.Intent
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -84,7 +86,8 @@ fun TrackActionSheet(
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
     val downloads = remember(context) { com.example.downloads.OfflineDownloads.get(context) }
-    val saved by downloads.records.collectAsStateWithLifecycle()
+    val savedStatus by remember(downloads, track.id) { downloads.observeStatus(track.id) }
+        .collectAsStateWithLifecycle(downloads.records.value[track.id]?.status)
     LaunchedEffect(downloads) { runCatching { downloads.load() } }
 
     ModalBottomSheet(
@@ -186,8 +189,8 @@ fun TrackActionSheet(
 
             // Action List - Uniform Liquid Glass buttons adapting theme color, with descriptions removed
             ActionSheetItem(
-                icon = if (saved[track.id]?.status == com.example.downloads.DownloadStatus.COMPLETE) Icons.Default.DownloadDone else Icons.Default.Download,
-                title = when (saved[track.id]?.status) {
+                icon = if (savedStatus == com.example.downloads.DownloadStatus.COMPLETE) Icons.Default.DownloadDone else Icons.Default.Download,
+                title = when (savedStatus) {
                     com.example.downloads.DownloadStatus.COMPLETE -> "Remove download"
                     com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> "Pause download"
                     com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> "Resume download"
@@ -196,7 +199,7 @@ fun TrackActionSheet(
                 tint = appColors.primaryAccent,
                 onClick = { scope.launch {
                     try {
-                        when (saved[track.id]?.status) {
+                        when (savedStatus) {
                             com.example.downloads.DownloadStatus.COMPLETE -> downloads.remove(track.id)
                             com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> downloads.pause(track.id)
                             com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> downloads.resume(track.id)

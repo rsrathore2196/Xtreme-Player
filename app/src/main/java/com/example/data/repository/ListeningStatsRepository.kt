@@ -50,8 +50,8 @@ class ListeningStatsRepository internal constructor(context: Context, suppliedDa
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_DATE_CHANGED); addAction(Intent.ACTION_TIME_CHANGED); addAction(Intent.ACTION_TIMEZONE_CHANGED)
         }
-        if (android.os.Build.VERSION.SDK_INT >= 33) app.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        else app.registerReceiver(receiver, filter) // Protected system date/time broadcasts only; no app-defined permission.
+        androidx.core.content.ContextCompat.registerReceiver(app, receiver, filter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         trySend(dateProvider())
         awaitClose { app.unregisterReceiver(receiver) }
     }.distinctUntilChanged()

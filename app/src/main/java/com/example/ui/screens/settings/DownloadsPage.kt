@@ -21,7 +21,8 @@ import kotlinx.coroutines.launch
 
 @Composable
 fun DownloadsPage(modifier: Modifier = Modifier, store: OfflineDownloads = OfflineDownloads.get(LocalContext.current)) {
-    val records by store.records.collectAsStateWithLifecycle()
+    val summary by remember(store) { store.observeSummary() }
+        .collectAsStateWithLifecycle(DownloadSummary(0, 0, false, false))
     val preferences by store.preferences.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val colors = LocalAppColors.current
@@ -56,7 +57,7 @@ fun DownloadsPage(modifier: Modifier = Modifier, store: OfflineDownloads = Offli
                             Text("Wi-Fi only", color = colors.textPrimary, fontWeight = FontWeight.SemiBold)
                             Text("Wait for an unmetered connection", color = colors.textSecondary, style = MaterialTheme.typography.bodySmall)
                         }
-                        Switch(preferences.wifiOnly, { value -> action { store.setPreferences(preferences.copy(wifiOnly = value)) } },
+                        Switch(preferences.wifiOnly, { value -> action { store.updatePreferences { it.copy(wifiOnly = value) } } },
                             modifier = Modifier.testTag("downloads_wifi_only"))
                     }
                     HorizontalDivider(Modifier.padding(vertical = 10.dp), color = colors.cardBorder)
@@ -71,21 +72,21 @@ fun DownloadsPage(modifier: Modifier = Modifier, store: OfflineDownloads = Offli
                         }
                         DropdownMenu(qualityMenu, { qualityMenu = false }) {
                             DownloadQuality.entries.forEach { quality -> DropdownMenuItem(text = { Text(quality.label) }, onClick = {
-                                qualityMenu = false; action { store.setPreferences(preferences.copy(quality = quality)) }
+                                qualityMenu = false; action { store.updatePreferences { it.copy(quality = quality) } }
                             }) }
                         }
                     }
                     HorizontalDivider(Modifier.padding(vertical = 16.dp), color = colors.cardBorder)
                     DownloadStorageSummary(
-                        downloadedBytes = records.values.sumOf { it.bytes.coerceAtLeast(0) },
-                        savedTracks = records.values.count { it.status == DownloadStatus.COMPLETE },
-                        hasPartialAudio = records.values.any { it.status != DownloadStatus.COMPLETE && it.bytes > 0 }
+                        downloadedBytes = summary.bytes,
+                        savedTracks = summary.saved,
+                        hasPartialAudio = summary.partial
                     )
                 }
             }
         }
         error?.let { message -> item { Text(message, color = colors.primaryAccent) } }
-        if (records.isNotEmpty()) item {
+        if (summary.hasRecords) item {
             TextButton(onClick = { clear = true }, modifier = Modifier.testTag("clear_downloads")) { Text("Remove all downloads") }
         }
     }

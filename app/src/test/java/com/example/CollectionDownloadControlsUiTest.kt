@@ -41,23 +41,27 @@ class CollectionDownloadControlsUiTest {
             CollectionDownloadButton(rememberCollectionDownloadAction(tracks, "Mix", "playlist:mix", store = store))
         } } }
         val ring = compose.onNodeWithTag("collection_download_progress", useUnmergedTree = true)
-        fun assertProgress(fraction: Float) {
+        fun assertProgress(fraction: Float, description: String) {
+            compose.waitUntil(30_000) {
+                compose.onAllNodesWithContentDescription(description).fetchSemanticsNodes().isNotEmpty() &&
+                    kotlin.math.abs(ring.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current - fraction) < .001f
+            }
             assertEquals(fraction, ring.fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current, .001f)
         }
-        assertProgress(.75f)
+        assertProgress(.75f, "Downloading · 75% · 1 of 2 tracks saved")
         compose.onNodeWithTag("download_collection").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Downloading · 75% · 1 of 2 tracks saved").assertExists()
         runBlocking { store.update(tracks[1].id, persist = false) { it.copy(bytes = 800) } }
         compose.waitForIdle()
-        assertProgress(.9f)
+        assertProgress(.9f, "Downloading · 90% · 1 of 2 tracks saved")
         runBlocking { store.update(tracks[1].id) { it.copy(status = DownloadStatus.PAUSED) } }
         compose.waitForIdle()
-        assertProgress(.9f)
+        assertProgress(.9f, "Resume download · 90% · 1 of 2 tracks saved")
         compose.onNodeWithTag("download_collection").assertIsEnabled()
         compose.onNodeWithContentDescription("Resume download · 90% · 1 of 2 tracks saved").assertExists()
         runBlocking { store.update(tracks[1].id) { it.copy(status = DownloadStatus.COMPLETE, bytes = 1000) } }
         compose.waitForIdle()
-        assertProgress(1f)
+        assertProgress(1f, "Downloaded · 2 tracks saved")
         compose.onNodeWithTag("download_collection").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Downloaded · 2 tracks saved").assertExists()
     }
@@ -79,6 +83,7 @@ class CollectionDownloadControlsUiTest {
         gate.complete(tracks)
         compose.waitUntil(5_000) { store.collections.value["playlist:mix"] == tracks.map { it.id } }
         compose.waitForIdle()
+        compose.waitUntil(30_000) { action?.progress?.complete == true }
         compose.runOnIdle { assertTrue(action!!.progress.complete); headerVisible = true }
         compose.onNodeWithTag("download_collection").assertIsNotEnabled()
         compose.onNodeWithContentDescription("Downloaded · 2 tracks saved").assertExists()

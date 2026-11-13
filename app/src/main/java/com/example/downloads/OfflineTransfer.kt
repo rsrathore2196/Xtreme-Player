@@ -15,7 +15,7 @@ import java.io.IOException
 internal object OfflineTransfer {
     suspend fun save(store: OfflineDownloads, id: String, plan: OfflinePlan, upstream: DataSource.Factory,
         progress: (Long, Long) -> Unit = { _, _ -> }): Long {
-        store.retainCache(id)
+        if (!store.retainCache(id)) throw IOException("This download has been removed")
         try {
         val cache = store.dataSource(id, plan.progressive, upstream)
         val item = MediaItem.Builder().setUri(plan.uri).setMimeType(plan.mime).build()

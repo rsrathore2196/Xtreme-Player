@@ -14,6 +14,7 @@ import androidx.annotation.FloatRange
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.TileMode
 import com.example.ui.components.backdrop.BackdropEffectScope
+import com.example.ui.components.backdrop.BackdropEffectScopeImpl
 import com.example.ui.components.backdrop.isRenderEffectSupported
 
 fun BackdropEffectScope.blur(
@@ -28,11 +29,8 @@ fun BackdropEffectScope.blur(
     // steps during the last frames of a dock/mini-player spring.
     padding = maxOf(padding, radius * 3f)
 
-    renderEffect =
-        BlurEffect(
-            renderEffect,
-            radius,
-            radius,
-            edgeTreatment
-        )
+    // Fractional capture origins change throughout a spring, while this blur
+    // graph stays identical. Reuse it; lens uniforms still update every frame.
+    renderEffect = (this as? BackdropEffectScopeImpl)?.blurEffect(renderEffect, radius, edgeTreatment)
+        ?: BlurEffect(renderEffect, radius, radius, edgeTreatment)
 }

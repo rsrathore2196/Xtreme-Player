@@ -119,6 +119,12 @@ fun PlaylistDetailScreen(
 ) {
     val playlist = playlistWithTracks.playlist
     val tracks = playlistWithTracks.musicTracks
+    val playbackScope = androidx.compose.runtime.rememberCoroutineScope()
+    val latestPlay by androidx.compose.runtime.rememberUpdatedState(onPlayTrack)
+    val playback = remember(playbackScope) {
+        com.example.ui.util.CollectionPlaybackPreparation(playbackScope) { track, queue -> latestPlay(track, queue) }
+    }
+    androidx.compose.runtime.DisposableEffect(tracks) { onDispose { playback.cancel() } }
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val appColors = LocalAppColors.current
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -367,7 +373,7 @@ fun PlaylistDetailScreen(
         }
     }
 
-        if (pinPlaybackActions) PlaylistPlaybackActions(tracks, onPlayTrack)
+        if (pinPlaybackActions) PlaylistPlaybackActions(tracks, playback::play)
         LazyColumn(
             state = listState,
             modifier = Modifier
@@ -393,7 +399,7 @@ fun PlaylistDetailScreen(
                         if (!pinPlaybackActions) {
                             Spacer(Modifier.height(8.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                                Button(onClick = { tracks.firstOrNull()?.let { onPlayTrack(it, tracks) } },
+                                Button(onClick = { tracks.firstOrNull()?.let { playback.play(it, tracks) } },
                                     enabled = tracks.isNotEmpty(), shape = CircleShape,
                                     colors = ButtonDefaults.buttonColors(containerColor = appColors.primaryAccent,
                                         contentColor = appColors.onPrimaryAccent), modifier = Modifier.height(46.dp)) {
@@ -402,7 +408,7 @@ fun PlaylistDetailScreen(
                                     Text("PLAY ALL", fontWeight = FontWeight.Bold)
                                 }
                                 OutlinedButton(onClick = { if (tracks.isNotEmpty()) {
-                                    val shuffled = tracks.shuffled(); onPlayTrack(shuffled.first(), shuffled)
+                                    playback.shuffle(tracks)
                                 } }, enabled = tracks.isNotEmpty(), shape = CircleShape,
                                     border = BorderStroke(1.dp, appColors.cardBorder), modifier = Modifier.height(46.dp)) {
                                     Icon(Icons.Default.Shuffle, null, tint = appColors.textPrimary, modifier = Modifier.size(20.dp))
@@ -523,7 +529,7 @@ fun PlaylistDetailScreen(
                             Button(
                                 onClick = {
                                     if (tracks.isNotEmpty()) {
-                                        onPlayTrack(tracks.first(), tracks)
+                                        playback.play(tracks.first(), tracks)
                                     }
                                 },
                                 enabled = tracks.isNotEmpty(),
@@ -549,8 +555,7 @@ fun PlaylistDetailScreen(
                             OutlinedButton(
                                 onClick = {
                                     if (tracks.isNotEmpty()) {
-                                        val shuffled = tracks.shuffled()
-                                        onPlayTrack(shuffled.first(), shuffled)
+                                        playback.shuffle(tracks)
                                     }
                                 },
                                 enabled = tracks.isNotEmpty(),
@@ -599,7 +604,7 @@ fun PlaylistDetailScreen(
                     TrackListItem(
                         track = track,
                         isPlaying = track.id == currentPlayingId,
-                        onClick = { onPlayTrack(track, tracks) },
+                        onClick = { playback.play(track, tracks) },
                         onToggleFavorite = { onToggleFavorite(track) },
                         onRemoveClick = if (readOnly) null else ({ trackPendingRemoval = track }),
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)

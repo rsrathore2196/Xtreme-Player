@@ -37,7 +37,12 @@ internal data class ImportResult(val imported: Int, val unmatched: Int, val skip
 internal data class MetadataTrack(val id: String, val title: String, val artist: String, val album: String, val duration: Long, val image: String)
 
 /** Connections supply metadata; every imported song is resolved through the app's ordinary music catalog. */
-internal class ConnectedLibraries(private val context: Context, private val database: MusicDatabase? = null) {
+internal class ConnectedLibraries(
+    private val context: Context,
+    private val database: MusicDatabase? = null,
+    private val httpClient: OkHttpClient = http,
+    private val refreshSession: suspend (SpotifyConnection) -> SpotifyConnection = { refreshSpotifySession(context.applicationContext, it) }
+) {
     private val connections = ConnectionStore.get(context)
     suspend fun collections(provider: String): List<ConnectedCollection> = withContext(Dispatchers.IO) {
         connections.load()
@@ -45,17 +50,20 @@ internal class ConnectedLibraries(private val context: Context, private val data
             check(connections.state.value.activeYouTube != null) { "Connect YouTube Music first" }
             val items = mutableListOf(ConnectedCollection(provider, "VLLM", "Liked Songs"))
             for (browse in listOf("FEmusic_liked_playlists", "FEmusic_liked_albums")) {
-                youtubePages(browse) { root -> walk(root) { node ->
-                    listOf("musicTwoRowItemRenderer", "musicResponsiveListItemRenderer").forEach { key ->
-                        val value = node.optJSONObject(key) ?: return@forEach
-                        when (val destination = YouTubeExploreParser.collection(value, "US", "en")) {
-                            is CatalogDestination.Playlist -> items += ConnectedCollection(provider,
-                                destination.playlist.id.let { if (it.startsWith("VL")) it else "VL$it" }, destination.playlist.title, destination.playlist.image)
-                            is CatalogDestination.Album -> items += ConnectedCollection(provider, destination.album.id, destination.album.title, destination.album.image)
-                            else -> Unit
+                youtubePages(browse) { root ->
+                    walk(root) { node ->
+                        listOf("musicTwoRowItemRenderer", "musicResponsiveListItemRenderer").forEach { key ->
+                            val value = node.optJSONObject(key) ?: return@forEach
+                            when (val destination = YouTubeExploreParser.collection(value, "US", "en")) {
+                                is CatalogDestination.Playlist -> items += ConnectedCollection(provider,
+                                    destination.playlist.id.let { if (it.startsWith("VL")) it else "VL$it" }, destination.playlist.title, destination.playlist.image)
+                                is CatalogDestination.Album -> items += ConnectedCollection(provider, destination.album.id, destination.album.title, destination.album.image)
+                                else -> Unit
+                            }
                         }
                     }
-                } }
+                    youtubeContinuation(root)
+                }
             }
             items.distinctBy { it.id }
         } else {
@@ -87,8 +95,10 @@ internal class ConnectedLibraries(private val context: Context, private val data
         var missed = 0
         if (collection.provider == "youtube") {
             youtubePages(collection.id) { root ->
-                walk(root) { node -> YouTubeMusicApiService.parseAnyRenderer(node)?.let { songs += it } }
+                val page = connectedYouTubePage(root)
+                songs += page.tracks
                 onProgress(songs.size, songs.size)
+                page.continuation
             }
         } else {
             val metadata = spotifyTracks(collection.id)
@@ -136,15 +146,14 @@ internal class ConnectedLibraries(private val context: Context, private val data
             rows.size
         }
     }
-    private suspend fun youtubePages(browse: String, onPage: (JSONObject) -> Unit) {
+    private suspend fun youtubePages(browse: String, onPage: (JSONObject) -> String?) {
         var continuation: String? = null
         val seen = hashSetOf<String>()
         do {
             currentCoroutineContext().ensureActive()
             val root = JSONObject(YouTubeAudioStreamService.discoveryResponse("browse", browse, "US", continuation = continuation, includeAccount = true))
             if (root.has("error")) throw IOException("YouTube Music session expired. Reconnect and try again.")
-            onPage(root)
-            continuation = youtubeContinuation(root)
+            continuation = onPage(root)
             if (continuation != null && !seen.add(continuation)) throw IOException("Music library returned a repeated page. Please retry.")
             check(seen.size < 2000) { "Music library is too large to load" }
         } while (continuation != null)
@@ -170,26 +179,39 @@ internal class ConnectedLibraries(private val context: Context, private val data
         return out
     }
     private suspend fun spotify(operation: String, hash: String, variables: JSONObject): JSONObject {
-        currentCoroutineContext().ensureActive()
-        val session = spotifyTokens()
         val body = JSONObject().put("operationName", operation).put("variables", variables)
             .put("extensions", JSONObject().put("persistedQuery", JSONObject().put("version", 1).put("sha256Hash", hash)))
-        val request = Request.Builder().url("https://api-partner.spotify.com/pathfinder/v2/query")
-            .header("Authorization", "Bearer ${session.bearer}").header("Origin", "https://open.spotify.com")
-            .header("Referer", "https://open.spotify.com/").header("app-platform", "WebPlayer")
-            .apply { if (session.clientToken.isNotBlank()) header("Client-Token", session.clientToken) }
-            .post(body.toString().toRequestBody("application/json".toMediaType())).build()
-        return http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) throw IOException("Spotify connection needs attention. Reconnect and try again.")
-            val root = JSONObject(response.body?.string() ?: throw IOException("Empty Spotify response"))
-            if (root.optJSONArray("errors")?.length()?.let { it > 0 } == true) throw IOException("Spotify library is unavailable. Reconnect and try again.")
-            root
+            .toString().toRequestBody("application/json".toMediaType())
+        var rejectedBearer: String? = null
+        repeat(2) { attempt ->
+            currentCoroutineContext().ensureActive()
+            val session = spotifyTokens(rejectedBearer)
+            val request = Request.Builder().url("https://api-partner.spotify.com/pathfinder/v2/query")
+                .header("Authorization", "Bearer ${session.bearer}").header("Origin", "https://open.spotify.com")
+                .header("Referer", "https://open.spotify.com/").header("app-platform", "WebPlayer")
+                .apply { if (session.clientToken.isNotBlank()) header("Client-Token", session.clientToken) }
+                .post(body).build()
+            val result = httpClient.newCall(request).execute().use { response ->
+                if (response.code == 401 && attempt == 0) {
+                    rejectedBearer = session.bearer
+                    return@use null
+                }
+                if (!response.isSuccessful) throw IOException("Spotify connection needs attention. Reconnect and try again.")
+                val root = JSONObject(response.body?.string() ?: throw IOException("Empty Spotify response"))
+                if (root.optJSONArray("errors")?.length()?.let { it > 0 } == true)
+                    throw IOException("Spotify library is unavailable. Reconnect and try again.")
+                root
+            }
+            if (result != null) return result
         }
+        throw IOException("Spotify connection needs attention. Reconnect and try again.")
     }
-    private suspend fun spotifyTokens(): SpotifyConnection = tokenLock.withLock {
+    private suspend fun spotifyTokens(rejectedBearer: String? = null): SpotifyConnection = tokenLock.withLock {
         val saved = connections.state.value.spotify ?: throw IOException("Connect Spotify first")
-        if (saved.bearer.isNotBlank() && saved.expiresAt > System.currentTimeMillis() + 60_000L) return@withLock saved
-        val refreshed = refreshSpotifySession(context, saved)
+        if ((rejectedBearer == null || saved.bearer != rejectedBearer) && saved.bearer.isNotBlank() &&
+            saved.expiresAt > System.currentTimeMillis() + 60_000L) return@withLock saved
+        val refreshed = refreshSession(saved)
+        currentCoroutineContext().ensureActive()
         connections.change { if (it.spotify?.cookie == saved.cookie) it.copy(spotify = refreshed) else it }
         connections.state.value.spotify?.takeIf { it.cookie == refreshed.cookie } ?: throw IOException("Spotify account changed")
     }

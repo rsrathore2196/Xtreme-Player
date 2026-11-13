@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.LaunchedEffect
 import com.example.downloads.OfflineDownloads
+import com.example.downloads.observeSavedCount
 import com.example.downloads.DownloadStatus
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -149,7 +150,8 @@ fun LibraryScreen(
     modifier: Modifier = Modifier,
     listState: LazyListState = rememberLazyListState(),
     onPlayDownloadedTrack: (MusicTrack, List<MusicTrack>) -> Unit = onTrackClick,
-    downloadStore: OfflineDownloads = OfflineDownloads.get(LocalContext.current)
+    downloadStore: OfflineDownloads = OfflineDownloads.get(LocalContext.current),
+    onPrepareDownloads: (suspend (OfflineDownloads) -> Boolean)? = null
 ) {
     var selectedTab by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf("Playlists", "Listening Stats")
@@ -187,9 +189,8 @@ fun LibraryScreen(
             downloadCollectionKey = "library:liked", downloadStore = downloadStore) }
         return
     }
-    val downloadRecords by downloadStore.records.collectAsStateWithLifecycle()
     val playback = LocalCollectionPlayback.current
-    val downloadedCount = remember(downloadRecords) { downloadRecords.values.count { it.status == DownloadStatus.COMPLETE && it.plan != null } }
+    val downloadedCount by remember(downloadStore) { downloadStore.observeSavedCount() }.collectAsStateWithLifecycle(0)
     LaunchedEffect(downloadStore) {
         try { downloadStore.load() }
         catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
@@ -415,10 +416,12 @@ fun LibraryScreen(
                                 playScope.launch {
                                     preparingDownloads = true
                                     try {
-                                        val queue = downloadStore.playableSavedTracks()
-                                        val first = queue.firstOrNull()
-                                        if (first != null) onPlayDownloadedTrack(first, queue)
-                                        else android.widget.Toast.makeText(context, "No saved audio is available. Download the tracks again.", android.widget.Toast.LENGTH_SHORT).show()
+                                        val played = if (onPrepareDownloads != null) onPrepareDownloads(downloadStore) else {
+                                            val queue = downloadStore.playableSavedTracks()
+                                            val first = queue.firstOrNull()
+                                            if (first == null) false else { onPlayDownloadedTrack(first, queue); true }
+                                        }
+                                        if (!played) android.widget.Toast.makeText(context, "No saved audio is available. Download the tracks again.", android.widget.Toast.LENGTH_SHORT).show()
                                     } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
                                     catch (_: Exception) { android.widget.Toast.makeText(context, "Saved audio could not be played. Please try again.", android.widget.Toast.LENGTH_SHORT).show() }
                                     finally { preparingDownloads = false }

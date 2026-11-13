@@ -56,17 +56,25 @@ class OfflineDownloadWorker(context: Context, params: WorkerParameters) : Corout
                 if (record.status !in setOf(DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING)) return@withPermit Result.success()
                 try {
                     setForeground(foreground(record.track.title, 0, true))
-                    store.update(id) { it.copy(status = DownloadStatus.DOWNLOADING, error = null) }
-                    try { transfer(store, record) }
-                    catch (first: IOException) {
-                        val renew = generateSequence<Throwable>(first) { it.cause }.take(8).any {
-                            it is com.example.service.YouTubeStreamRefreshRequiredException ||
-                                it is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException && it.responseCode in setOf(401, 403, 410)
-                        }
-                        if (!renew) throw first
-                        currentCoroutineContext().ensureActive()
-                        transfer(store, store.records.value[id] ?: throw first, forceRefresh = true)
+                    var claimed: DownloadRecord? = null
+                    store.update(id) { current ->
+                        if (current !== record || isStopped) current else current.copy(
+                            status = DownloadStatus.DOWNLOADING, error = null).also { claimed = it }
                     }
+                    val current = claimed ?: return@withPermit Result.success()
+                    if (!store.retainCache(id, current)) return@withPermit Result.success()
+                    try {
+                        try { transfer(store, current) }
+                        catch (first: IOException) {
+                            val renew = generateSequence<Throwable>(first) { it.cause }.take(8).any {
+                                it is com.example.service.YouTubeStreamRefreshRequiredException ||
+                                    it is androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException && it.responseCode in setOf(401, 403, 410)
+                            }
+                            if (!renew) throw first
+                            currentCoroutineContext().ensureActive()
+                            transfer(store, store.records.value[id] ?: throw first, forceRefresh = true)
+                        }
+                    } finally { withContext(NonCancellable + Dispatchers.IO) { store.releaseOwner(id) } }
                     Result.success()
                 } catch (cancelled: CancellationException) {
                     withContext(NonCancellable + Dispatchers.IO) {

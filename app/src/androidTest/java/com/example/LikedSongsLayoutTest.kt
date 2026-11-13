@@ -54,6 +54,7 @@ class LikedSongsLayoutTest {
             played.set(null)
         }
         compose.onNodeWithText("SHUFFLE").performClick()
+        compose.waitUntil(30_000) { played.get() != null }
         compose.runOnIdle {
             val (selected, queue) = checkNotNull(played.get())
             assertEquals(favorites.size, queue.size)

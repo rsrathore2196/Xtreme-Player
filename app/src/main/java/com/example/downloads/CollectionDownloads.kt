@@ -52,20 +52,34 @@ internal data class CollectionDownloadProgress(
 internal fun collectionDownloadProgress(
     tracks: List<MusicTrack>, records: Map<String, DownloadRecord>,
     savedMembers: List<String>? = null, collectionComplete: Boolean = true
-): CollectionDownloadProgress {
-    val local = tracks.filter { it.audioUrl.substringBefore(':').lowercase() in setOf("file", "content", OfflineDownloads.SCHEME) }
-        .mapTo(mutableSetOf()) { it.id }
-    val ids = (if (collectionComplete) tracks.map { it.id } else savedMembers.orEmpty() + tracks.map { it.id }).distinct()
-    val allKnown = collectionComplete || savedMembers != null
-    val completed = ids.count { it in local || records[it]?.status == DownloadStatus.COMPLETE }
-    val active = ids.any { records[it]?.status in setOf(DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING) }
-    val portion = ids.sumOf { id ->
-        if (id in local || records[id]?.status == DownloadStatus.COMPLETE) 1.0 else records[id]?.fraction?.toDouble() ?: 0.0
+): CollectionDownloadProgress = CollectionDownloadMembership(tracks, savedMembers, collectionComplete).progress(records)
+
+/** Membership and URI classification stay unchanged during byte progress updates. */
+internal class CollectionDownloadMembership(tracks: List<MusicTrack>, savedMembers: List<String>?, complete: Boolean) {
+    private val local = tracks.asSequence().filter {
+        val scheme = it.audioUrl.substringBefore(':').lowercase()
+        scheme == "file" || scheme == "content" || scheme == OfflineDownloads.SCHEME
+    }.map { it.id }.toSet()
+    private val ids = (if (complete) tracks.map { it.id } else savedMembers.orEmpty() + tracks.map { it.id }).distinct()
+    private val allKnown = complete || savedMembers != null
+
+    fun progress(records: Map<String, DownloadRecord>): CollectionDownloadProgress {
+        var completed = 0
+        var active = false
+        var portion = 0.0
+        var unknownSize = false
+        for (id in ids) {
+            val record = records[id]
+            val saved = id in local || record?.status == DownloadStatus.COMPLETE
+            if (saved) completed++
+            portion += if (saved) 1.0 else record?.fraction?.toDouble() ?: 0.0
+            if (record?.status == DownloadStatus.QUEUED || record?.status == DownloadStatus.DOWNLOADING) {
+                active = true
+                if (record.total <= 0) unknownSize = true
+            }
+        }
+        val fraction = if (!allKnown || (active && unknownSize && portion == 0.0)) null
+            else if (ids.isEmpty()) 0f else (portion / ids.size).toFloat().coerceIn(0f, 1f)
+        return CollectionDownloadProgress(fraction, completed, ids.size, active, allKnown && ids.isNotEmpty() && completed == ids.size)
     }
-    val unknownSize = ids.any { records[it]?.let { record ->
-        record.status in setOf(DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING) && record.total <= 0
-    } == true }
-    val fraction = if (!allKnown || (active && unknownSize && portion == 0.0)) null
-        else if (ids.isEmpty()) 0f else (portion / ids.size).toFloat().coerceIn(0f, 1f)
-    return CollectionDownloadProgress(fraction, completed, ids.size, active, allKnown && ids.isNotEmpty() && completed == ids.size)
 }

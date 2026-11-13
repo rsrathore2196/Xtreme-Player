@@ -84,6 +84,7 @@ class MainActivity : ComponentActivity() {
         return super.dispatchTouchEvent(event)
     }
 
+    @android.annotation.SuppressLint("RestrictedApi") // The framework override must delegate to inherited key handling.
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
         com.example.performance.BackgroundWorkCoordinator.interaction()
         return super.dispatchKeyEvent(event)

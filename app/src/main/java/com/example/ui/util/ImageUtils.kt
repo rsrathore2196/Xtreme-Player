@@ -55,35 +55,35 @@ internal fun buildPlaylistCoverRequest(context: android.content.Context, url: St
     dimension: Int, visibility: ArtworkVisibility): ImageRequest {
     val source = providerArtworkUrl(url, maxOf(600, dimension))
     val memoryKey = "playlist-cover:$dimension:$source"
-        return ImageRequest.Builder(context)
-            .data(source)
-            .setParameter(PLAYLIST_COVER_PARAMETER, true, null)
-            .setParameter(ARTWORK_VISIBILITY_PARAMETER, visibility, null)
-            .memoryCacheKey(memoryKey)
-            .placeholderMemoryCacheKey(memoryKey)
-            // Grid/detail decode identities may differ, but share the original file.
-            .diskCacheKey(source)
-            .size(dimension, dimension)
-            .interceptorDispatcher(AppDispatchers.Io)
-            .fetcherDispatcher(AppDispatchers.Io)
-            .decoderDispatcher(AppDispatchers.CpuBounded)
-            .scale(Scale.FILL)
-            .allowHardware(true)
-            .bitmapConfig(if (android.os.Build.VERSION.SDK_INT >= 26) android.graphics.Bitmap.Config.HARDWARE else android.graphics.Bitmap.Config.ARGB_8888)
-            .allowRgb565(false)
-            .crossfade(200)
-            .memoryCachePolicy(CachePolicy.ENABLED)
-            .diskCachePolicy(CachePolicy.ENABLED)
-            .networkCachePolicy(CachePolicy.ENABLED)
-            .listener(onSuccess = { _, result ->
-                // Memory hits also keep this source recent in the persistent LRU
-                // index. This only touches RAM; maintenance owns disk persistence.
-                ((context.applicationContext as? com.example.XtremeMusicApp)?.initializedImageDiskCache
-                    as? com.example.data.cache.ManagedImageDiskCache)?.recordAccess(source)
-                if (com.example.BuildConfig.DEBUG) android.util.Log.d("PlaylistArtwork",
-                    "cover=${Integer.toHexString(url.hashCode())} size=$dimension source=${result.dataSource}")
-            })
-            .build()
+    return ImageRequest.Builder(context)
+        .data(source)
+        .setParameter(PLAYLIST_COVER_PARAMETER, true, null)
+        .setParameter(ARTWORK_VISIBILITY_PARAMETER, visibility, null)
+        .memoryCacheKey(memoryKey)
+        .placeholderMemoryCacheKey(memoryKey)
+        // Grid/detail decode identities may differ, but share the original file.
+        .diskCacheKey(source)
+        .size(dimension, dimension)
+        .interceptorDispatcher(AppDispatchers.Io)
+        .fetcherDispatcher(AppDispatchers.Io)
+        .decoderDispatcher(AppDispatchers.CpuBounded)
+        .scale(Scale.FILL)
+        .allowHardware(true)
+        .bitmapConfig(if (android.os.Build.VERSION.SDK_INT >= 26) android.graphics.Bitmap.Config.HARDWARE else android.graphics.Bitmap.Config.ARGB_8888)
+        .allowRgb565(false)
+        .crossfade(200)
+        .memoryCachePolicy(CachePolicy.ENABLED)
+        .diskCachePolicy(CachePolicy.ENABLED)
+        .networkCachePolicy(CachePolicy.ENABLED)
+        .listener(onSuccess = { _, result ->
+            // Memory hits also keep this source recent in the persistent LRU
+            // index. This only touches RAM; maintenance owns disk persistence.
+            ((context.applicationContext as? com.example.XtremeMusicApp)?.initializedImageDiskCache
+                as? com.example.data.cache.ManagedImageDiskCache)?.recordAccess(source)
+            if (com.example.BuildConfig.DEBUG) android.util.Log.d("PlaylistArtwork",
+                "cover=${Integer.toHexString(url.hashCode())} size=$dimension source=${result.dataSource}")
+        })
+        .build()
 }
 
 object ImageConfig {
