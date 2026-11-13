@@ -19,9 +19,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -66,6 +63,9 @@ import androidx.compose.ui.layout.ContentScale
 import com.example.ui.components.TrackListItem
 import com.example.ui.components.playerArtworkEdgeBlend
 import com.example.ui.components.headerArtworkEdgeBlend
+import com.example.ui.components.CollectionTitleRow
+import com.example.ui.components.rememberCollectionDownloadAction
+import com.example.ui.util.CollectionPageMetadata
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -109,7 +109,10 @@ fun PlaylistDetailScreen(
     downloadCollectionComplete: Boolean = true,
     loadDownloadTracks: (suspend () -> List<MusicTrack>)? = null,
     showDownloadAction: Boolean = true,
+    downloadCollectionKey: String = "playlist:${playlistWithTracks.playlist.playlistId}",
+    downloadStore: com.example.downloads.OfflineDownloads = com.example.downloads.OfflineDownloads.get(androidx.compose.ui.platform.LocalContext.current),
     artworkIcon: ImageVector? = null,
+    artworkBrush: Brush? = null,
     collectionLabel: String = "PLAYLIST",
     emptyTitle: String = "Playlist is empty",
     emptyDescription: String? = null
@@ -119,6 +122,11 @@ fun PlaylistDetailScreen(
     val currentPlayingId = currentPlayingTrackId ?: playerUiState?.currentTrack?.id
     val appColors = LocalAppColors.current
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val title = remember(playlist.title) { CollectionPageMetadata.title(playlist.title, "Untitled playlist") }
+    val description = remember(playlist.description, title) { CollectionPageMetadata.description(playlist.description, title) }
+    val trackSummary = remember(tracks, downloadCollectionComplete) { CollectionPageMetadata.trackSummary(tracks, downloadCollectionComplete) }
+    val download = if (showDownloadAction) rememberCollectionDownloadAction(tracks, title, downloadCollectionKey,
+        downloadCollectionComplete, loadDownloadTracks, downloadStore) else null
 
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeletePlaylistDialog by remember { mutableStateOf(false) }
@@ -373,16 +381,15 @@ fun PlaylistDetailScreen(
                     verticalAlignment = Alignment.CenterVertically) {
                     val artworkModifier = Modifier.size(112.dp).clip(RoundedCornerShape(16.dp))
                         .background(appColors.cardBackgroundElevated).testTag("landscape_playlist_artwork")
-                    if (artworkIcon != null) LibraryCollectionArtwork(artworkIcon, artworkModifier)
+                    if (artworkIcon != null) LibraryCollectionArtwork(artworkIcon, artworkModifier, artworkBrush ?: downloadsArtworkBrush())
                     else AsyncImage(rememberPlaylistCoverRequest(playlist.coverUrl, ImageConfig.PLAYLIST_HEADER_SIZE),
                         contentDescription = null, contentScale = ContentScale.Crop, modifier = artworkModifier)
                     Spacer(Modifier.width(20.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(playlist.title, style = MaterialTheme.typography.headlineMedium.copy(
-                            fontWeight = FontWeight.Bold, color = appColors.textPrimary), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        if (playlist.description.isNotBlank()) Text(playlist.description, color = appColors.textSecondary,
+                        CollectionTitleRow(title, MaterialTheme.typography.headlineMedium, "playlist_profile_name", download)
+                        if (description.isNotBlank()) Text(description, color = appColors.textSecondary,
                             maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("${tracks.size} tracks", color = appColors.primaryAccent, fontSize = 12.sp)
+                        Text(trackSummary, color = appColors.primaryAccent, fontSize = 12.sp)
                         if (!pinPlaybackActions) {
                             Spacer(Modifier.height(8.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -408,7 +415,6 @@ fun PlaylistDetailScreen(
                 }
             } else {
                 item("portrait_playlist_header") {
-                    val topSpacing = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 20.dp
                     Column(Modifier.fillMaxWidth()) {
                         Box(
                             Modifier
@@ -416,12 +422,12 @@ fun PlaylistDetailScreen(
                                 .background(appColors.scaffoldBackground)
                                 .testTag("playlist_profile_header")
                         ) {
-                            val artworkModifier = Modifier.fillMaxWidth().padding(top = topSpacing).aspectRatio(1f)
+                            val artworkModifier = Modifier.fillMaxWidth().aspectRatio(1f)
                                 .testTag("playlist_profile_artwork")
                                 .headerArtworkEdgeBlend(topFade = 0.10f, bottomFade = 0.10f, topMargin = 0.01f, bottomMargin = 0.02f)
-                            if (artworkIcon != null) LibraryCollectionArtwork(artworkIcon, artworkModifier)
+                            if (artworkIcon != null) LibraryCollectionArtwork(artworkIcon, artworkModifier, artworkBrush ?: downloadsArtworkBrush())
                             else AsyncImage(model = rememberPlaylistCoverRequest(playlist.coverUrl, 1200),
-                                contentDescription = playlist.title, contentScale = ContentScale.Fit, modifier = artworkModifier)
+                                contentDescription = title, contentScale = ContentScale.Fit, modifier = artworkModifier)
                             Box(
                                 Modifier
                                     .align(Alignment.TopStart)
@@ -485,18 +491,10 @@ fun PlaylistDetailScreen(
 
                     Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
                         Text(collectionLabel, color = appColors.textMuted, style = MaterialTheme.typography.labelMedium)
-                        Text(
-                            text = playlist.title,
-                            color = appColors.textPrimary,
-                            style = MaterialTheme.typography.headlineLarge,
-                            fontWeight = FontWeight.ExtraBold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.testTag("playlist_profile_name")
-                        )
-                        if (playlist.description.isNotBlank()) {
+                        CollectionTitleRow(title, MaterialTheme.typography.headlineLarge, "playlist_profile_name", download)
+                        if (description.isNotBlank()) {
                             Text(
-                                text = playlist.description,
+                                text = description,
                                 color = appColors.textSecondary,
                                 style = MaterialTheme.typography.titleMedium,
                                 maxLines = 2,
@@ -505,7 +503,7 @@ fun PlaylistDetailScreen(
                             )
                         }
                         Text(
-                            text = "${tracks.size} tracks",
+                            text = trackSummary,
                             color = appColors.primaryAccent,
                             style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
                             modifier = Modifier.padding(top = 4.dp)
@@ -514,10 +512,6 @@ fun PlaylistDetailScreen(
                 }
             }
 
-                if (showDownloadAction) item("collection_download") {
-                    com.example.ui.screens.settings.DownloadCollectionButton(tracks, playlist.title,
-                        Modifier.fillMaxWidth().padding(horizontal = 24.dp), downloadCollectionComplete, loadDownloadTracks)
-                }
                 if (!pinPlaybackActions) {
                     item("portrait_playlist_actions") {
                         Row(

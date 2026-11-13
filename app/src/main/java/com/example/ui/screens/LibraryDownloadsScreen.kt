@@ -38,11 +38,13 @@ import kotlinx.coroutines.withContext
 
 private val DownloadsArtwork = Brush.linearGradient(listOf(Color(0xFF087F8C), Color(0xFF2563EB)))
 internal fun downloadsArtworkBrush(): Brush = DownloadsArtwork
+private val LikedSongsArtwork = Brush.linearGradient(listOf(Color(0xFF7C3AED), Color(0xFFDB2777)))
+internal fun likedSongsArtworkBrush(): Brush = LikedSongsArtwork
 
 @Composable
-internal fun LibraryCollectionArtwork(icon: ImageVector, modifier: Modifier) {
-    Box(modifier.background(DownloadsArtwork), contentAlignment = Alignment.Center) {
-        Icon(icon, null, tint = Color.White, modifier = Modifier.size(64.dp))
+internal fun LibraryCollectionArtwork(icon: ImageVector, modifier: Modifier, brush: Brush = DownloadsArtwork) {
+    Box(modifier.background(brush), contentAlignment = Alignment.Center) {
+        Icon(icon, null, tint = Color.White, modifier = Modifier.size(64.dp).testTag("library_collection_symbol"))
     }
 }
 

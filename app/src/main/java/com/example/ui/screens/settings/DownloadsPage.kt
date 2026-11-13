@@ -15,7 +15,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.data.model.MusicTrack
 import com.example.downloads.*
 import com.example.ui.theme.LocalAppColors
 import kotlinx.coroutines.launch
@@ -96,27 +95,4 @@ internal fun formatDownloadBytes(bytes: Long): String = when {
     bytes >= 1_073_741_824L -> "%.1f GB".format(bytes / 1_073_741_824.0)
     bytes >= 1_048_576 -> "%.1f MB".format(bytes / 1_048_576.0)
     else -> "${bytes.coerceAtLeast(0) / 1024} KB"
-}
-
-@Composable
-fun DownloadCollectionButton(tracks: List<MusicTrack>, name: String, modifier: Modifier = Modifier,
-    collectionComplete: Boolean = true, loadTracks: (suspend () -> List<MusicTrack>)? = null) {
-    val context = LocalContext.current
-    val store = remember(context) { OfflineDownloads.get(context) }
-    val records by store.records.collectAsStateWithLifecycle()
-    val scope = rememberCoroutineScope()
-    var error by remember { mutableStateOf(false) }
-    var loading by remember { mutableStateOf(false) }
-    val complete = collectionComplete && tracks.isNotEmpty() && tracks.all { records[it.id]?.status == DownloadStatus.COMPLETE }
-    val busy = loading || tracks.any { records[it.id]?.status in setOf(DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING) }
-    TextButton(onClick = { scope.launch { loading = true
-        try { store.enqueue(loadTracks?.invoke() ?: tracks, name); error = false }
-        catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-        catch (_: Exception) { error = true } finally { loading = false } } },
-        enabled = (tracks.isNotEmpty() || loadTracks != null) && !complete && !busy,
-        modifier = modifier.testTag("download_collection")) {
-        Icon(if (complete) Icons.Default.DownloadDone else Icons.Default.Download, null, Modifier.size(20.dp))
-        Spacer(Modifier.width(8.dp))
-        Text(when { error -> "Could not queue. Retry"; complete -> "Downloaded"; busy -> "Downloading"; else -> "Download" })
-    }
 }

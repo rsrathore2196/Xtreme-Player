@@ -46,6 +46,10 @@ class OfflineDownloads internal constructor(context: Context) {
     val records = _records.asStateFlow()
     private val _preferences = MutableStateFlow(DownloadPreferences())
     val preferences = _preferences.asStateFlow()
+    private val _collections = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    // Keep the full requested membership even when a later-page track is removed.
+    // A paginated header must not mistake its remaining downloads for a complete collection.
+    internal val collections = _collections.asStateFlow()
     private val caches = mutableMapOf<String, SimpleCache>()
     private val owners = mutableMapOf<String, Int>()
     private val pendingDeletion = mutableSetOf<String>()
@@ -76,12 +80,20 @@ class OfflineDownloads internal constructor(context: Context) {
                 .associateBy { it.track.id }
             _preferences.value = DownloadPreferences(saved.optBoolean("wifi", true),
                 runCatching { DownloadQuality.valueOf(saved.optString("quality")) }.getOrDefault(DownloadQuality.HIGH))
+            val collections = saved.optJSONObject("collections") ?: JSONObject()
+            _collections.value = collections.keys().asSequence().associateWith { key ->
+                val ids = collections.optJSONArray(key) ?: JSONArray()
+                (0 until ids.length()).map { ids.getString(it) }.distinct()
+            }
         }
         loaded = true
     }
     private fun saveLocked() {
         val payload = JSONObject().put("version", 1).put("wifi", _preferences.value.wifiOnly)
             .put("quality", _preferences.value.quality.name)
+            .put("collections", JSONObject().also { saved ->
+                _collections.value.forEach { (key, ids) -> saved.put(key, JSONArray(ids)) }
+            })
             .put("records", JSONArray(_records.value.values.map(OfflineJson::record))).toString().toByteArray()
         val output = index.startWrite()
         try { output.write(payload); index.finishWrite(output) }
@@ -103,10 +115,11 @@ class OfflineDownloads internal constructor(context: Context) {
     internal suspend fun put(record: DownloadRecord) = withContext(Dispatchers.IO) {
         lock.withLock { loadLocked(); _records.value = _records.value + (record.track.id to record); saveLocked() }
     }
-    suspend fun enqueue(tracks: List<MusicTrack>, collection: String = "") = withContext(Dispatchers.IO) {
+    suspend fun enqueue(tracks: List<MusicTrack>, collection: String = "", collectionKey: String? = null) = withContext(Dispatchers.IO) {
         load()
         val queued = lock.withLock {
             val old = _records.value
+            val oldCollections = _collections.value
             val next = old.toMutableMap()
             val ids = mutableListOf<String>()
             for (track in tracks.distinctBy { it.id }) {
@@ -118,7 +131,16 @@ class OfflineDownloads internal constructor(context: Context) {
                 ids += track.id
             }
             _records.value = next
-            try { saveLocked() } catch (error: Exception) { _records.value = old; throw error }
+            if (collectionKey != null) {
+                _collections.value = oldCollections + (collectionKey to tracks.distinctBy { it.id }.filter {
+                    Uri.parse(it.audioUrl).scheme !in setOf("file", "content", SCHEME) || it.id in next
+                }.map { it.id })
+            }
+            try { saveLocked() } catch (error: Exception) {
+                _records.value = old
+                _collections.value = oldCollections
+                throw error
+            }
             ids
         }
         queued.forEach(::schedule)

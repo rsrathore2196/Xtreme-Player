@@ -167,13 +167,15 @@ fun LibraryScreen(
         val openedFavorites = favoriteTracksState?.collectAsStateWithLifecycle()?.value ?: favoriteTracks
         val liked by androidx.compose.runtime.produceState<com.example.data.local.PlaylistWithTracks?>(null, openedFavorites) {
             value = kotlinx.coroutines.withContext(com.example.performance.AppDispatchers.CpuBounded) {
-                com.example.data.local.PlaylistWithTracks(com.example.data.local.PlaylistEntity(-1L, "Liked Songs", "Your favorite songs",
-                    openedFavorites.firstOrNull()?.coverUrl.orEmpty()), openedFavorites.map(com.example.data.local.TrackEntity::fromMusicTrack)).also { it.musicTracks }
+                com.example.data.local.PlaylistWithTracks(com.example.data.local.PlaylistEntity(-1L, "Liked Songs", "Your favorite songs"),
+                    openedFavorites.map(com.example.data.local.TrackEntity::fromMusicTrack)).also { it.musicTracks }
             }
         }
         liked?.let { PlaylistDetailScreen(it, currentPlayingTrackId = currentPlayingTrackId,
             onBackClick = { likedOpen = false }, onPlayTrack = onTrackClick, onToggleFavorite = onToggleFavorite,
-            onDeletePlaylist = {}, onRemoveTrack = {}, readOnly = true, listState = likedScroll) }
+            onDeletePlaylist = {}, onRemoveTrack = {}, readOnly = true, listState = likedScroll,
+            artworkIcon = Icons.Default.Favorite, artworkBrush = likedSongsArtworkBrush(),
+            downloadCollectionKey = "library:liked", downloadStore = downloadStore) }
         return
     }
     val downloadRecords by downloadStore.records.collectAsStateWithLifecycle()
@@ -383,7 +385,7 @@ fun LibraryScreen(
                             onClick = { likedOpen = true },
                             modifier = if (landscape) Modifier.width(tileWidth.dp) else Modifier.weight(1f),
                             cardTag = "open_liked_songs", artworkIcon = Icons.Default.Favorite,
-                            artworkBrush = Brush.linearGradient(listOf(Color(0xFF7C3AED), Color(0xFFDB2777))),
+                            artworkBrush = likedSongsArtworkBrush(),
                             artworkTint = Color.White,
                             onPlayClick = if (favoriteCount > 0) ({
                                 if (onPlayLikedSongs != null) onPlayLikedSongs()

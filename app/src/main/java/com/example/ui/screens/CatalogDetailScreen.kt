@@ -44,6 +44,10 @@ import com.example.ui.components.playerArtworkEdgeBlend
 import com.example.ui.components.headerArtworkEdgeBlend
 import com.example.ui.components.TrackListItem
 import com.example.ui.components.bouncyOverscroll
+import com.example.ui.components.CollectionDownloadAction
+import com.example.ui.components.CollectionTitleRow
+import com.example.ui.components.rememberCollectionDownloadAction
+import com.example.ui.util.CollectionPageMetadata
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.liquidGlassButton
 import com.example.ui.theme.bouncyClickable
@@ -58,8 +62,8 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
     onOpenAlbum: (CatalogAlbum) -> Unit = {}, onOpenArtist: (CatalogArtist) -> Unit = {}) {
     val colors = LocalAppColors.current
     val downloadContext = androidx.compose.ui.platform.LocalContext.current
-    val downloadRepository = remember(downloadContext) {
-        (downloadContext.applicationContext as com.example.XtremeMusicApp).repository.catalogBrowser
+    val downloadRepository by remember(downloadContext) {
+        lazy { (downloadContext.applicationContext as com.example.XtremeMusicApp).repository.catalogBrowser }
     }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val list = rememberLazyListState(state.scrollIndex, state.scrollOffset)
@@ -77,7 +81,8 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
         PlaylistDetailScreen(playlistWithTracks = content, playerUiState = player, onBackClick = onBack,
             onPlayTrack = onPlay, onToggleFavorite = onFavorite, onDeletePlaylist = {}, onRemoveTrack = {},
             readOnly = true, listState = list,
-            downloadCollectionComplete = state.nextPage == null && state.pending.isEmpty(),
+            downloadCollectionComplete = !state.loading && state.nextPage == null && state.pending.isEmpty(),
+            downloadCollectionKey = state.destination.key,
             loadDownloadTracks = { com.example.downloads.loadCollectionTracks(downloadRepository, state.destination) },
             footer = {
                 if (state.loading) Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
@@ -89,6 +94,11 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
                 }
             })
         return
+    }
+    val albumDownload = (state.destination as? CatalogDestination.Album)?.let { dest ->
+        rememberCollectionDownloadAction(state.tracks, CollectionPageMetadata.title(dest.album.title, "Untitled album"),
+            dest.key, !state.loading && state.nextPage == null && state.pending.isEmpty(),
+            loadTracks = { com.example.downloads.loadCollectionTracks(downloadRepository, dest) })
     }
     val title = when (val target = state.destination) {
         is CatalogDestination.Artist -> target.artist.name
@@ -105,13 +115,8 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
                     ArtistProfileHeader(state.artistProfile?.artist ?: dest.artist, onBack)
                 }
                 is CatalogDestination.Album -> {
-                    Column {
-                    AlbumProfileHeader(dest.album, onBack)
-                    com.example.ui.screens.settings.DownloadCollectionButton(state.tracks, dest.album.title,
-                        Modifier.fillMaxWidth().padding(horizontal = 24.dp),
-                        collectionComplete = state.nextPage == null && state.pending.isEmpty(),
-                        loadTracks = { com.example.downloads.loadCollectionTracks(downloadRepository, dest) })
-                    }
+                    AlbumProfileHeader(dest.album, onBack, albumDownload, state.tracks,
+                        !state.loading && state.nextPage == null && state.pending.isEmpty())
                 }
                 is CatalogDestination.Playlist -> Unit
             }
@@ -229,11 +234,12 @@ private fun ArtistStatistic(label: String, rawValue: String, modifier: Modifier)
 
 /** Full-bleed official album artwork; alpha edges reveal the same page canvas. */
 @Composable
-private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit) {
+private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit, download: CollectionDownloadAction?,
+    tracks: List<MusicTrack>, collectionComplete: Boolean) {
     val colors = LocalAppColors.current
-    val configuration = LocalConfiguration.current
-    val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val topSpacing = if (landscape) 8.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 20.dp
+    val title = remember(album.title) { CollectionPageMetadata.title(album.title, "Untitled album") }
+    val subtitle = remember(album) { CollectionPageMetadata.albumSubtitle(album) }
+    val summary = remember(tracks, collectionComplete) { CollectionPageMetadata.trackSummary(tracks, collectionComplete) }
     Column(Modifier.fillMaxWidth()) {
         Box(
             Modifier
@@ -243,11 +249,10 @@ private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit) {
         ) {
             AsyncImage(
                 model = rememberOptimizedImageRequest(album.image, targetSize = 1200),
-                contentDescription = album.title,
+                contentDescription = title,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = topSpacing)
                     .aspectRatio(1f)
                     .testTag("album_profile_artwork")
                     .headerArtworkEdgeBlend(topFade = 0.10f, bottomFade = 0.10f, topMargin = 0.01f, bottomMargin = 0.02f)
@@ -261,32 +266,20 @@ private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = colors.textPrimary, modifier = Modifier.size(19.dp))
             }
         }
-    Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
-        Text("ALBUM", color = colors.textMuted, style = MaterialTheme.typography.labelMedium)
-            Text(
-                album.title,
-                color = colors.textPrimary,
-                style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.ExtraBold,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.testTag("album_profile_name")
-            )
-            val artistNames = album.artists.joinToString { it.name }
-            if (artistNames.isNotBlank() || album.year.isNotBlank()) {
-                val subtitle = buildString {
-                    if (artistNames.isNotBlank()) append(artistNames)
-                    if (artistNames.isNotBlank() && album.year.isNotBlank()) append(" • ")
-                    if (album.year.isNotBlank()) append(album.year)
-                }
+        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
+            Text("ALBUM", color = colors.textMuted, style = MaterialTheme.typography.labelMedium)
+            CollectionTitleRow(title, MaterialTheme.typography.headlineLarge, "album_profile_name", download)
+            if (subtitle.isNotBlank()) {
                 Text(
                     subtitle,
                     color = colors.textSecondary,
                     style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            Text(summary, color = colors.primaryAccent, style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
         }
     }
 }

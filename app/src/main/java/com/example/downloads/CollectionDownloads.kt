@@ -31,3 +31,29 @@ internal suspend fun loadCollectionTracks(repository: CatalogRepository, destina
     if (tracks.isEmpty()) throw IOException("No tracks were returned for this collection")
     return tracks
 }
+
+/** Each track contributes one equal share; partial tracks retain their byte progress. */
+internal data class CollectionDownloadProgress(
+    val fraction: Float?, val completed: Int, val total: Int, val active: Boolean, val complete: Boolean
+)
+
+internal fun collectionDownloadProgress(
+    tracks: List<MusicTrack>, records: Map<String, DownloadRecord>,
+    savedMembers: List<String>? = null, collectionComplete: Boolean = true
+): CollectionDownloadProgress {
+    val local = tracks.filter { it.audioUrl.substringBefore(':').lowercase() in setOf("file", "content", OfflineDownloads.SCHEME) }
+        .mapTo(mutableSetOf()) { it.id }
+    val ids = (if (collectionComplete) tracks.map { it.id } else savedMembers.orEmpty() + tracks.map { it.id }).distinct()
+    val allKnown = collectionComplete || savedMembers != null
+    val completed = ids.count { it in local || records[it]?.status == DownloadStatus.COMPLETE }
+    val active = ids.any { records[it]?.status in setOf(DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING) }
+    val portion = ids.sumOf { id ->
+        if (id in local || records[id]?.status == DownloadStatus.COMPLETE) 1.0 else records[id]?.fraction?.toDouble() ?: 0.0
+    }
+    val unknownSize = ids.any { records[it]?.let { record ->
+        record.status in setOf(DownloadStatus.QUEUED, DownloadStatus.DOWNLOADING) && record.total <= 0
+    } == true }
+    val fraction = if (!allKnown || (active && unknownSize && portion == 0.0)) null
+        else if (ids.isEmpty()) 0f else (portion / ids.size).toFloat().coerceIn(0f, 1f)
+    return CollectionDownloadProgress(fraction, completed, ids.size, active, allKnown && ids.isNotEmpty() && completed == ids.size)
+}
