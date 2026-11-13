@@ -93,6 +93,8 @@ import coil.compose.AsyncImage
 import com.example.ui.util.ImageConfig
 import com.example.ui.util.rememberOptimizedImageRequest
 import com.example.data.model.MusicTrack
+import com.example.data.model.CollectionPlaybackTarget
+import com.example.ui.components.CollectionTargetPlayButton
 import com.example.data.remote.MusicDataSource
 import com.example.data.repository.ExploreCategory
 import com.example.playback.PlayerUiState
@@ -195,6 +197,7 @@ private fun GenreResultsPage(
                             textPrimaryColor = textPrimaryColor,
                             textMutedColor = textMutedColor,
                             modifier = Modifier.testTag("playlist_item_${playlist.id}"),
+                            playTarget = CollectionPlaybackTarget.Catalog(com.example.data.repository.CatalogDestination.Playlist(playlist)),
                             onClick = { onOpenCatalog(com.example.data.repository.CatalogDestination.Playlist(playlist)) }
                         )
                     }
@@ -232,6 +235,7 @@ private fun GenreResultsPage(
                                 textPrimaryColor = textPrimaryColor,
                                 textMutedColor = textMutedColor,
                                 modifier = Modifier.testTag("album_item_${album.id.ifBlank { album.title.lowercase() }}"),
+                                playTarget = CollectionPlaybackTarget.Catalog(com.example.data.repository.CatalogDestination.Album(album)),
                                 onClick = { onOpenCatalog(com.example.data.repository.CatalogDestination.Album(album)) }
                             )
                         }
@@ -252,6 +256,7 @@ private fun GenreResultsPage(
                                 textPrimaryColor = textPrimaryColor,
                                 textMutedColor = textMutedColor,
                                 modifier = Modifier.testTag("album_item_${name.lowercase()}"),
+                                playTarget = CollectionPlaybackTarget.AlbumName(name),
                                 onClick = { onOpenAlbumByName(name) }
                             )
                         }
@@ -1372,30 +1377,35 @@ fun SearchScreen(
                                             .padding(vertical = 8.dp, horizontal = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        if (album.image.isNotBlank()) {
-                                            AsyncImage(
-                                                model = album.image,
-                                                contentDescription = album.title,
-                                                contentScale = ContentScale.Crop,
-                                                modifier = Modifier
-                                                    .size(48.dp)
-                                                    .clip(RoundedCornerShape(8.dp))
-                                            )
-                                        } else {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(48.dp)
-                                                    .clip(RoundedCornerShape(8.dp))
-                                                    .background(Color(0xFF163255)),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Album,
-                                                    contentDescription = null,
-                                                    tint = XtremeLightBlue,
-                                                    modifier = Modifier.size(24.dp)
+                                        Box(Modifier.size(48.dp)) {
+                                            if (album.image.isNotBlank()) {
+                                                AsyncImage(
+                                                    model = album.image,
+                                                    contentDescription = album.title,
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier
+                                                        .size(48.dp)
+                                                        .clip(RoundedCornerShape(8.dp))
                                                 )
+                                            } else {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(48.dp)
+                                                        .clip(RoundedCornerShape(8.dp))
+                                                        .background(Color(0xFF163255)),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Album,
+                                                        contentDescription = null,
+                                                        tint = XtremeLightBlue,
+                                                        modifier = Modifier.size(24.dp)
+                                                    )
+                                                }
                                             }
+                                            CollectionTargetPlayButton(album.title,
+                                                CollectionPlaybackTarget.Catalog(com.example.data.repository.CatalogDestination.Album(album)),
+                                                Modifier.align(Alignment.BottomEnd), small = true)
                                         }
                                         Spacer(modifier = Modifier.width(12.dp))
                                         Column(modifier = Modifier.weight(1f)) {
@@ -1445,6 +1455,8 @@ fun SearchScreen(
                                                 tint = XtremeLightBlue,
                                                 modifier = Modifier.size(24.dp)
                                             )
+                                            CollectionTargetPlayButton(albumName, CollectionPlaybackTarget.AlbumName(albumName),
+                                                Modifier.align(Alignment.BottomEnd), small = true)
                                         }
                                         Spacer(modifier = Modifier.width(12.dp))
                                         Column(modifier = Modifier.weight(1f)) {

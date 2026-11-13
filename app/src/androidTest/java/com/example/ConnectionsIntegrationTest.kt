@@ -141,7 +141,7 @@ class ConnectionsIntegrationTest {
         }
         withTimeout(180_000) { complete.await() }
     }
-    @Test fun importingAgainRefreshesOnePlaylistAndPreservesLikesAndOccurrences() = runBlocking(Dispatchers.IO) {
+    @Test fun importingAgainMergesOnePlaylistWithoutDuplicatingSongsAndPreservesLikes() = runBlocking(Dispatchers.IO) {
         val db = MusicDatabase.getDatabase(context)
         val dao = db.musicDao()
         val library = ConnectedLibraries(context)
@@ -154,7 +154,7 @@ class ConnectionsIntegrationTest {
             val firstId = dao.importedPlaylistId("spotify", "test-account", "test-import")!!
             val first = dao.getAllPlaylistsSync().single { it.playlistId == firstId }
             assertEquals("Imported from Spotify", first.description)
-            assertEquals(2, dao.getPlaylistWithTracks(first.playlistId).first()!!.musicTracks.size)
+            assertEquals(1, dao.getPlaylistWithTracks(first.playlistId).first()!!.musicTracks.size)
             library.saveImport(collection, "test-account", listOf(track))
             val againId = dao.importedPlaylistId("spotify", "test-account", "test-import")!!
             assertEquals(firstId, againId)

@@ -106,6 +106,15 @@ interface MusicDao {
     @Query("UPDATE tracks SET isLiked = :isLiked WHERE id = :trackId")
     suspend fun updateFavorite(trackId: String, isLiked: Boolean)
 
+    @Query("UPDATE tracks SET isLiked = 1 WHERE id IN (:trackIds)")
+    suspend fun markTracksFavorite(trackIds: List<String>)
+
+    @Transaction
+    suspend fun mergeFavorites(tracks: List<TrackEntity>) {
+        mergeTracksMetadata(tracks)
+        tracks.map { it.id }.distinct().chunked(900).forEach { markTracksFavorite(it) }
+    }
+
     @Query("UPDATE tracks SET lastPlayedAt = :timestamp WHERE id = :trackId")
     suspend fun updateLastPlayed(trackId: String, timestamp: Long)
 
@@ -138,6 +147,25 @@ interface MusicDao {
 
     @Query("SELECT COALESCE(MAX(orderIndex), -1) + 1 FROM playlist_track_cross_ref WHERE playlistId = :playlistId")
     suspend fun nextPlaylistOrder(playlistId: Long): Int
+
+    @Query("SELECT * FROM playlist_track_cross_ref WHERE playlistId = :playlistId ORDER BY orderIndex, entryId")
+    suspend fun playlistEntries(playlistId: Long): List<PlaylistTrackCrossRef>
+
+    @Query("SELECT * FROM tracks WHERE id IN (SELECT trackId FROM playlist_track_cross_ref WHERE playlistId = :playlistId)")
+    suspend fun playlistTracks(playlistId: Long): List<TrackEntity>
+
+    /** Append new songs, preserving local edits, order and existing entry identities. */
+    @Transaction
+    suspend fun mergePlaylistEntries(playlistId: Long, tracks: List<TrackEntity>) {
+        check(playlistExists(playlistId)) { "Playlist no longer exists" }
+        mergeTracksMetadata(tracks)
+        val present = playlistEntries(playlistId).mapTo(mutableSetOf()) { it.trackId }
+        var order = nextPlaylistOrder(playlistId)
+        val additions = tracks.mapNotNull { track ->
+            if (present.add(track.id)) PlaylistTrackCrossRef(playlistId, track.id, order++) else null
+        }
+        if (additions.isNotEmpty()) insertPlaylistTrackRefs(additions)
+    }
 
     @Query("SELECT EXISTS(SELECT 1 FROM playlists WHERE playlistId = :playlistId)")
     suspend fun playlistExists(playlistId: Long): Boolean

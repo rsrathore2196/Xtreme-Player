@@ -91,6 +91,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.example.data.local.UserProfile
 import com.example.data.model.MusicTrack
+import com.example.data.model.CollectionPlaybackTarget
+import com.example.ui.components.CollectionTargetPlayButton
 import com.example.playback.PlayerUiState
 import com.example.ui.components.AppDynamicLogo
 import com.example.ui.components.HomePullRefreshOverscrollLayout
@@ -826,11 +828,13 @@ fun SectionCardLayout(
                                 item.subtitle.ifBlank { item.album.artists.joinToString { it.name } },
                                 rememberOptimizedImageRequest(item.album.image, com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
                                     crossfadeEnabled = false, preferStableArtwork = true), false,
-                                cardBg, cardBorderColor, textPrimaryColor, textMutedColor) { onOpenCatalog(CatalogDestination.Album(item.album)) }
+                                cardBg, cardBorderColor, textPrimaryColor, textMutedColor,
+                                playTarget = CollectionPlaybackTarget.Catalog(CatalogDestination.Album(item.album))) { onOpenCatalog(CatalogDestination.Album(item.album)) }
                             is ServerHomeItem.Playlist -> ShelfContentCard(item.playlist.title, item.subtitle,
                                 rememberOptimizedImageRequest(item.playlist.image, com.example.ui.util.ImageConfig.RECOMMENDATION_CARD_SIZE,
                                     crossfadeEnabled = false, preferStableArtwork = true), false,
-                                cardBg, cardBorderColor, textPrimaryColor, textMutedColor) { onOpenCatalog(CatalogDestination.Playlist(item.playlist)) }
+                                cardBg, cardBorderColor, textPrimaryColor, textMutedColor,
+                                playTarget = CollectionPlaybackTarget.Catalog(CatalogDestination.Playlist(item.playlist))) { onOpenCatalog(CatalogDestination.Playlist(item.playlist)) }
                         }
                     }
                 }
@@ -1011,7 +1015,8 @@ fun ShelfTrackCard(
 internal fun ShelfContentCard(title: String, subtitle: String, artwork: coil.request.ImageRequest, isPlaying: Boolean,
     cardBg: Color, cardBorderColor: Color, textPrimaryColor: Color, textMutedColor: Color,
     artworkDescription: String = title, artworkContentScale: ContentScale = ContentScale.Crop,
-    landscapeCard: Boolean = false, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    landscapeCard: Boolean = false, modifier: Modifier = Modifier,
+    playTarget: CollectionPlaybackTarget? = null, onClick: () -> Unit) {
     val appColors = LocalAppColors.current
     val artworkWidth = if (landscapeCard) 224.dp else 163.2.dp
     val artworkHeight = if (landscapeCard) 126.dp else 163.2.dp
@@ -1057,6 +1062,7 @@ internal fun ShelfContentCard(title: String, subtitle: String, artwork: coil.req
                     )
                 }
             }
+            if (playTarget != null) CollectionTargetPlayButton(title, playTarget, Modifier.align(Alignment.BottomEnd))
         }
 
         Spacer(modifier = Modifier.height(8.dp))

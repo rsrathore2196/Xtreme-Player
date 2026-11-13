@@ -9,6 +9,8 @@ import com.example.data.remote.YouTubeAudioStreamService
 import com.example.data.remote.YouTubeExploreParser
 import com.example.data.remote.YouTubeMusicApiService
 import com.example.data.repository.CatalogDestination
+import com.example.data.repository.CatalogNames
+import com.example.data.repository.RecordingIdentity
 import com.example.data.repository.StreamResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -24,13 +26,18 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import java.text.Normalizer
+import java.util.Locale
 
-internal data class ConnectedCollection(val provider: String, val id: String, val title: String, val image: String = "")
-internal data class ImportResult(val imported: Int, val unmatched: Int)
+internal data class ConnectedCollection(val provider: String, val id: String, val title: String, val image: String = "") {
+    val isLikedSongs: Boolean get() = (provider == "youtube" && id.removePrefix("VL") == "LM") ||
+        (provider == "spotify" && id == "liked")
+}
+internal data class ImportResult(val imported: Int, val unmatched: Int, val skipped: Int = 0)
 internal data class MetadataTrack(val id: String, val title: String, val artist: String, val album: String, val duration: Long, val image: String)
 
 /** Connections supply metadata; every imported song is resolved through the app's ordinary music catalog. */
-internal class ConnectedLibraries(private val context: Context) {
+internal class ConnectedLibraries(private val context: Context, private val database: MusicDatabase? = null) {
     private val connections = ConnectionStore.get(context)
     suspend fun collections(provider: String): List<ConnectedCollection> = withContext(Dispatchers.IO) {
         connections.load()
@@ -100,25 +107,33 @@ internal class ConnectedLibraries(private val context: Context) {
             else connections.state.value.spotify?.cookie?.let(ConnectionStore::digest)
         check(account == currentAccount) { "The connected account changed. Try again." }
         if (songs.isEmpty()) throw IOException("No matching music tracks were found. Your library has not changed.")
-        saveImport(collection, account, songs)
-        ImportResult(songs.size, missed)
+        val added = saveImport(collection, account, songs)
+        ImportResult(added, missed, songs.size - added)
     }
-    internal suspend fun saveImport(collection: ConnectedCollection, account: String, tracks: List<MusicTrack>) {
-        val db = MusicDatabase.getDatabase(context)
-        db.withTransaction {
+    internal suspend fun saveImport(collection: ConnectedCollection, account: String, tracks: List<MusicTrack>): Int {
+        val db = database ?: MusicDatabase.getDatabase(context)
+        return db.withTransaction {
             val dao = db.musicDao()
-            val previous = dao.importedPlaylistId(collection.provider, account, collection.id)
+            if (collection.isLikedSongs) {
+                val favorites = dao.getAllFavoriteTracksSync().map { it.toMusicTrack() }
+                val rows = newConnectedTracks(favorites, tracks).map(TrackEntity::fromMusicTrack)
+                dao.mergeFavorites(rows)
+                return@withTransaction rows.size
+            }
+            val name = connectedPlaylistName(collection.title)
+            val previous = dao.getAllPlaylistsSync().filter { connectedPlaylistName(it.title) == name }
+                .minWithOrNull(compareBy<PlaylistEntity> { it.createdAt }.thenBy { it.playlistId })
+            val existing = previous?.let { dao.playlistTracks(it.playlistId).map(TrackEntity::toMusicTrack) }.orEmpty()
+            val rows = newConnectedTracks(existing, tracks).map(TrackEntity::fromMusicTrack)
             val localId = if (previous == null) dao.createPlaylistWithEntries(PlaylistEntity(title = collection.title,
                 description = if (collection.provider == "youtube") "Imported from YouTube Music" else "Imported from Spotify",
-                coverUrl = collection.image), tracks.map(TrackEntity::fromMusicTrack))
+                coverUrl = collection.image), rows)
             else {
-                dao.updatePlaylistTitle(previous, collection.title)
-                dao.mergeTracksMetadata(tracks.map(TrackEntity::fromMusicTrack))
-                dao.deletePlaylistTrackRefs(previous)
-                dao.insertPlaylistTrackRefs(tracks.mapIndexed { index, track -> PlaylistTrackCrossRef(previous, track.id, index) })
-                previous
+                dao.mergePlaylistEntries(previous.playlistId, rows)
+                previous.playlistId
             }
             dao.saveConnectedCollection(ConnectedCollectionEntity(collection.provider, account, collection.id, localId))
+            rows.size
         }
     }
     private suspend fun youtubePages(browse: String, onPage: (JSONObject) -> Unit) {
@@ -184,6 +199,32 @@ internal class ConnectedLibraries(private val context: Context) {
         private const val LIBRARY_HASH = "973e511ca44261fda7eebac8b653155e7caee3675abb4fb110cc1b8c78b091c3"
         private const val PLAYLIST_HASH = "346811f856fb0b7e4f6c59f8ebea78dd081c6e2fb01b77c954b26259d5fc6763"
         private const val LIKED_HASH = "087278b20b743578a6262c2b0b4bcd20d879c503cc359a2285baf083ef944240"
+    }
+}
+
+private fun connectedPlaylistName(raw: String): String = Normalizer.normalize(CatalogNames.clean(raw), Normalizer.Form.NFKC)
+    .replace(Regex("[\\s\\u00a0]+"), " ").trim().lowercase(Locale.ROOT)
+
+/** Different provider IDs can still identify the same recording. Version and artist checks stay strict. */
+private fun newConnectedTracks(existing: List<MusicTrack>, incoming: List<MusicTrack>): List<MusicTrack> {
+    val ids = existing.mapTo(mutableSetOf()) { it.id }
+    val titles = mutableMapOf<String, MutableList<RecordingIdentity.Signature>>()
+    val codes = mutableMapOf<String, MutableList<RecordingIdentity.Signature>>()
+    fun remember(signature: RecordingIdentity.Signature) {
+        titles.getOrPut(signature.title) { mutableListOf() }.add(signature)
+        signature.isrc?.let { codes.getOrPut(it) { mutableListOf() }.add(signature) }
+    }
+    existing.forEach { remember(RecordingIdentity.signature(it)) }
+    return incoming.filter { track ->
+        if (!ids.add(track.id)) return@filter false
+        val signature = RecordingIdentity.signature(track)
+        val candidates = titles[signature.title].orEmpty() + signature.isrc?.let { codes[it] }.orEmpty()
+        val duplicate = candidates.any { known ->
+            RecordingIdentity.same(signature, known) &&
+                ((signature.isrc != null && signature.isrc == known.isrc) || (signature.durationMs > 0 && known.durationMs > 0))
+        }
+        if (!duplicate) remember(signature)
+        !duplicate
     }
 }
 

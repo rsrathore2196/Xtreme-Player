@@ -110,6 +110,12 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.local.PlaylistEntity
 import com.example.data.model.MusicTrack
+import com.example.data.model.CollectionPlaybackTarget
+import com.example.downloads.playableSavedTracks
+import com.example.ui.components.CollectionCardPlayButton
+import com.example.ui.components.LocalCollectionPlayback
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import com.example.playback.PlayerUiState
 import com.example.ui.theme.LocalAppColors
 import com.example.ui.theme.TextMuted
@@ -153,6 +159,9 @@ fun LibraryScreen(
     var period by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(com.example.data.local.ListeningPeriod.WEEKLY) }
     val statsScroll = rememberLazyListState()
     val likedScroll = rememberLazyListState()
+    val playScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var preparingDownloads by remember { mutableStateOf(false) }
     if (downloadsOpen) {
         androidx.activity.compose.BackHandler { downloadsOpen = false }
         val openedFavorites = favoriteTracksState?.collectAsStateWithLifecycle()?.value ?: favoriteTracks
@@ -179,6 +188,7 @@ fun LibraryScreen(
         return
     }
     val downloadRecords by downloadStore.records.collectAsStateWithLifecycle()
+    val playback = LocalCollectionPlayback.current
     val downloadedCount = remember(downloadRecords) { downloadRecords.values.count { it.status == DownloadStatus.COMPLETE && it.plan != null } }
     LaunchedEffect(downloadStore) {
         try { downloadStore.load() }
@@ -389,7 +399,9 @@ fun LibraryScreen(
                             artworkTint = Color.White,
                             onPlayClick = if (favoriteCount > 0) ({
                                 if (onPlayLikedSongs != null) onPlayLikedSongs()
-                                else favoriteTracks.firstOrNull()?.let { onTrackClick(it, favoriteTracks) }
+                                else (favoriteTracksState?.value ?: favoriteTracks).let { songs ->
+                                    songs.firstOrNull()?.let { onTrackClick(it, songs) }
+                                }
                             }) else null,
                             playButtonTag = "play_liked_songs"
                         )
@@ -398,7 +410,21 @@ fun LibraryScreen(
                             onClick = { downloadsOpen = true },
                             modifier = if (landscape) Modifier.width(tileWidth.dp) else Modifier.weight(1f),
                             cardTag = "open_downloads", artworkIcon = Icons.Default.Download,
-                            artworkBrush = downloadsArtworkBrush(), artworkTint = Color.White
+                            artworkBrush = downloadsArtworkBrush(), artworkTint = Color.White,
+                            onPlayClick = if (downloadedCount > 0) ({
+                                playScope.launch {
+                                    preparingDownloads = true
+                                    try {
+                                        val queue = downloadStore.playableSavedTracks()
+                                        val first = queue.firstOrNull()
+                                        if (first != null) onPlayDownloadedTrack(first, queue)
+                                        else android.widget.Toast.makeText(context, "No saved audio is available. Download the tracks again.", android.widget.Toast.LENGTH_SHORT).show()
+                                    } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                                    catch (_: Exception) { android.widget.Toast.makeText(context, "Saved audio could not be played. Please try again.", android.widget.Toast.LENGTH_SHORT).show() }
+                                    finally { preparingDownloads = false }
+                                }
+                            }) else null,
+                            playButtonTag = "play_downloads", playLoading = preparingDownloads
                         )
                     }
                 }
@@ -510,6 +536,8 @@ fun LibraryScreen(
                                         onClick = { onOpenPlaylist(playlist.playlistId) },
                                         coverRequestsActive = rowVisible,
                                         coverSize = coverSize,
+                                        onPlayClick = { playback.play(CollectionPlaybackTarget.SavedPlaylist(playlist.playlistId)) },
+                                        playLoading = playback.pendingKey == CollectionPlaybackTarget.SavedPlaylist(playlist.playlistId).key,
                                         modifier = if (landscape) Modifier.width(tileWidth.dp) else Modifier.weight(1f)
                                     )
                                 }
@@ -543,6 +571,7 @@ fun PlaylistGridCard(
     artworkBrush: Brush? = null,
     artworkTint: Color? = null,
     onPlayClick: (() -> Unit)? = null,
+    playLoading: Boolean = false,
     playButtonTag: String = "play_playlist_${playlist.playlistId}"
 ) {
     val appColors = LocalAppColors.current
@@ -609,11 +638,8 @@ fun PlaylistGridCard(
                 }
             }
             if (onPlayClick != null) {
-                IconButton(onClick = onPlayClick, modifier = Modifier.align(Alignment.BottomEnd).padding(10.dp)
-                    .size(38.dp).clip(CircleShape).background(appColors.primaryAccent).testTag(playButtonTag)) {
-                    Icon(Icons.Default.PlayArrow, "Play ${playlist.title}", tint = appColors.onPrimaryAccent,
-                        modifier = Modifier.size(22.dp))
-                }
+                CollectionCardPlayButton(playlist.title, onPlayClick, Modifier.align(Alignment.BottomEnd),
+                    loading = playLoading, tag = playButtonTag)
             }
         }
 

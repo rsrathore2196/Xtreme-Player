@@ -439,6 +439,17 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     }
     private val detailBackStack = ArrayDeque<CatalogDetailState>()
 
+    /** Card playback reads the collection without changing navigation, cached scroll or its back stack. */
+    suspend fun prepareCollectionPlayback(destination: CatalogDestination): CatalogDetailState = withContext(AppDispatchers.CpuBounded) {
+        val page = when (destination) {
+            is CatalogDestination.Album -> repository.albumSongs(destination.album)
+            is CatalogDestination.Playlist -> repository.playlistSongs(destination.playlist, 1)
+            else -> error("Only albums and playlists can be played as collections")
+        }
+        CatalogDetailState(destination, tracks = liked(page.tracks), nextPage = page.nextPage,
+            browseContinuation = page.browseContinuation, initialized = true)
+    }
+
     fun open(destination: CatalogDestination) {
         _detail.value?.takeIf { it.destination.key != destination.key }?.let {
             if (detailBackStack.size == 20) detailBackStack.removeFirst()

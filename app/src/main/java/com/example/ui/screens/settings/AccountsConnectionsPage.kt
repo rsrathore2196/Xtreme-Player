@@ -248,7 +248,9 @@ private fun ConnectedLibraryPage(provider: String, onBack: () -> Unit, modifier:
                         importJob = scope.launch {
                             try {
                                 val result = client.import(collection) { done, total -> progress = "Importing $done of $total tracks…" }
-                                progress = "Imported ${result.imported} tracks${if (result.unmatched > 0) " · ${result.unmatched} could not be matched" else ""}."
+                                progress = "Imported ${result.imported} ${if (result.imported == 1) "track" else "tracks"}" +
+                                    (if (result.skipped > 0) " · ${result.skipped} already available" else "") +
+                                    (if (result.unmatched > 0) " · ${result.unmatched} could not be matched" else "") + "."
                             } catch (cancelled: CancellationException) { throw cancelled }
                             catch (_: Exception) { progress = "Import could not finish. Your existing library was kept. Please retry." }
                             finally { importing = null }

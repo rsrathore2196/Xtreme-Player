@@ -33,6 +33,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import com.example.data.model.MusicTrack
+import com.example.data.model.CollectionPlaybackTarget
+import com.example.ui.components.CollectionTargetPlayButton
 import com.example.data.repository.CatalogDestination
 import com.example.data.repository.CatalogAlbum
 import com.example.data.repository.CatalogArtist
@@ -147,8 +149,12 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
                 LazyRow(contentPadding = PaddingValues(horizontal = 20.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     items(section.albums, key = { it.id }, contentType = { "artist_release" }) { album ->
                         Column(Modifier.width(136.dp).clickable { onOpenAlbum(album) }.testTag("artist_release_${album.id}")) {
-                            AsyncImage(rememberOptimizedImageRequest(album.image, targetSize = 600), album.title,
-                                contentScale = ContentScale.Crop, modifier = Modifier.size(136.dp).clip(RoundedCornerShape(18.dp)))
+                            Box(Modifier.size(136.dp).clip(RoundedCornerShape(18.dp))) {
+                                AsyncImage(rememberOptimizedImageRequest(album.image, targetSize = 600), album.title,
+                                    contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                                CollectionTargetPlayButton(album.title, CollectionPlaybackTarget.Catalog(CatalogDestination.Album(album)),
+                                    Modifier.align(Alignment.BottomEnd))
+                            }
                             Text(album.title, color = colors.textPrimary, maxLines = 2, overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.padding(top = 8.dp))
                         }

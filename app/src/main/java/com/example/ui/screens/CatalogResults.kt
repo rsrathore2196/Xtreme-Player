@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.model.MusicTrack
+import com.example.data.model.CollectionPlaybackTarget
+import com.example.ui.components.CollectionTargetPlayButton
 import com.example.data.repository.*
 import com.example.ui.components.ArtistPortrait
 import com.example.ui.components.TrackListItem
@@ -32,7 +34,8 @@ import com.example.ui.viewmodel.CatalogSearchState
 
 /** Entity rows retain the artist/album row dimensions and styling already used by Search. */
 @Composable
-internal fun CatalogEntityRow(title: String, subtitle: String, image: String?, artist: CatalogArtist? = null, onClick: () -> Unit) {
+internal fun CatalogEntityRow(title: String, subtitle: String, image: String?, artist: CatalogArtist? = null,
+    playTarget: CollectionPlaybackTarget? = null, onClick: () -> Unit) {
     val colors = LocalAppColors.current
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClick = onClick)
         .padding(vertical = 8.dp, horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -40,6 +43,7 @@ internal fun CatalogEntityRow(title: String, subtitle: String, image: String?, a
         else Box(Modifier.size(40.dp).clip(RoundedCornerShape(8.dp)).background(Color(0xFF163255)), contentAlignment = Alignment.Center) {
             Icon(Icons.Default.Album, contentDescription = null, tint = XtremeLightBlue, modifier = Modifier.size(22.dp))
             AsyncImage(image, title, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            if (playTarget != null) CollectionTargetPlayButton(title, playTarget, Modifier.align(Alignment.BottomEnd), small = true)
         }
         Spacer(Modifier.width(12.dp))
         Column {
@@ -73,8 +77,10 @@ internal fun LazyListScope.catalogSearchResults(
             Box(Modifier.padding(horizontal = 20.dp)) {
                 when (destination) {
                     is CatalogDestination.Artist -> CatalogEntityRow(destination.artist.name, "Artist • Tap to view songs", null, destination.artist) { onOpen(destination) }
-                    is CatalogDestination.Album -> CatalogEntityRow(destination.album.title, "${destination.album.artists.joinToString { it.name }} • ${destination.album.year}", destination.album.image) { onOpen(destination) }
-                    is CatalogDestination.Playlist -> CatalogEntityRow(destination.playlist.title, "Playlist", destination.playlist.image) { onOpen(destination) }
+                    is CatalogDestination.Album -> CatalogEntityRow(destination.album.title, "${destination.album.artists.joinToString { it.name }} • ${destination.album.year}", destination.album.image,
+                        playTarget = CollectionPlaybackTarget.Catalog(destination)) { onOpen(destination) }
+                    is CatalogDestination.Playlist -> CatalogEntityRow(destination.playlist.title, "Playlist", destination.playlist.image,
+                        playTarget = CollectionPlaybackTarget.Catalog(destination)) { onOpen(destination) }
                 }
             }
         }

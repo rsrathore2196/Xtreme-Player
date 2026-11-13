@@ -107,7 +107,8 @@ class SearchGenreNavigationTest {
         val track = MusicTrack("yt_abcdefghijk", "Pop Song", "Artist", "Pop Album", 180000, "", "")
         val album = CatalogAlbum("pop_album", "Pop Album", listOf(CatalogArtist("artist", "Artist")), "", "2026")
         val results = SearchResultCategory(songs = listOf(track), catalogAlbums = listOf(album))
-        var state by mutableStateOf(SearchUiState(exploreIndexReady = true))
+        val category = ExploreCategory("Pop", "FEmusic_pop", kind = ExploreCategoryKind.GENRE)
+        var state by mutableStateOf(SearchUiState(exploreIndexReady = true, exploreCategories = listOf(category)))
         var played: MusicTrack? = null
         var queue: List<MusicTrack> = emptyList()
         var opened: CatalogDestination? = null
@@ -117,8 +118,8 @@ class SearchGenreNavigationTest {
                 onTrackClick = { song, songs -> played = song; queue = songs }, onToggleFavorite = {},
                 onOpenCatalog = { opened = it })
         }
-        compose.onNodeWithTag("search_screen").performScrollToNode(hasTestTag("genre_chip_pop"))
-        compose.onNodeWithTag("genre_chip_pop").performClick()
+        compose.onNodeWithTag("search_screen").performScrollToNode(hasTestTag("explore_chip_${category.key}"))
+        compose.onNodeWithTag("explore_chip_${category.key}").performClick()
         compose.onNodeWithTag("genre_results_page").assertExists()
         compose.onNodeWithTag("search_screen").assertDoesNotExist()
         compose.onNodeWithText("Explore Genres").assertDoesNotExist()
@@ -131,6 +132,6 @@ class SearchGenreNavigationTest {
         compose.onNodeWithTag("back_to_all_genres_button").performClick()
         compose.onNodeWithTag("search_screen").assertExists()
         compose.onNodeWithTag("genre_results_page").assertDoesNotExist()
-        compose.onNodeWithTag("genre_chip_pop").assertIsDisplayed()
+        compose.onNodeWithTag("explore_chip_${category.key}").assertIsDisplayed()
     }
 }

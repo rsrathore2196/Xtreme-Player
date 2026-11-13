@@ -6,7 +6,19 @@ import com.example.data.repository.CatalogRepository
 import com.example.data.repository.CatalogBrowseContinuation
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.IOException
+
+internal fun savedDownloadRecords(records: Map<String, DownloadRecord>): List<DownloadRecord> = records.values
+    .filter { it.status == DownloadStatus.COMPLETE && it.plan != null }
+    .sortedWith(compareByDescending<DownloadRecord> { it.addedAt }.thenBy { it.track.id })
+
+/** Direct playback validates every saved file and retains the Downloads page's order. */
+internal suspend fun OfflineDownloads.playableSavedTracks(): List<MusicTrack> = withContext(Dispatchers.IO) {
+    load()
+    savedDownloadRecords(records.value).mapNotNull { localTrack(it.track) }
+}
 
 /** A collection download includes the server's later pages, not just rows already displayed. */
 internal suspend fun loadCollectionTracks(repository: CatalogRepository, destination: CatalogDestination): List<MusicTrack> {

@@ -318,6 +318,10 @@ fun MainNavigationScaffold(
         !playerVisibility.currentState && catalogDetail == null && selectedPlaylistWithTracks == null
 
     val baseAppColors = LocalAppColors.current
+    val pendingCollectionPlayback by viewModel.pendingCollectionPlayback.collectAsStateWithLifecycle()
+    val collectionPlaybackActions = remember(viewModel, pendingCollectionPlayback) {
+        CollectionPlaybackActions(pendingCollectionPlayback, viewModel::playCollectionFromCard)
+    }
     val appColors = remember(baseAppColors, isDynamicGlassEnabled) {
         baseAppColors.copy(dynamicGlassEnabled = isDynamicGlassEnabled)
     }
@@ -325,6 +329,7 @@ fun MainNavigationScaffold(
     // These screens own their edge spring; disable Android's competing stretch effect.
     val platformOverscroll = LocalOverscrollConfiguration.current
     CompositionLocalProvider(
+        LocalCollectionPlayback provides collectionPlaybackActions,
         LocalDynamicGlassEnabled provides isDynamicGlassEnabled,
         LocalLiquidGlassProfile provides effectiveGlassProfile,
         LocalPlayerExpansionMotion provides playerMotion,

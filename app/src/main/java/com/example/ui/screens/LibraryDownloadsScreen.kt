@@ -30,6 +30,7 @@ import com.example.data.local.TrackEntity
 import com.example.data.model.MusicTrack
 import com.example.downloads.DownloadStatus
 import com.example.downloads.OfflineDownloads
+import com.example.downloads.savedDownloadRecords
 import com.example.performance.AppDispatchers
 import com.example.ui.theme.LocalAppColors
 import kotlinx.coroutines.CancellationException
@@ -60,8 +61,7 @@ fun LibraryDownloadsScreen(
     likedIds: Set<String> = emptySet()
 ) {
     val records by store.records.collectAsStateWithLifecycle()
-    val saved = remember(records) { records.values.filter { it.status == DownloadStatus.COMPLETE && it.plan != null }
-        .sortedWith(compareByDescending<com.example.downloads.DownloadRecord> { it.addedAt }.thenBy { it.track.id }) }
+    val saved = remember(records) { savedDownloadRecords(records) }
     var loading by remember(store) { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()

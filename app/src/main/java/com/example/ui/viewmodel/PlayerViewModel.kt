@@ -13,6 +13,7 @@ import com.example.data.importer.MatchStatus
 import com.example.data.local.PlaylistEntity
 import com.example.data.local.PlaylistWithTracks
 import com.example.data.model.MusicTrack
+import com.example.data.model.CollectionPlaybackTarget
 import com.example.data.model.TrackLyrics
 import com.example.data.model.SongIdentity
 import com.example.data.remote.LyricsProvider
@@ -879,6 +880,45 @@ class PlayerViewModel(
         activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main.immediate) {
             val safeQueue = if (tracks.isNotEmpty()) tracks else listOf(track)
             playbackManager.playTrack(track, safeQueue, isExplicitPlaylist = true)
+        }
+    }
+
+    private val _pendingCollectionPlayback = MutableStateFlow<String?>(null)
+    val pendingCollectionPlayback = _pendingCollectionPlayback.asStateFlow()
+    private val collectionPlaybackGeneration = AtomicLong()
+
+    fun playCollectionFromCard(target: CollectionPlaybackTarget) {
+        val generation = collectionPlaybackGeneration.incrementAndGet()
+        activePlaybackLaunchJob?.cancel()
+        activePlaybackLaunchJob = viewModelScope.launch(Dispatchers.Main.immediate) {
+            _pendingCollectionPlayback.value = target.key
+            try {
+                val state = when (target) {
+                    is CollectionPlaybackTarget.Catalog -> catalogBrowser.prepareCollectionPlayback(target.destination)
+                    is CollectionPlaybackTarget.AlbumName -> {
+                        val result = repository.catalogBrowser.search(target.name, "Albums", 1).albums
+                        val album = result.firstOrNull { com.example.data.repository.CatalogNames.same(it.title, target.name) }
+                            ?: throw java.io.IOException("Album could not be found")
+                        catalogBrowser.prepareCollectionPlayback(com.example.data.repository.CatalogDestination.Album(album))
+                    }
+                    is CollectionPlaybackTarget.SavedPlaylist -> null
+                }
+                val songs = if (target is CollectionPlaybackTarget.SavedPlaylist) {
+                    withContext(AppDispatchers.Io) { repository.getPlaylistWithTracks(target.id).first()?.musicTracks.orEmpty() }
+                } else state?.tracks.orEmpty()
+                ensureActive()
+                val first = songs.firstOrNull()
+                if (first == null) {
+                    _libraryMessages.emit("This collection has no playable tracks.")
+                    return@launch
+                }
+                val queue = state?.preparePlaybackQueue(first) ?: songs
+                ensureActive()
+                playbackManager.playTrack(first, queue, isExplicitPlaylist = true,
+                    collectionLoader = state?.let(catalogBrowser::playlistPlaybackContinuation))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { _libraryMessages.emit("Couldn't play this collection. Please try again.") }
+            finally { if (collectionPlaybackGeneration.get() == generation) _pendingCollectionPlayback.value = null }
         }
     }
 
