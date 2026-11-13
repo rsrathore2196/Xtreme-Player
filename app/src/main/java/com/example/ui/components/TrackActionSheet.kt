@@ -36,6 +36,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.runtime.remember
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -77,6 +83,9 @@ fun TrackActionSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val appColors = LocalAppColors.current
     val isDark = appColors.isDark
+    val downloads = remember(context) { com.example.downloads.OfflineDownloads.get(context) }
+    val saved by downloads.records.collectAsStateWithLifecycle()
+    LaunchedEffect(downloads) { runCatching { downloads.load() } }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -176,6 +185,27 @@ fun TrackActionSheet(
             Spacer(modifier = Modifier.height(14.dp))
 
             // Action List - Uniform Liquid Glass buttons adapting theme color, with descriptions removed
+            ActionSheetItem(
+                icon = if (saved[track.id]?.status == com.example.downloads.DownloadStatus.COMPLETE) Icons.Default.DownloadDone else Icons.Default.Download,
+                title = when (saved[track.id]?.status) {
+                    com.example.downloads.DownloadStatus.COMPLETE -> "Remove download"
+                    com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> "Pause download"
+                    com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> "Resume download"
+                    else -> "Download"
+                },
+                tint = appColors.primaryAccent,
+                onClick = { scope.launch {
+                    try {
+                        when (saved[track.id]?.status) {
+                            com.example.downloads.DownloadStatus.COMPLETE -> downloads.remove(track.id)
+                            com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> downloads.pause(track.id)
+                            com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> downloads.resume(track.id)
+                            else -> downloads.enqueue(listOf(track))
+                        }
+                        sheetState.hide(); onDismiss()
+                    } catch (_: Exception) { android.widget.Toast.makeText(context, "Could not update download. Try again.", android.widget.Toast.LENGTH_SHORT).show() }
+                } }
+            )
             ActionSheetItem(
                 icon = Icons.Default.PlayArrow,
                 title = "Play Now",

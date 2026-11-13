@@ -90,6 +90,17 @@ object YouTubeAudioStreamService {
     private val videoIdPattern = Regex("[A-Za-z0-9_-]{11}")
     private val cleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val accountChanges = MutableStateFlow<InnerTube.SessionSnapshot?>(null)
+    @Volatile private var metadataAccount: InnerTube.SessionSnapshot? = null
+    /** This snapshot is consumed only by isolated discovery sessions, never by an audio extractor. */
+    internal fun setDiscoveryConnection(cookie: String?, visitor: String?, sync: String?, user: String?) {
+        metadataAccount = cookie?.takeIf { it.isNotBlank() }?.let {
+            InnerTube.SessionSnapshot(cookie = it, visitorData = visitor?.takeIf(String::isNotBlank),
+                dataSyncId = sync?.takeIf(String::isNotBlank), authUser = user ?: "0",
+                sapisid = com.example.connections.ConnectionStore.cookieValue(it, "SAPISID").ifBlank {
+                    com.example.connections.ConnectionStore.cookieValue(it, "__Secure-3PAPISID") }, useLoginForBrowse = true)
+        }
+        accountChanges.value = metadataAccount
+    }
     internal val discoveryAccountChanges = accountChanges.asStateFlow()
     internal data class DiscoveryResponse(val body: String, val accountIdentity: String)
 
@@ -135,11 +146,7 @@ object YouTubeAudioStreamService {
         private val cipher = YouTubeCipherService(cipherHttp, config, nativeLogger)
         private data class Engine(val http: HttpClient, val innerTube: InnerTube, val extractor: InnerTubeExtractor)
         private val engines = mutableMapOf<String, Engine>()
-        private var accountObserver: Job? = null
-        fun accountSession(): InnerTube.SessionSnapshot? = synchronized(engines) {
-            engines["320000:false"]?.innerTube?.sessionSnapshot()
-                ?.takeIf { !it.cookie.isNullOrBlank() && !it.sapisid.isNullOrBlank() }
-        }
+        fun accountSession(): InnerTube.SessionSnapshot? = metadataAccount
         private fun engine(cap: Int, opusOnly: Boolean = false): Engine = synchronized(engines) {
             // Transport is a per-extraction ContentHints capability, not session identity.
             // Reuse visitor/config/cipher state across Direct -> HLS -> SABR recovery.
@@ -147,15 +154,6 @@ object YouTubeAudioStreamService {
                 val network = http.newBuilder().addInterceptor(YouTubeAudioFormatPolicy(cap, opusOnly)).build()
                 val apiHttp = client(network)
                 val innerTube = InnerTube(apiHttp, logger = nativeLogger)
-                if (cap == 320_000 && !opusOnly) accountObserver = cleanupScope.launch {
-                    innerTube.sessionFlow.map { session ->
-                        session.takeIf { !it.cookie.isNullOrBlank() && !it.sapisid.isNullOrBlank() }
-                    }.distinctUntilChanged { before, after ->
-                        before?.sapisid == after?.sapisid && before?.authUser == after?.authUser && before?.dataSyncId == after?.dataSyncId
-                    }.collect { account -> synchronized(runtimeLock) {
-                        if (runtime === this@Runtime) accountChanges.value = account
-                    } }
-                }
                 Engine(apiHttp, innerTube, InnerTubeExtractor(
                     configParser = YtConfigParserImpl(apiHttp, innerTube, config, logger = nativeLogger, cipherService = cipher),
                     // Keep the native strategy: the library enables visitor-backed and
@@ -211,7 +209,6 @@ object YouTubeAudioStreamService {
             } finally { session.close() }
         }
         suspend fun close() {
-            accountObserver?.cancelAndJoin()
             tokens.close()
             synchronized(engines) { engines.values.toList().also { engines.clear() } }.forEach {
                 it.innerTube.close(); it.http.close()
@@ -257,11 +254,12 @@ object YouTubeAudioStreamService {
         withContext(AppDispatchers.Io) { runtime().discovery(operation, value, countryCode, params, continuation, languageCode, includeAccount) }
 
     /** Does not construct the extractor, read disk, authenticate, or create a network session. */
-    internal fun discoveryAccountSession(): InnerTube.SessionSnapshot? = runtime?.accountSession()
+    internal fun discoveryAccountSession(): InnerTube.SessionSnapshot? = metadataAccount
 
     internal suspend fun requestDiscovery(session: InnerTube, operation: String, value: String,
         params: String? = null, continuation: String? = null, setLogin: Boolean = false): String {
         val response = when (operation) {
+            "accountMenu" -> session.accountMenu(client = YouTubeClient.WEB_REMIX)
             "radio" -> session.next(client = YouTubeClient.WEB_REMIX, videoId = value,
                 playlistId = params ?: "RDAMVM$value", continuation = continuation)
             "related" -> session.next(client = YouTubeClient.WEB_REMIX, videoId = value, continuation = continuation)

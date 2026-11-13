@@ -57,6 +57,10 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
     onScroll: (Int, Int) -> Unit, handleBack: Boolean = true,
     onOpenAlbum: (CatalogAlbum) -> Unit = {}, onOpenArtist: (CatalogArtist) -> Unit = {}) {
     val colors = LocalAppColors.current
+    val downloadContext = androidx.compose.ui.platform.LocalContext.current
+    val downloadRepository = remember(downloadContext) {
+        (downloadContext.applicationContext as com.example.XtremeMusicApp).repository.catalogBrowser
+    }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val list = rememberLazyListState(state.scrollIndex, state.scrollOffset)
     LaunchedEffect(list) { snapshotFlow { list.firstVisibleItemIndex to list.firstVisibleItemScrollOffset }
@@ -72,7 +76,10 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
         }
         PlaylistDetailScreen(playlistWithTracks = content, playerUiState = player, onBackClick = onBack,
             onPlayTrack = onPlay, onToggleFavorite = onFavorite, onDeletePlaylist = {}, onRemoveTrack = {},
-            readOnly = true, listState = list, footer = {
+            readOnly = true, listState = list,
+            downloadCollectionComplete = state.nextPage == null && state.pending.isEmpty(),
+            loadDownloadTracks = { com.example.downloads.loadCollectionTracks(downloadRepository, state.destination) },
+            footer = {
                 if (state.loading) Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(Modifier.size(24.dp), color = colors.primaryAccent)
                 }
@@ -98,7 +105,13 @@ fun CatalogDetailScreen(state: CatalogDetailState, player: PlayerUiState, onBack
                     ArtistProfileHeader(state.artistProfile?.artist ?: dest.artist, onBack)
                 }
                 is CatalogDestination.Album -> {
+                    Column {
                     AlbumProfileHeader(dest.album, onBack)
+                    com.example.ui.screens.settings.DownloadCollectionButton(state.tracks, dest.album.title,
+                        Modifier.fillMaxWidth().padding(horizontal = 24.dp),
+                        collectionComplete = state.nextPage == null && state.pending.isEmpty(),
+                        loadTracks = { com.example.downloads.loadCollectionTracks(downloadRepository, dest) })
+                    }
                 }
                 is CatalogDestination.Playlist -> Unit
             }

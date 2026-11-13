@@ -125,6 +125,10 @@ class XtremeMusicApp : Application(), ImageLoaderFactory, androidx.work.Configur
         coil.Coil.setImageLoader(asynchronousImageLoader)
         // Registration only: the client is initialized by an actual request.
         OnlineMusicApiService.initialize(this)
+        startupScope.launch { runCatching {
+            com.example.connections.ConnectionStore.get(this@XtremeMusicApp).load()
+            com.example.connections.ScrobbleOutbox.get(this@XtremeMusicApp).resumeIfPending()
+        } }
 
     }
 

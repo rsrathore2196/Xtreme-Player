@@ -143,7 +143,7 @@ data class PlaybackSourcePolicy(val ceiling: AudioQualityCeiling, val enhancer: 
     fun acceptsRemoteTrack(track: com.example.data.model.MusicTrack): Boolean {
         if (com.example.data.remote.StreamingAddons.allowsRegisteredTransport(track.audioUrl, this)) return true
         val uri = android.net.Uri.parse(track.audioUrl)
-        if (uri.scheme in setOf("file", "content")) return true
+        if (uri.scheme in setOf("file", "content", "xtreme-offline")) return true
         val archive = uri.host.orEmpty().let { it == "archive.org" || it.endsWith(".archive.org") }
         if (archive) return maximum && allows(PlaybackSourceKind.INTERNET_ARCHIVE)
         if (track.source.startsWith("Streaming Addon:")) return false

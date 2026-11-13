@@ -244,6 +244,8 @@ fun SettingsScreen(
                 } else {
                     // Sub-Page for the selected category
                     when (category) {
+                    SettingsCategory.ACCOUNTS_CONNECTIONS -> com.example.ui.screens.settings.AccountsConnectionsPage()
+                    SettingsCategory.DOWNLOADS -> com.example.ui.screens.settings.DownloadsPage()
                     SettingsCategory.THEMES_APP_UI -> {
                         ThemesAppUiPage(
                             isDarkMode = isDarkMode,
@@ -391,6 +393,7 @@ private fun SettingsOverviewList(
         // Group 1: Appearance
         SettingsCategoryCardGroup(
             categories = listOf(
+                SettingsCategory.ACCOUNTS_CONNECTIONS,
                 SettingsCategory.THEMES_APP_UI
             ),
             isDarkMode = isDarkMode,
@@ -414,6 +417,7 @@ private fun SettingsOverviewList(
         // Group 3: Backup & Restore + About
         SettingsCategoryCardGroup(
             categories = listOf(
+                SettingsCategory.DOWNLOADS,
                 SettingsCategory.BACKUP_RESTORE,
                 SettingsCategory.ABOUT
             ),

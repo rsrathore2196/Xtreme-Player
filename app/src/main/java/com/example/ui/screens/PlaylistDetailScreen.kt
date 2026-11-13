@@ -104,7 +104,9 @@ fun PlaylistDetailScreen(
     pinPlaybackActions: Boolean = false,
     listState: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
     footer: (@Composable () -> Unit)? = null,
-    onRemoveEntry: ((MusicTrack) -> Unit)? = null
+    onRemoveEntry: ((MusicTrack) -> Unit)? = null,
+    downloadCollectionComplete: Boolean = true,
+    loadDownloadTracks: (suspend () -> List<MusicTrack>)? = null
 ) {
     val playlist = playlistWithTracks.playlist
     val tracks = playlistWithTracks.musicTracks
@@ -510,6 +512,10 @@ fun PlaylistDetailScreen(
                 }
             }
 
+                item("collection_download") {
+                    com.example.ui.screens.settings.DownloadCollectionButton(tracks, playlist.title,
+                        Modifier.fillMaxWidth().padding(horizontal = 24.dp), downloadCollectionComplete, loadDownloadTracks)
+                }
                 if (!pinPlaybackActions) {
                     item("portrait_playlist_actions") {
                         Row(

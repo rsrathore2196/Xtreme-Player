@@ -397,7 +397,7 @@ class PlaybackManager(
             pendingSelectionId != null || youtubeQualityJob?.isActive == true || recoveryJob?.isActive == true ||
             losslessFallback?.let { !it.activated } == true) return
         val uri = player.currentMediaItem?.playbackUri()?.toString() ?: return
-        if (player.currentMediaItem?.mediaId != track.id || Uri.parse(uri).scheme in setOf("file", "content")) return
+        if (player.currentMediaItem?.mediaId != track.id || Uri.parse(uri).scheme in setOf("file", "content", "xtreme-offline")) return
         val key = "${track.id}:$uri:${policy.key}"
         if (losslessDiscoveryKey == key && losslessDiscoveryJob?.isActive == true) return
         losslessDiscoveryJob?.cancel()
@@ -484,7 +484,7 @@ class PlaybackManager(
             // provides recording evidence for an explicit source enhancement.
             if (track.durationMs <= 0L && player.duration > 0L) track.copy(durationMs = player.duration) else track
         }
-        if (player.currentMediaItem?.mediaId != original.id || Uri.parse(original.audioUrl).scheme in setOf("file", "content")) return
+        if (player.currentMediaItem?.mediaId != original.id || Uri.parse(original.audioUrl).scheme in setOf("file", "content", "xtreme-offline")) return
         recoveryJob?.cancel()
         val remembered = enhancerOrigin?.takeIf { it.track.id == original.id }
             ?: SourceTransitionOrigin.read(player.currentMediaItem, original)
@@ -1223,7 +1223,7 @@ class PlaybackManager(
         positionClock.sample(_playbackPosition.value, false)
         _uiState.update { it.copy(isPlaying = false) }
         if (current.isLossless && losslessFallback == null && !error.isAudioPipelineFailure() &&
-            Uri.parse(current.audioUrl).scheme !in setOf("file", "content")) {
+            Uri.parse(current.audioUrl).scheme !in setOf("file", "content", "xtreme-offline")) {
             val reason = when (error.errorCode) {
                 androidx.media3.common.PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED -> LosslessDiagnostics.Reason.DECODER_UNSUPPORTED
                 androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> LosslessDiagnostics.Reason.NETWORK_TIMEOUT
@@ -1828,7 +1828,7 @@ class PlaybackManager(
 
     private suspend fun playTrackInternal(track: MusicTrack, queue: List<MusicTrack>, isExplicitPlaylist: Boolean = false,
         preserveQueue: Boolean = false) {
-        if (track.audioUrl.isBlank() || (Uri.parse(track.audioUrl).scheme !in setOf("http", "https", "file", "content", "xtreme-youtube", "xtreme-sabr") &&
+        if (track.audioUrl.isBlank() || (Uri.parse(track.audioUrl).scheme !in setOf("http", "https", "file", "content", "xtreme-offline", "xtreme-youtube", "xtreme-sabr") &&
             com.example.data.remote.StreamingAddons.mime(track.audioUrl) != androidx.media3.common.MimeTypes.APPLICATION_MPD)) {
             showPlaybackFailure("No playable stream is available for '${track.title}'.")
             return

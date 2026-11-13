@@ -215,8 +215,10 @@ class MusicService : MediaLibraryService() {
             else codec in setOf("AAC", "Opus", "Vorbis")
     }
 
+    private val connectionScrobbler by lazy { com.example.connections.LastFmScrobbler(this) }
     private val listeningClock = com.example.data.local.ListeningClock(
-        emit = { snapshot -> com.example.data.repository.ListeningStatsRepository.get(this).record(snapshot) },
+        emit = { snapshot -> com.example.data.repository.ListeningStatsRepository.get(this).record(snapshot)
+            connectionScrobbler.accept(snapshot) },
         onOccurrence = com.example.data.local.ListeningSessions::publish)
     private var listeningPosition = 0L
     private var listeningSpeed = 1f
@@ -413,7 +415,7 @@ class MusicService : MediaLibraryService() {
         val uri = item.localConfiguration?.uri ?: return
         if (SabrSessionRegistry.controllerHandlesRecovery?.invoke() == true || !player.isPlaying || !policy.allowsArchive ||
             policy.returnsToYouTube(item.mediaId) || sourceRecoveryJob?.isActive == true ||
-            item.mediaMetadata.extras?.getBoolean("isLossless") == true || uri.scheme in setOf("file", "content")) return
+            item.mediaMetadata.extras?.getBoolean("isLossless") == true || uri.scheme in setOf("file", "content", "xtreme-offline")) return
         val key = "${item.mediaId}:$uri:${policy.key}"
         if (losslessDiscoveryKey == key && losslessDiscoveryJob?.isActive == true) return
         losslessDiscoveryKey = key
@@ -474,7 +476,7 @@ class MusicService : MediaLibraryService() {
         val revision = ++policyRevision
         headlessTransition = null
         headlessPolicyOwner = owner
-        if (uri.scheme in setOf("file", "content")) return
+        if (uri.scheme in setOf("file", "content", "xtreme-offline")) return
         val metadata = item.mediaMetadata
         val extras = metadata.extras
         val track = currentPolicyTrack(player, item)
@@ -726,7 +728,7 @@ class MusicService : MediaLibraryService() {
             if (!outputRecoveryGuard.isCurrent(item.mediaId, token) || player.currentMediaItem?.mediaId != item.mediaId ||
                 player.currentMediaItem?.localConfiguration?.uri != uri) return@launch
             val policy = networkQuality.sourcePolicy.value
-            if (uri.scheme !in setOf("file", "content") && !policy.acceptsRemoteTrack(currentPolicyTrack(player, item))) {
+            if (uri.scheme !in setOf("file", "content", "xtreme-offline") && !policy.acceptsRemoteTrack(currentPolicyTrack(player, item))) {
                 recoveringAudioTrackId = null
                 reconcileHeadlessPolicy(policy, failedUrl = uri.toString())
                 return@launch
@@ -844,10 +846,12 @@ class MusicService : MediaLibraryService() {
         val mediaSourceFactory = object : androidx.media3.exoplayer.source.MediaSource.Factory by transportSources {
             override fun createMediaSource(item: MediaItem): androidx.media3.exoplayer.source.MediaSource {
                 val address = item.localConfiguration?.uri
-                if (address?.scheme in setOf("file", "content") ||
+                if (address?.scheme == com.example.downloads.OfflineDownloads.SCHEME)
+                    return com.example.downloads.OfflineDownloads.get(this@MusicService).source(item)
+                if (address?.scheme in setOf("file", "content", "xtreme-offline") ||
                     item.mediaMetadata.extras?.getString("source_policy_key") == networkQuality.sourcePolicy.value.key)
                     return transportSources.createMediaSource(item)
-                return PolicyResolvingMediaSource(item, transportSources, serviceScope,
+                return PolicyResolvingMediaSource(item, this, serviceScope,
                     resolvedIsCurrent = { it.mediaMetadata.extras?.getString("source_policy_key") == networkQuality.sourcePolicy.value.key }) { requested ->
                     resolveQueuedSource(requested)
                 }
@@ -995,7 +999,7 @@ class MusicService : MediaLibraryService() {
                     addonSource != null -> addonSource
                     archive -> "INTERNET_ARCHIVE"
                     YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString()) -> "YOUTUBE"
-                    uri.scheme in setOf("file", "content") -> "LOCAL"
+                    uri.scheme in setOf("file", "content", "xtreme-offline") -> "LOCAL"
                     host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> "JIOSAAVN"
                     else -> item.mediaMetadata.extras?.getString("media_source").orEmpty().ifBlank { "STREAM" }
                 }
@@ -1257,7 +1261,7 @@ class MusicService : MediaLibraryService() {
                         return
                     }
                     if (item != null && failedUri != null && next == null &&
-                        failedUri.scheme !in setOf("file", "content", "asset", "android.resource")) {
+                        failedUri.scheme !in setOf("file", "content", "xtreme-offline", "asset", "android.resource")) {
                         recoverHeadlessSource(item, failedUri)
                         return
                     }
@@ -1315,7 +1319,7 @@ class MusicService : MediaLibraryService() {
             YouTubeAudioStreamService.isYouTubeAudio(item.mediaId, uri.toString()) -> "YouTube Music"
             host == "archive.org" || host.endsWith(".archive.org") -> "Internet Archive"
             host == "saavncdn.com" || host.endsWith(".saavncdn.com") -> "JioSaavn"
-            uri.scheme in setOf("file", "content") -> "Local audio"
+            uri.scheme in setOf("file", "content", "xtreme-offline") -> "Local audio"
             else -> item.mediaMetadata.extras?.getString("media_source").orEmpty().ifBlank { "Audio stream" }
         }
         val sourceId = com.example.playback.SourceTransitionOrigin.sourceId(item.mediaId, uri, networkQuality.sourcePolicy.value).orEmpty()
@@ -1372,6 +1376,7 @@ class MusicService : MediaLibraryService() {
         checkpoint()
         listeningClock.update(null, false, android.os.SystemClock.elapsedRealtime(), System.currentTimeMillis(), advancing = false)
         checkpointJob?.cancel()
+        connectionScrobbler.close()
         crossfade?.close(); crossfade = null
         jioFallback?.cancel(); jioFallback = null
         serviceScope.cancel()

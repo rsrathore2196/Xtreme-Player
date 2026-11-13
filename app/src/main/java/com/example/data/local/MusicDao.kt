@@ -11,6 +11,12 @@ data class ArtistTrackCredits(val id: String, val artist: String, val singers: S
 
 @Dao
 interface MusicDao {
+    @Query("SELECT playlistId FROM connected_collections WHERE provider = :provider AND accountId = :accountId AND remoteId = :remoteId")
+    suspend fun importedPlaylistId(provider: String, accountId: String, remoteId: String): Long?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun saveConnectedCollection(collection: ConnectedCollectionEntity)
+
     @Query("SELECT COUNT(*) FROM tracks WHERE isLiked = 1")
     fun observeFavoriteCount(): Flow<Int>
 

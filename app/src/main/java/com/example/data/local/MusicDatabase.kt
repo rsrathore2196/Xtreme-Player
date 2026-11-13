@@ -10,8 +10,8 @@ import com.example.performance.AppDispatchers
 import kotlinx.coroutines.asExecutor
 
 @Database(
-    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ListeningTotal::class, ListeningCheckpoint::class, ListeningIdentityMigration::class, HomeInputRevision::class],
-    version = 15,
+    entities = [TrackEntity::class, PlaylistEntity::class, PlaylistTrackCrossRef::class, ListeningEventEntity::class, ListeningTotal::class, ListeningCheckpoint::class, ListeningIdentityMigration::class, HomeInputRevision::class, ConnectedCollectionEntity::class],
+    version = 16,
     exportSchema = true
 )
 abstract class MusicDatabase : RoomDatabase() {
@@ -220,6 +220,13 @@ abstract class MusicDatabase : RoomDatabase() {
             override fun onOpen(db: SupportSQLiteDatabase) { HomeInputRevisionTriggers.install(db) }
         }
 
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS connected_collections (provider TEXT NOT NULL, accountId TEXT NOT NULL, remoteId TEXT NOT NULL, playlistId INTEGER NOT NULL, PRIMARY KEY(provider, accountId, remoteId), FOREIGN KEY(playlistId) REFERENCES playlists(playlistId) ON UPDATE NO ACTION ON DELETE CASCADE)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_connected_collections_playlistId ON connected_collections (playlistId)")
+            }
+        }
+
         val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
@@ -232,7 +239,7 @@ abstract class MusicDatabase : RoomDatabase() {
             MIGRATION_8_9,
             MIGRATION_9_10,
             MIGRATION_10_11,
-            MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15
+            MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16
         )
 
         fun getDatabase(context: Context): MusicDatabase {

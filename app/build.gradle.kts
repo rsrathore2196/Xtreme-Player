@@ -82,6 +82,7 @@ android {
   }
   sourceSets {
     getByName("test").assets.srcDir("$projectDir/schemas")
+    getByName("androidTest").assets.srcDir("$projectDir/schemas")
   }
   dependenciesInfo {
     includeInApk = false
@@ -146,6 +147,7 @@ dependencies {
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
   implementation(libs.androidx.security.crypto)
+  implementation(libs.androidx.webkit)
   implementation(libs.coil.compose)
   implementation(libs.media3.exoplayer)
   implementation(libs.media3.exoplayer.hls)
@@ -197,6 +199,7 @@ dependencies {
   androidTestImplementation(libs.androidx.espresso.core)
   androidTestImplementation(libs.androidx.junit)
   androidTestImplementation(libs.androidx.runner)
+  androidTestImplementation(libs.androidx.room.testing)
   debugImplementation(libs.androidx.compose.ui.test.manifest)
   debugImplementation(libs.androidx.compose.ui.tooling)
   "ksp"(libs.androidx.room.compiler)

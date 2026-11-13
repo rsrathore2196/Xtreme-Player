@@ -457,6 +457,8 @@ class MusicRepository private constructor(
         manualUpgrade: Boolean = false,
         retainLosslessLookup: Boolean = true
     ): MusicTrack = withContext(AppDispatchers.Io) {
+        if (android.net.Uri.parse(track.audioUrl).scheme == com.example.downloads.OfflineDownloads.SCHEME) return@withContext track
+        context?.let { com.example.downloads.OfflineDownloads.get(it).localTrack(track) }?.let { return@withContext it }
         repeat(3) {
             context?.let { com.example.data.local.OtherSettingsPreferences.loadPlaybackSources(it) }
             val monitor = context?.let { com.example.playback.NetworkQualityMonitor.getInstance(it) }
@@ -497,6 +499,18 @@ class MusicRepository private constructor(
             }
         }
         throw TrackUnavailableException(track.title, "Streaming settings changed during resolution. Please try again.")
+    }
+
+    /** Downloads pin their own quality without changing the active stream's policy. */
+    internal suspend fun resolveDownloadTrack(track: MusicTrack, quality: com.example.downloads.DownloadQuality): MusicTrack = withContext(AppDispatchers.Io) {
+        val lossless = quality == com.example.downloads.DownloadQuality.LOSSLESS
+        val cap = if (lossless) Int.MAX_VALUE else quality.kbps * 1000
+        val ceiling = if (lossless) com.example.playback.AudioQualityCeiling.MAX else com.example.playback.AudioQualityCeiling.HIGH
+        val policy = context?.let { com.example.playback.NetworkQualityMonitor.getInstance(it).sourcePolicySnapshot() }
+            ?.copy(ceiling = ceiling, online = true, returnToYouTube = false, requestTrackId = track.id)
+            ?: com.example.playback.PlaybackSourcePolicy(ceiling)
+        streamResolver.resolve(track, if (lossless) AudioQuality.HI_RES_LOSSLESS else AudioQuality.ULTRA_HD_320,
+            forceRefresh = true, maxBitrateBps = cap, sourcePolicy = policy, retainLosslessLookup = false)
     }
 
     suspend fun resolveYouTubeFallback(

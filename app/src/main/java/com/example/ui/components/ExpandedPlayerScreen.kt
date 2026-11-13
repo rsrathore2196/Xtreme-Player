@@ -2666,6 +2666,11 @@ private fun PlayerOptionsMenu(
     @Suppress("NAME_SHADOWING") val appColors = rememberPlayerPopupColors(appColors)
     @Suppress("NAME_SHADOWING") val isDark = appColors.isDark
 
+    val downloadScope = rememberCoroutineScope()
+    val downloads = remember(context) { com.example.downloads.OfflineDownloads.get(context) }
+    val downloaded by downloads.records.collectAsStateWithLifecycle()
+    LaunchedEffect(expanded) { if (expanded) runCatching { downloads.load() } }
+
     PlayerPopupTheme(appColors) {
         DropdownMenu(
             expanded = expanded,
@@ -2777,6 +2782,22 @@ private fun PlayerOptionsMenu(
                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
             )
 
+            DropdownMenuItem(text = { Text(when (downloaded[track.id]?.status) {
+                com.example.downloads.DownloadStatus.COMPLETE -> "Remove download"
+                com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> "Pause download"
+                com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> "Resume download"
+                else -> "Download"
+            }, color = appColors.textPrimary) }, onClick = { downloadScope.launch {
+                try {
+                    when (downloaded[track.id]?.status) {
+                        com.example.downloads.DownloadStatus.COMPLETE -> downloads.remove(track.id)
+                        com.example.downloads.DownloadStatus.QUEUED, com.example.downloads.DownloadStatus.DOWNLOADING -> downloads.pause(track.id)
+                        com.example.downloads.DownloadStatus.PAUSED, com.example.downloads.DownloadStatus.FAILED -> downloads.resume(track.id)
+                        else -> downloads.enqueue(listOf(track))
+                    }
+                    onDismissRequest()
+                } catch (_: Exception) { android.widget.Toast.makeText(context, "Could not update download. Try again.", android.widget.Toast.LENGTH_SHORT).show() }
+            } })
             // Action 3: Share Track
             DropdownMenuItem(
                 text = {

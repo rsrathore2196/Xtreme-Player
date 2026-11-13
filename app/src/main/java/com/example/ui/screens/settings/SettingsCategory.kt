@@ -7,6 +7,8 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.CloudDownload
+import androidx.compose.material.icons.filled.ManageAccounts
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.example.BuildConfig
 
@@ -20,6 +22,12 @@ enum class SettingsCategory(
     val icon: ImageVector,
     val tag: String
 ) {
+    ACCOUNTS_CONNECTIONS(
+        title = "Accounts & Connections",
+        rawSubtitle = "YouTube Music · Last.fm · Spotify",
+        icon = Icons.Default.ManageAccounts,
+        tag = "settings_cat_accounts"
+    ),
     THEMES_APP_UI(
         title = "Appearance",
         rawSubtitle = "Dark Mode · Light Mode · System Theme · Player Layout",
@@ -37,6 +45,12 @@ enum class SettingsCategory(
         rawSubtitle = "Clear Cache · Text & UI Sizing · Proxy Privacy",
         icon = Icons.Default.Settings,
         tag = "settings_cat_others"
+    ),
+    DOWNLOADS(
+        title = "Downloads",
+        rawSubtitle = "Offline Music · Download Quality · Storage",
+        icon = Icons.Default.CloudDownload,
+        tag = "settings_cat_downloads"
     ),
     BACKUP_RESTORE(
         title = "Backup & Restore",
