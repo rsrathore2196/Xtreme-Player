@@ -222,7 +222,7 @@ fun OtherSettingsPage(
                     Text("Preferred Refresh Rate", fontSize = 13.sp,
                         fontWeight = FontWeight.SemiBold, color = appColors.textPrimary)
                     Text(
-                        "Auto lets Android choose. Fixed rates use the nearest supported rate at your current resolution.",
+                        "Uses the nearest supported rate at your current resolution. Turn off to let Android choose automatically.",
                         fontSize = 11.sp, color = appColors.textMuted,
                         modifier = Modifier.padding(top = 3.dp, bottom = 10.dp)
                     )
@@ -252,7 +252,7 @@ fun OtherSettingsPage(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = if (rate == 0) "Auto" else "$rate Hz",
+                                        text = "$rate Hz",
                                         fontSize = 12.5.sp,
                                         fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                                         color = if (selected) accentColor else appColors.textPrimary,

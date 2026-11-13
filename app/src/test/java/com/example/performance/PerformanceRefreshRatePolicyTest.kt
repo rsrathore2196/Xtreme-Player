@@ -24,15 +24,17 @@ class PerformanceRefreshRatePolicyTest {
             DisplayRefreshRatePolicy.resolveWindowRequest(true, 120, false, listOf(60, 120)))
         assertEquals(WindowRefreshRateRequest(0f, true, true),
             DisplayRefreshRatePolicy.resolveWindowRequest(false, 120, true, listOf(60, 120)))
-        assertEquals(WindowRefreshRateRequest(0f, true, false),
+        assertEquals(WindowRefreshRateRequest(60f, true, false),
             DisplayRefreshRatePolicy.resolveWindowRequest(true, 0, true, listOf(60, 120)))
         assertEquals(WindowRefreshRateRequest(90f, true, false),
             DisplayRefreshRatePolicy.resolveWindowRequest(true, 120, true, listOf(60, 90)))
     }
 
     @Test
-    fun autoDoesNotForceAnExplicitRefreshRate() {
-        assertEquals(0, DisplayRefreshRatePolicy.resolvePreferredRefreshRate(0, listOf(60, 90, 120)))
+    fun legacyAutoDefaultsTo60OnlyWhenPerformanceIsEnabled() {
+        assertEquals(60, DisplayRefreshRatePolicy.resolvePreferredRefreshRate(0, listOf(60, 90, 120)))
+        assertEquals(60, DisplayRefreshRatePolicy.resolvePreferredRefreshRate(-1, listOf(60, 90, 120)))
+        assertEquals(0f, DisplayRefreshRatePolicy.resolveWindowRequest(false, 0, true, listOf(60, 90, 120)).rate)
     }
 
     @Test

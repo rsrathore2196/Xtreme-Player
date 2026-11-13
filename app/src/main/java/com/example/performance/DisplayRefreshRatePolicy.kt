@@ -116,17 +116,17 @@ object DisplayRefreshRatePolicy {
     }
 
     /**
-     * Resolve a saved fixed-rate choice against the current display. AUTO (0) deliberately
-     * remains automatic. If a setting is restored on another device, choose the nearest
+     * Resolve a saved fixed-rate choice against the current display. Legacy Auto values
+     * become 60 Hz. If a setting is restored on another device, choose the nearest
      * supported rate; on an exact tie prefer the higher rate.
      */
     fun resolvePreferredRefreshRate(preferredHz: Int, supportedRates: List<Int>): Int {
-        if (preferredHz <= 0) return 0
+        val fixedHz = preferredHz.takeIf { it > 0 } ?: 60
         val usable = supportedRates.filter { it in 50..240 }.distinct()
-        if (usable.isEmpty()) return preferredHz.coerceIn(50, 240)
+        if (usable.isEmpty()) return fixedHz.coerceIn(50, 240)
         return usable.minWithOrNull(
-            compareBy<Int> { abs(it - preferredHz) }.thenByDescending { it }
-        ) ?: preferredHz.coerceIn(50, 240)
+            compareBy<Int> { abs(it - fixedHz) }.thenByDescending { it }
+        ) ?: fixedHz.coerceIn(50, 240)
     }
 
     fun resolvePreferredRefreshRate(display: Display?, preferredHz: Int): Int =

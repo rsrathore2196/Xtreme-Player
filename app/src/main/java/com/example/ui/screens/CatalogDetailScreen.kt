@@ -220,24 +220,23 @@ private fun AlbumProfileHeader(album: CatalogAlbum, onBack: () -> Unit) {
     val colors = LocalAppColors.current
     val configuration = LocalConfiguration.current
     val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-    val height = if (landscape) (configuration.screenHeightDp * .72f).dp.coerceIn(220.dp, 360.dp)
-        else (configuration.screenHeightDp * .50f).dp.coerceIn(320.dp, 460.dp)
     val topSpacing = if (landscape) 8.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 20.dp
     Column(Modifier.fillMaxWidth()) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .height(height)
                 .background(colors.scaffoldBackground)
                 .testTag("album_profile_header")
         ) {
             AsyncImage(
                 model = rememberOptimizedImageRequest(album.image, targetSize = 1200),
                 contentDescription = album.title,
-                contentScale = ContentScale.Crop,
+                contentScale = ContentScale.Fit,
                 modifier = Modifier
-                    .matchParentSize()
+                    .fillMaxWidth()
                     .padding(top = topSpacing)
+                    .aspectRatio(1f)
+                    .testTag("album_profile_artwork")
                     .headerArtworkEdgeBlend(topFade = 0.10f, bottomFade = 0.10f, topMargin = 0.01f, bottomMargin = 0.02f)
             )
             Box(

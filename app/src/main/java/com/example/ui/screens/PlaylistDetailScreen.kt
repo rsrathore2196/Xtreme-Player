@@ -7,6 +7,7 @@ import com.example.ui.util.landscapeContentBounds
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -398,24 +399,23 @@ fun PlaylistDetailScreen(
                 }
             } else {
                 item("portrait_playlist_header") {
-                    val configuration = LocalConfiguration.current
-                    val headerHeight = (configuration.screenHeightDp * .50f).dp.coerceIn(320.dp, 460.dp)
                     val topSpacing = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 20.dp
                     Column(Modifier.fillMaxWidth()) {
                         Box(
                             Modifier
                                 .fillMaxWidth()
-                                .height(headerHeight)
                                 .background(appColors.scaffoldBackground)
                                 .testTag("playlist_profile_header")
                         ) {
                             AsyncImage(
                                 model = rememberPlaylistCoverRequest(playlist.coverUrl, 1200),
                                 contentDescription = playlist.title,
-                                contentScale = ContentScale.Crop,
+                                contentScale = ContentScale.Fit,
                                 modifier = Modifier
-                                    .matchParentSize()
+                                    .fillMaxWidth()
                                     .padding(top = topSpacing)
+                                    .aspectRatio(1f)
+                                    .testTag("playlist_profile_artwork")
                                     .headerArtworkEdgeBlend(topFade = 0.10f, bottomFade = 0.10f, topMargin = 0.01f, bottomMargin = 0.02f)
                             )
                             Box(

@@ -143,14 +143,14 @@ class PlayerArtworkColorsTest {
     @Test fun cacheKeyInvalidatesPalettesWithoutSeparateEdgeColors() {
         val track = MusicTrack("track_1", "Song", "Artist", "Album", 200_000, "cover_url", "audio_url")
         val key = playerPaletteKey(track, true, Color.White, Color.Black, "cover_url")
-        assertTrue("Key must start with album-bg-colors-v8", key.startsWith("album-bg-colors-v8|"))
-        assertFalse("Old single-color backgrounds must be re-extracted", key.startsWith("album-bg-colors-v7|"))
+        assertTrue("Key must start with album-bg-colors-v9", key.startsWith("album-bg-colors-v9|"))
+        assertFalse("White-biased edge palettes must be re-extracted", key.startsWith("album-bg-colors-v8|"))
     }
 
     @Test fun oppositeEdgesKeepTheirActualColorsEvenWithALargeCenterSubject() {
         for ((top, bottom) in listOf(0xff6a1b9a.toInt() to 0xffef6c00.toInt(),
-            android.graphics.Color.BLACK to android.graphics.Color.WHITE,
-            android.graphics.Color.WHITE to android.graphics.Color.BLACK)) sample(top) { bitmap ->
+            android.graphics.Color.BLACK to 0xff777777.toInt(),
+            0xff777777.toInt() to android.graphics.Color.BLACK)) sample(top) { bitmap ->
             for (y in 60 until 120) for (x in 0 until 120) bitmap.setPixel(x, y, bottom)
             android.graphics.Canvas(bitmap).drawRect(12f, 15f, 108f, 105f,
                 android.graphics.Paint().apply { color = android.graphics.Color.GREEN })

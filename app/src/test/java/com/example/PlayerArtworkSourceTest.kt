@@ -58,7 +58,7 @@ class PlayerArtworkSourceTest {
     @Test fun rectangularPlayerFallbackRequestsKeepTheirProviderAspectRatio() {
         lateinit var request: ImageRequest
         val rectangle = track.copy(coverUrl = "https://lh3.googleusercontent.com/video=w640-h360-l90-rj")
-        compose.setContent { val prepared = rememberPlayerArtworkRequest(rectangle, true); SideEffect { request = prepared } }
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(rectangle, true, resolveCover = { null }); SideEffect { request = prepared } }
         compose.runOnIdle {
             val sized = request.data.toString()
             val width = Regex("=w(\\d+)").find(sized)!!.groupValues[1].toInt()
@@ -87,7 +87,7 @@ class PlayerArtworkSourceTest {
 
     @Test fun absentThumbnailUsesOnlyTheSameVideosKnownIdentity() {
         lateinit var request: ImageRequest
-        compose.setContent { val prepared = rememberPlayerArtworkRequest(track.copy(coverUrl = ""), true); SideEffect { request = prepared } }
+        compose.setContent { val prepared = rememberPlayerArtworkRequest(track.copy(coverUrl = ""), true, resolveCover = { null }); SideEffect { request = prepared } }
         compose.runOnIdle { assertEquals("https://i.ytimg.com/vi/abcdefghijk/maxresdefault.jpg", request.data) }
     }
     @Test fun playerCanImmediatelyShowTheSameCoverAlreadyCachedByHome() {

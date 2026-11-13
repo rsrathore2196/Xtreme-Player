@@ -8,7 +8,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.palette.graphics.Palette
 import coil.request.CachePolicy
 import coil.request.ImageRequest
 import coil.request.SuccessResult
@@ -35,7 +34,6 @@ import androidx.compose.ui.unit.IntSize
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlin.math.roundToInt
 
 /** Presentation-only cover; playback/catalog identity and the native shelf image stay intact. */
 internal data class ResolvedPlayerCover(val identity: String, val url: String)
@@ -137,23 +135,50 @@ internal fun playerAppearanceColors(source: AppThemeColors): AppThemeColors = so
 @Suppress("UNUSED_PARAMETER")
 fun playerPaletteKey(track: MusicTrack, dark: Boolean, accent: Color, base: Color,
     artworkIdentity: String = track.coverUrl): String =
-    "album-bg-colors-v8|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
+    "album-bg-colors-v9|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
 
-/** The URL is ready on the first composition; no metadata API or navigation wait. */
+/** Show the native cover immediately; resolve a landscape shelf image to song art while visible. */
 @Composable
-internal fun rememberPlayerArtworkRequest(track: MusicTrack, active: Boolean): ImageRequest {
+internal fun rememberPlayerArtworkRequest(track: MusicTrack, active: Boolean,
+    resolveCover: suspend (MusicTrack) -> String? = ::resolveYouTubePlayerCover
+): ImageRequest {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val sourceSize = remember(context, configuration.screenWidthDp, configuration.screenHeightDp, configuration.densityDpi) {
         playerArtworkDecodeSize(context)
     }
-    val visibility = remember(context, track.id, track.coverUrl) { ArtworkVisibility(active) }
+    val identity = remember(track) { playerCoverLookupIdentity(track) }
+    var resolved by remember(identity) { mutableStateOf<String?>(null) }
+    LaunchedEffect(identity, active, sourceSize) {
+        if (!active || resolved != null || hasNativeSquareCover(track.coverUrl) || isSelectedSongCover(track.id, track.coverUrl)) return@LaunchedEffect
+        // The visible player also owns its lookup. A cancelled/unfinished optional
+        // prefetch must not leave a Home video's rectangular thumbnail in the player.
+        withContext(AppDispatchers.Io) {
+            try {
+                val cover = resolveCover(track) ?: return@withContext
+                val request = buildOptimizedImageRequest(context, cover, ImageConfig.PLAYER_SCREEN_SIZE,
+                    track, decodeSize = sourceSize, currentTrack = true, requireSquareSongArtwork = true)
+                val result = context.imageLoader.execute(request) as? SuccessResult ?: return@withContext
+                val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
+                val width = bitmap?.width ?: result.drawable.intrinsicWidth
+                val height = bitmap?.height ?: result.drawable.intrinsicHeight
+                if (width <= 0 || width != height) return@withContext
+                currentCoroutineContext().ensureActive()
+                selectedSongCovers.put(track.id, cover)
+                resolved = cover
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Keep the same-track cover if song artwork is unavailable. */ }
+        }
+    }
+    val coverUrl = resolved ?: track.coverUrl
+    val visibility = remember(context, track.id, coverUrl) { ArtworkVisibility(active) }
     SideEffect { visibility.active.value = active }
-    return remember(context, track.id, track.coverUrl, visibility, sourceSize) {
+    return remember(context, track.id, coverUrl, visibility, sourceSize) {
         // AsyncImage resolves the actual rendered bounds. Prefetch still has an
         // explicit window-sized target; both use the same provider source file.
-        buildOptimizedImageRequest(context, track.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE, track,
-            visibility = visibility, currentTrack = true, sourceSize = sourceSize)
+        buildOptimizedImageRequest(context, coverUrl, ImageConfig.PLAYER_SCREEN_SIZE, track,
+            visibility = visibility, currentTrack = true, sourceSize = sourceSize,
+            requireSquareSongArtwork = resolved != null || hasNativeSquareCover(coverUrl))
     }
 }
 
@@ -188,205 +213,13 @@ private fun playerArtworkDerivative(artwork: ImageRequest, targetPixels: Int): I
     }
 }
 
-/** Called on CpuBounded with the small software sample, never with a full-size hardware bitmap. */
+/** Called on CpuBounded with the small software sample, never a full-size hardware bitmap. */
 @Suppress("UNUSED_PARAMETER")
 internal fun extractPlayerArtworkColors(bitmap: Bitmap, dark: Boolean): ExtractedTrackColors? {
     val w = bitmap.width
     val h = bitmap.height
     if (w <= 0 || h <= 0) return null
-
-    // Read pixels directly into an IntArray - zero allocation overhead and avoids canvas drawing bugs.
     val pixels = IntArray(w * h)
     bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-
-    // The two edges can have completely different hues. Keep their real RGB
-    // values independent of the subject palette, theme, and accent adjustments.
-    // Weight the outermost rows most strongly, averaging a narrow band to soften
-    // compression noise without pulling colors from the middle of the cover.
-    fun edgeColor(bottom: Boolean, fallback: Color): Color {
-        val rows = (h * 0.06f).roundToInt().coerceIn(1, h)
-        var red = 0.0
-        var green = 0.0
-        var blue = 0.0
-        var total = 0.0
-        for (row in 0 until rows) {
-            val y = if (bottom) h - row - 1 else row
-            for (x in 0 until w) {
-                val pixel = pixels[y * w + x]
-                val weight = ((pixel ushr 24) and 0xff) / 255.0 * (rows - row)
-                red += ((pixel ushr 16) and 0xff) * weight
-                green += ((pixel ushr 8) and 0xff) * weight
-                blue += (pixel and 0xff) * weight
-                total += weight
-            }
-        }
-        return if (total == 0.0) fallback else Color(
-            (red / total).roundToInt(), (green / total).roundToInt(), (blue / total).roundToInt())
-    }
-    fun colors(dominant: Color, accent: Color, vibrant: Color) = ExtractedTrackColors(
-        dominant, accent, vibrant, edgeColor(false, dominant), edgeColor(true, dominant))
-
-    // Spatial Multi-Region Analysis:
-    // Partition into a 3x3 grid (9 zones):
-    // 0: Top-Left (Corner)      1: Top-Center (Edge)       2: Top-Right (Corner)
-    // 3: Mid-Left (Edge)        4: Mid-Center (Subject)    5: Mid-Right (Edge)
-    // 6: Bottom-Left (Corner)   7: Bottom-Center (Edge)    8: Bottom-Right (Corner)
-    val zoneWeights = floatArrayOf(
-        2.2f, 1.8f, 2.2f,
-        1.5f, 0.05f, 1.5f,
-        1.8f, 1.2f, 1.8f
-    )
-
-    val binWeights = FloatArray(32768)
-    val binSumR = FloatArray(32768)
-    val binSumG = FloatArray(32768)
-    val binSumB = FloatArray(32768)
-    val binTotalW = FloatArray(32768)
-    val binZoneMask = ShortArray(32768)
-
-    val xDiv1 = w / 3
-    val xDiv2 = (2 * w) / 3
-    val yDiv1 = h / 3
-    val yDiv2 = (2 * h) / 3
-
-    for (y in 0 until h) {
-        val rowZone = if (y < yDiv1) 0 else if (y < yDiv2) 3 else 6
-        val rowOffset = y * w
-        for (x in 0 until w) {
-            val colZone = if (x < xDiv1) 0 else if (x < xDiv2) 1 else 2
-            val zone = rowZone + colZone
-
-            val pixel = pixels[rowOffset + x]
-            val a = (pixel ushr 24) and 0xFF
-            if (a < 128) continue
-
-            val r = (pixel ushr 16) and 0xFF
-            val g = (pixel ushr 8) and 0xFF
-            val b = pixel and 0xFF
-
-            val weight = zoneWeights[zone]
-            val bin = ((r shr 3) shl 10) or ((g shr 3) shl 5) or (b shr 3)
-
-            binWeights[bin] += weight
-            binSumR[bin] += r * weight
-            binSumG[bin] += g * weight
-            binSumB[bin] += b * weight
-            binTotalW[bin] += weight
-            binZoneMask[bin] = (binZoneMask[bin].toInt() or (1 shl zone)).toShort()
-        }
-    }
-
-    // Evaluate candidate bins:
-    // Outer zone contiguity is paramount: true backgrounds occupy multiple outer zones.
-    // Localized logos, watermarks, or text occupy only 1 or 2 outer zones.
-    var bestBin = -1
-    var bestScore = -1f
-
-    for (i in 0 until 32768) {
-        val totalW = binTotalW[i]
-        if (totalW <= 0f) continue
-
-        val mask = binZoneMask[i].toInt()
-        val outerMask = mask and 0b111011111 // Exclude center zone 4
-        val outerCount = Integer.bitCount(outerMask)
-        if (outerCount == 0) continue
-
-        // Spatial scale factor based on number of outer zones spanned:
-        val spatialFactor = when (outerCount) {
-            1 -> 0.25f
-            2 -> 0.70f
-            3 -> 1.40f
-            4 -> 2.20f
-            5 -> 3.00f
-            else -> 4.00f
-        }
-
-        val score = totalW * spatialFactor
-        if (score > bestScore) {
-            bestScore = score
-            bestBin = i
-        }
-    }
-
-    if (bestBin == -1 || binTotalW[bestBin] <= 0f) {
-        val palette = Palette.from(bitmap).clearFilters().generate()
-        val swatch = palette.dominantSwatch ?: palette.mutedSwatch ?: palette.vibrantSwatch ?: return null
-        val c = Color(swatch.rgb)
-        return colors(c, c, c)
-    }
-
-    // Merge adjacent bins (Manhattan distance <= 1 in 5-bit space) to avoid quantization split
-    val bestR5 = (bestBin shr 10) and 0x1F
-    val bestG5 = (bestBin shr 5) and 0x1F
-    val bestB5 = bestBin and 0x1F
-
-    var mergedSumR = 0f
-    var mergedSumG = 0f
-    var mergedSumB = 0f
-    var mergedTotalW = 0f
-
-    for (dr in -1..1) {
-        val r5 = bestR5 + dr
-        if (r5 !in 0..31) continue
-        for (dg in -1..1) {
-            val g5 = bestG5 + dg
-            if (g5 !in 0..31) continue
-            for (db in -1..1) {
-                if (kotlin.math.abs(dr) + kotlin.math.abs(dg) + kotlin.math.abs(db) > 1) continue
-                val b5 = bestB5 + db
-                if (b5 !in 0..31) continue
-                val neighborBin = (r5 shl 10) or (g5 shl 5) or b5
-                if (binTotalW[neighborBin] > 0f) {
-                    mergedSumR += binSumR[neighborBin]
-                    mergedSumG += binSumG[neighborBin]
-                    mergedSumB += binSumB[neighborBin]
-                    mergedTotalW += binTotalW[neighborBin]
-                }
-            }
-        }
-    }
-
-    val domR = if (mergedTotalW > 0f) (mergedSumR / mergedTotalW).toInt().coerceIn(0, 255)
-        else (binSumR[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
-    val domG = if (mergedTotalW > 0f) (mergedSumG / mergedTotalW).toInt().coerceIn(0, 255)
-        else (binSumG[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
-    val domB = if (mergedTotalW > 0f) (mergedSumB / mergedTotalW).toInt().coerceIn(0, 255)
-        else (binSumB[bestBin] / binTotalW[bestBin]).toInt().coerceIn(0, 255)
-
-    // Neutrality Check:
-    // Genuinely neutral, black, white, and grayscale backgrounds must never acquire
-    // artificial saturation or random chromatic hues.
-    val maxC = maxOf(domR, maxOf(domG, domB))
-    val minC = minOf(domR, minOf(domG, domB))
-    val sat = if (maxC == 0) 0f else (maxC - minC).toFloat() / maxC
-    val isNeutral = sat < 0.06f || (maxC - minC) < 14
-
-    if (isNeutral) {
-        val avg = ((domR + domG + domB) / 3).coerceIn(0, 255)
-        val neutral = Color(avg, avg, avg)
-        return colors(neutral, neutral, neutral)
-    }
-
-    val dominantColor = Color(domR, domG, domB)
-
-    // Derive harmonious accent and vibrant variations in the exact background hue
-    // without artificially over-saturating.
-    val hsv = FloatArray(3)
-    android.graphics.Color.RGBToHSV(domR, domG, domB, hsv)
-
-    val accHsv = floatArrayOf(
-        hsv[0],
-        hsv[1],
-        (hsv[2] * 1.12f).coerceIn(0f, 1f)
-    )
-    val vibHsv = floatArrayOf(
-        hsv[0],
-        hsv[1],
-        (hsv[2] * 0.90f).coerceIn(0f, 1f)
-    )
-
-    val accentColor = Color(android.graphics.Color.HSVToColor(accHsv))
-    val vibrantColor = Color(android.graphics.Color.HSVToColor(vibHsv))
-
-    return colors(dominantColor, accentColor, vibrantColor)
+    return extractPlayerArtworkColors(pixels, w, h)
 }

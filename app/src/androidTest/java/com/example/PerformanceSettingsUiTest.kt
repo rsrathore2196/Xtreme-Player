@@ -34,13 +34,15 @@ class PerformanceSettingsUiTest {
         originalProfile?.let { OtherSettingsPreferences.setLiquidGlassProfile(context, it) }
     }
 
-    @Test fun autoIsSelectedAndFixedRateChoicesArePersisted() {
+    @Test fun legacyAutoBecomes60AndOnlyFixedRateChoicesAreAvailable() {
         original = OtherSettingsPreferences.performanceSettings(context)
         OtherSettingsPreferences.setHighPerformanceEnabled(context, true)
-        OtherSettingsPreferences.setPerformanceRefreshRate(context, 0)
+        context.getSharedPreferences("xtreme_other_settings", 0).edit().putInt("performance_refresh_rate_hz", 0).commit()
         compose.setContent { MyApplicationTheme { OtherSettingsPage(isDarkMode = true) } }
-        compose.onNodeWithTag("refresh_rate_0").performScrollTo().assertIsSelected()
-        for (rate in listOf(60, 90, 120, 0)) {
+        compose.onNodeWithTag("refresh_rate_60").performScrollTo().assertIsSelected()
+        compose.onNodeWithTag("refresh_rate_0").assertDoesNotExist()
+        assertEquals(listOf(60, 90, 120), OtherSettingsPreferences.PERFORMANCE_REFRESH_RATE_OPTIONS)
+        for (rate in listOf(60, 90, 120)) {
             compose.onNodeWithTag("refresh_rate_$rate").performClick()
             compose.waitUntil(5_000) {
                 compose.onNodeWithTag("refresh_rate_$rate").fetchSemanticsNode().config[SemanticsProperties.Selected]
@@ -48,6 +50,10 @@ class PerformanceSettingsUiTest {
             assertEquals(rate, OtherSettingsPreferences.performanceSettings(context).refreshRateHz)
             compose.onNodeWithTag("refresh_rate_$rate").assertIsSelected()
         }
+        compose.onNodeWithTag("switch_high_performance").performClick()
+        compose.waitUntil(5_000) { !OtherSettingsPreferences.performanceSettings(context).highPerformanceEnabled }
+        compose.onNodeWithTag("refresh_rate_60").assertDoesNotExist()
+        assertEquals(120, OtherSettingsPreferences.performanceSettings(context).refreshRateHz)
     }
 
     @Test fun allRenderingProfileSelectionsRoundTripWithoutChangingPerformanceSettings() {

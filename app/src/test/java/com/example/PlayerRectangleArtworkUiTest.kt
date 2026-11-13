@@ -47,7 +47,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class PlayerRectangleArtworkUiTest {
     @get:Rule val compose = createComposeRule()
 
-    @Test fun rectangleRetainsBothSidesAndBlendsIntoTheExistingBackdropInBothPlayerModes() {
+    @Test fun rectangularFallbackFillsThePlayerUntilSongArtworkIsAvailable() {
         val context = ApplicationProvider.getApplicationContext<Application>()
         val previous = Coil.imageLoader(context)
         val fetches = AtomicInteger()
@@ -78,7 +78,7 @@ class PlayerRectangleArtworkUiTest {
                 Box(Modifier.size(200.dp, if (fullScreen) 320.dp else 200.dp).background(backdrop)
                     .onGloballyPositioned { containerBounds = it.boundsInRoot() }.testTag("rectangle_player")) {
                     PlayerCoverArtwork(request, Modifier.fillMaxSize(), fullScreen,
-                        onReady = { shown = it }, onBoundsChanged = { imageBounds = it })
+                        onReady = { shown = true }, onBoundsChanged = { imageBounds = it })
                 }
             }
             compose.waitUntil(5_000) {
@@ -91,21 +91,18 @@ class PlayerRectangleArtworkUiTest {
                     RoborazziOptions(taskType = RoborazziTaskType.Record))
                 val rendered = javax.imageio.ImageIO.read(file)
                 val centerY = rendered.height / 2
-                val left = java.awt.Color(rendered.getRGB(rendered.width * 4 / 100, centerY))
-                val right = java.awt.Color(rendered.getRGB(rendered.width * 96 / 100, centerY))
-                assertTrue("The left edge of the video must not be cropped: $left", left.red > 240 && left.blue < 20)
-                assertTrue("The right edge of the video must not be cropped: $right", right.blue > 240 && right.red < 20)
+                assertEquals("A rectangular fallback fills the square instead of letterboxing",
+                    android.graphics.Color.WHITE, rendered.getRGB(rendered.width / 2, rendered.height / 4))
                 assertEquals(android.graphics.Color.WHITE, rendered.getRGB(rendered.width / 2, centerY))
                 val top = java.awt.Color(rendered.getRGB(rendered.width / 2, 2))
                 val bottom = java.awt.Color(rendered.getRGB(rendered.width / 2, rendered.height - 3))
-                assertTrue("Top margin reveals the unchanged backdrop", top.red in 155..170 && top.green in 45..62)
-                assertTrue("Bottom margin reveals the unchanged backdrop", bottom.red in 100..115 && bottom.green in 105..120)
-                val container = requireNotNull(containerBounds)
-                val actualImage = requireNotNull(imageBounds)
-                val expectedHeight = container.width * 90f / 160f
-                assertEquals("Backdrop blending must use the fitted image, not its taller host",
-                    expectedHeight, actualImage.height, .01f)
-                assertEquals(container.top + (container.height - expectedHeight) / 2f, actualImage.top, .01f)
+                if (fullScreen) {
+                    assertTrue("Top fade reveals the unchanged backdrop", top.red in 155..170 && top.green in 45..62)
+                    assertTrue("Bottom fade reveals the unchanged backdrop", bottom.red in 100..115 && bottom.green in 105..120)
+                } else {
+                    assertEquals(android.graphics.Color.WHITE, rendered.getRGB(rendered.width / 2, 2))
+                }
+                assertEquals("Blending uses the filled artwork bounds", requireNotNull(containerBounds), imageBounds)
             }
             verify("normal")
             val before = fetches.get()

@@ -293,7 +293,6 @@ fun ExpandedPlayerScreen(
     val track = uiState.currentTrack ?: return
     val playerMorph = LocalPlayerExpansionMotion.current
     var morphArtworkReady by remember(track.id, track.coverUrl) { mutableStateOf(false) }
-    var rectangularArtwork by remember(track.id, track.coverUrl) { mutableStateOf(false) }
     val morphAnimating by remember(playerMorph) { derivedStateOf { playerMorph?.transitioning == true } }
     val playerMarqueeMode = if (isScreenVisible && playerMorph?.covered != false) androidx.compose.foundation.MarqueeAnimationMode.Immediately
         else androidx.compose.foundation.MarqueeAnimationMode.WhileFocused
@@ -706,7 +705,7 @@ fun ExpandedPlayerScreen(
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
                                             }
-                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp), appColors.dynamicAlbumGlow, showArtworkFront && !rectangularArtwork)
+                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp), appColors.dynamicAlbumGlow, showArtworkFront)
                                             .clip(RoundedCornerShape(22.dp))
                                             .clickable {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -719,7 +718,7 @@ fun ExpandedPlayerScreen(
                                             PlayerCoverArtwork(
                                                 request = highResImageRequest,
                                                 onBoundsChanged = { artworkBlendBounds.value = it },
-                                                onReady = { rectangularArtwork = it; morphArtworkReady = true },
+                                                onReady = { morphArtworkReady = true },
                                                 modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(22.dp))
                                             )
                                         } else {
@@ -1641,7 +1640,7 @@ fun ExpandedPlayerScreen(
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
                                             }
-                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp), appColors.dynamicAlbumGlow, showArtworkFront && !rectangularArtwork)
+                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(24.dp), appColors.dynamicAlbumGlow, showArtworkFront)
                                             .clip(RoundedCornerShape(24.dp))
                                             .clickable {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -1657,7 +1656,7 @@ fun ExpandedPlayerScreen(
                                             request = highResImageRequest,
                                             onBoundsChanged = { artworkBlendBounds.value = it },
                                             fullScreen = isFullScreenArt,
-                                            onReady = { rectangularArtwork = it; morphArtworkReady = true },
+                                            onReady = { morphArtworkReady = true },
                                             modifier = Modifier.fillMaxSize()
                                                 .clip(if (isFullScreenArt) RoundedCornerShape(0.dp) else RoundedCornerShape(24.dp))
                                         )
@@ -2498,39 +2497,16 @@ private fun Modifier.animatedFillMaxWidth(fraction: State<Float>): Modifier = la
     layout(placeable.width, placeable.height) { placeable.placeRelative(0, 0) }
 }
 
-/** Square covers retain their presentation. A rectangular fallback fits in full,
- * revealing the matching edge colors above/below, with soft image edges.
- * It reuses the same Coil request; there is no second image decode. */
+/** The player fills its artwork bounds, including while a square song cover is resolving. */
 @Composable
 internal fun PlayerCoverArtwork(request: ImageRequest, modifier: Modifier = Modifier,
-    fullScreen: Boolean = false, onReady: (Boolean) -> Unit = {},
+    fullScreen: Boolean = false, onReady: () -> Unit = {},
     onBoundsChanged: (Rect) -> Unit = {}) {
-    var aspect by remember(request.data) { mutableFloatStateOf(0f) }
-    var hostBounds by remember { mutableStateOf<Rect?>(null) }
-    val rectangular = aspect > 1.05f
-    val fit = rectangular || !fullScreen || aspect == 0f
-    fun reportBounds(bounds: Rect) {
-        // Match ContentScale.Fit's actual image, including letterboxing.
-        val height = if (fit && aspect > 0f) minOf(bounds.height, bounds.width / aspect) else bounds.height
-        val top = bounds.top + (bounds.height - height) / 2f
-        onBoundsChanged(Rect(bounds.left, top, bounds.right, top + height))
-    }
-    // Re-evaluate when the decoded aspect becomes known, even if layout is unchanged.
-    androidx.compose.runtime.SideEffect { hostBounds?.let { reportBounds(it) } }
     AsyncImage(model = request, contentDescription = "Cover Art - Tap to flip",
-        contentScale = if (fit) ContentScale.Fit else ContentScale.Crop,
-        onSuccess = { result ->
-            val bitmap = (result.result.drawable as? BitmapDrawable)?.bitmap
-            val width = bitmap?.width ?: result.result.drawable.intrinsicWidth
-            val height = bitmap?.height ?: result.result.drawable.intrinsicHeight
-            aspect = if (width > 0 && height > 0) width.toFloat() / height else 1f
-            onReady(aspect > 1.05f)
-        }, modifier = modifier.onGloballyPositioned {
-            val bounds = it.boundsInRoot()
-            hostBounds = bounds
-            reportBounds(bounds)
-        }
-            .playerArtworkEdgeBlend(fullScreen || rectangular, aspect.takeIf { rectangular }))
+        contentScale = ContentScale.Crop,
+        onSuccess = { onReady() },
+        modifier = modifier.onGloballyPositioned { onBoundsChanged(it.boundsInRoot()) }
+            .playerArtworkEdgeBlend(fullScreen))
 }
 
 internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean, imageAspectRatio: Float? = null): Modifier = if (!enabled) this else

@@ -52,8 +52,8 @@ data class PlaybackIntegrationSettings(
 @Immutable
 data class PerformanceSettings(
     val highPerformanceEnabled: Boolean = false,
-    /** 0 = Android Auto; otherwise one of 60, 90 or 120 Hz. */
-    val refreshRateHz: Int = 0
+    /** Fixed rate while enabled; Android chooses automatically while disabled. */
+    val refreshRateHz: Int = 60
 )
 
 @Immutable
@@ -81,7 +81,7 @@ object OtherSettingsPreferences {
     private const val KEY_LYRICS_TRANSLATION_LANGUAGE = "lyrics_translation_language"
     private const val KEY_HIGH_PERFORMANCE_ENABLED = "high_performance_enabled"
     private const val KEY_PERFORMANCE_REFRESH_RATE = "performance_refresh_rate_hz"
-    val PERFORMANCE_REFRESH_RATE_OPTIONS: List<Int> = listOf(0, 60, 90, 120)
+    val PERFORMANCE_REFRESH_RATE_OPTIONS: List<Int> = listOf(60, 90, 120)
 
     val LYRICS_PROVIDERS: List<String> = listOf(
         "Auto",
@@ -387,10 +387,10 @@ object OtherSettingsPreferences {
 
     fun performanceSettings(context: Context): PerformanceSettings {
         val prefs = getPrefs(context)
-        val savedRate = prefs.getInt(KEY_PERFORMANCE_REFRESH_RATE, 0)
+        val savedRate = prefs.getInt(KEY_PERFORMANCE_REFRESH_RATE, 60)
         return PerformanceSettings(
             highPerformanceEnabled = prefs.getBoolean(KEY_HIGH_PERFORMANCE_ENABLED, false),
-            refreshRateHz = savedRate.takeIf { it in PERFORMANCE_REFRESH_RATE_OPTIONS } ?: 0
+            refreshRateHz = savedRate.takeIf { it in PERFORMANCE_REFRESH_RATE_OPTIONS } ?: 60
         )
     }
 
@@ -416,7 +416,7 @@ object OtherSettingsPreferences {
     }
 
     fun setPerformanceRefreshRate(context: Context, refreshRateHz: Int) {
-        val normalized = refreshRateHz.takeIf { it in PERFORMANCE_REFRESH_RATE_OPTIONS } ?: 0
+        val normalized = refreshRateHz.takeIf { it in PERFORMANCE_REFRESH_RATE_OPTIONS } ?: 60
         getPrefs(context).edit().putInt(KEY_PERFORMANCE_REFRESH_RATE, normalized).apply()
     }
 
