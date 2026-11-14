@@ -127,7 +127,7 @@ fun EqualizerDialog(
                                     )
                                 )
                                 Text(
-                                    text = if (effectsState.isEnabled) "Real-time DSP Active (Lossless)" else "Effects Bypassed",
+                                    text = if (effectsState.isEnabled) "Real-time DSP Active" else "Effects Bypassed",
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = if (effectsState.isEnabled) appColors.primaryAccent else appColors.textMuted,
                                         fontSize = 11.sp

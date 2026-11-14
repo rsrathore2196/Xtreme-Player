@@ -9,6 +9,7 @@ import org.json.JSONObject
 internal object AudioEffectsPreferences {
     const val STORE = "xtreme_audio_effects_prefs"
     const val KEY = "configuration"
+    private const val PRESET_VERSION = 2
 
     fun encode(state: AudioEffectsState): String = JSONObject().apply {
         put("enabled", state.isEnabled)
@@ -17,6 +18,7 @@ internal object AudioEffectsPreferences {
         put("virtualizer", state.virtualizerStrength)
         put("loudness", state.loudnessGainMb)
         put("preset", state.selectedPreset)
+        put("presetVersion", PRESET_VERSION)
         put("bands", JSONArray(state.bands.map { it.levelMb.toInt() }))
     }.toString()
 
@@ -36,7 +38,7 @@ internal object AudioEffectsPreferences {
         require(preset is String && (preset == "Custom" || preset in base.availablePresets)) { "Invalid equalizer preset" }
         val bands = json.getJSONArray("bands")
         require(bands.length() == base.bands.size) { "Invalid equalizer bands" }
-        return base.copy(isEnabled = flag("enabled"), crystalClarityEnabled = flag("clarity"),
+        val restored = base.copy(isEnabled = flag("enabled"), crystalClarityEnabled = flag("clarity"),
             bassBoostStrength = number("bass", 0..1000), virtualizerStrength = number("virtualizer", 0..1000),
             loudnessGainMb = number("loudness", 0..800), selectedPreset = preset,
             bands = base.bands.mapIndexed { index, band ->
@@ -44,6 +46,12 @@ internal object AudioEffectsPreferences {
                 require(value is Int && value in band.minLevelMb..band.maxLevelMb) { "Invalid equalizer band" }
                 band.copy(levelMb = value.toShort())
             })
+        // Slider edits are saved as Custom. Update old factory choices while
+        // preserving custom curves, the power switch and the independent clarity toggle.
+        return if (preset != "Custom" && json.optInt("presetVersion", 0) < PRESET_VERSION)
+            com.example.playback.AudioEffectsManager.presetState(restored, preset)
+                .copy(crystalClarityEnabled = restored.crystalClarityEnabled)
+        else restored
     }
 
     fun write(context: Context, state: AudioEffectsState) {

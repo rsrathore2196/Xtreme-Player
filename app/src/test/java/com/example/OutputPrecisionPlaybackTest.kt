@@ -29,6 +29,10 @@ class OutputPrecisionPlaybackTest {
         .setPcmEncoding(encoding).setSampleRate(48000).setChannelCount(2).build()
     private fun shorts(vararg values: Int) = ByteBuffer.allocateDirect(values.size * 2).order(ByteOrder.LITTLE_ENDIAN)
         .apply { values.forEach { putShort(it.toShort()) }; flip() }
+    private fun midBoost() = AudioEffectsState(isEnabled = true,
+        bands = listOf(60, 230, 910, 3600, 14000).mapIndexed { index, frequency ->
+            BandState(index.toShort(), frequency, if (index == 2) 600 else 0)
+        })
     @After fun reset() {
         PsychoacousticAudioProcessor.settings.set(AudioEffectsState())
         PsychoacousticAudioProcessor.spatialEnabled = false
@@ -218,6 +222,91 @@ class OutputPrecisionPlaybackTest {
             assertEquals(1000.toShort(), output.short)
             assertEquals((-1000).toShort(), output.short)
         } finally { sink.release() }
+    }
+
+    @Test fun enablingEqDrainsNativePcmThenProcessesItWithoutChangingPrecisionOrVolume() {
+        PsychoacousticAudioProcessor.settings.set(AudioEffectsState())
+        val shared = Probe()
+        val selectedPrecision = OutputPrecision.PCM_16
+        val sink = BitPerfectAudioSink(app, shared.sink, { selectedPrecision })
+        // Model an allowed native route, independently of the test machine's USB hardware.
+        org.robolectric.util.ReflectionHelpers.setField(sink, "allowDirect", { true })
+        val nativeTrack = AudioTrack.Builder()
+            .setAudioFormat(android.media.AudioFormat.Builder().setSampleRate(48000)
+                .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_STEREO)
+                .setEncoding(C.ENCODING_PCM_16BIT).build())
+            .setBufferSizeInBytes(4096).setTransferMode(AudioTrack.MODE_STREAM).build()
+        var cleared = false
+        try {
+            sink.configure(format(C.ENCODING_PCM_16BIT), 0, null)
+            sink.setVolume(.6f)
+            val lease = BitPerfectAudioSink::class.java.declaredClasses.single { it.simpleName == "DirectLease" }
+                .declaredConstructors.single { it.parameterCount == 5 }.apply { isAccessible = true }
+                .newInstance(nativeTrack, 4096, C.ENCODING_PCM_16BIT, { cleared = true }, { true })
+            org.robolectric.util.ReflectionHelpers.setField(sink, "native", lease)
+            org.robolectric.util.ReflectionHelpers.setField(sink, "bytesWritten", 16L)
+            assertTrue(sink.handleBuffer(ByteBuffer.allocateDirect(0), 0, 1))
+            assertFalse("An unchanged allowed route must stay native while EQ is off", cleared)
+            PsychoacousticAudioProcessor.settings.set(midBoost())
+            val next = ByteBuffer.allocateDirect(2048 * 4).order(ByteOrder.LITTLE_ENDIAN).apply {
+                repeat(2048) {
+                    val sample = (10000 * kotlin.math.sin(it * 2 * Math.PI * 200 / 48000)).toInt().toShort()
+                    putShort(sample); putShort(sample)
+                }
+                flip()
+            }
+            val expected = ByteArray(next.remaining()).also { next.duplicate().get(it) }
+            assertFalse("Already accepted native PCM must drain before enabling EQ", sink.handleBuffer(next, 84, 1))
+            assertEquals(0, next.position()); assertFalse(cleared)
+            nativeTrack.write(ByteBuffer.allocateDirect(16), 16, AudioTrack.WRITE_NON_BLOCKING)
+            assertTrue(sink.handleBuffer(next, 84, 1))
+            assertTrue("EQ must leave the direct bypass path", cleared)
+            assertEquals(C.ENCODING_PCM_16BIT, shared.encoding)
+            assertEquals(.6f, shared.volume, 0f)
+            assertEquals(expected.size, shared.data.size)
+            assertFalse("EQ must reach the newly shared output", expected.contentEquals(shared.data.toByteArray()))
+            shared.data.clear()
+            PsychoacousticAudioProcessor.settings.set(AudioEffectsState())
+            val neutral = shorts(-32768, 32767, -1, 1, 0, 15001)
+            val original = ByteArray(neutral.remaining()).also { neutral.duplicate().get(it) }
+            assertTrue(sink.handleBuffer(neutral, 168, 1))
+            assertArrayEquals("Switching EQ off restores unmodified PCM", original, shared.data.toByteArray())
+            assertEquals(.6f, shared.volume, 0f)
+        } finally { sink.release() }
+    }
+
+    @Test fun equalizerReachesBothSelectedOutputPrecisions() {
+        for (precision in OutputPrecision.entries) {
+            PsychoacousticAudioProcessor.settings.set(midBoost())
+            val output = Probe()
+            val sink = BitPerfectAudioSink(app, output.sink, { precision }, { true })
+            try {
+                sink.configure(format(C.ENCODING_PCM_16BIT), 0, null)
+                val source = ByteBuffer.allocateDirect(4096 * 4).order(ByteOrder.LITTLE_ENDIAN).apply {
+                    repeat(4096) {
+                        val value = (8000 * kotlin.math.sin(it * 2 * Math.PI * 200 / 48000)).toInt().toShort()
+                        putShort(value); putShort(value)
+                    }
+                    flip()
+                }
+                assertTrue(sink.handleBuffer(source, 0, 1))
+                val encoding = if (precision == OutputPrecision.FLOAT_32) C.ENCODING_PCM_FLOAT else C.ENCODING_PCM_16BIT
+                assertEquals(encoding, output.encoding)
+                val samples = ByteBuffer.wrap(output.data.toByteArray()).order(ByteOrder.LITTLE_ENDIAN)
+                samples.position(2048 * 2 * if (encoding == C.ENCODING_PCM_FLOAT) 4 else 2)
+                var power = 0.0
+                var count = 0
+                while (samples.hasRemaining()) {
+                    val sample = if (encoding == C.ENCODING_PCM_FLOAT) samples.float else samples.short / 32768f
+                    assertTrue(sample.isFinite() && sample in -1f..1f)
+                    power += sample * sample; count++
+                }
+                val rms = kotlin.math.sqrt(power / count)
+                // A midrange boost reserves headroom, so this 200 Hz probe is quieter.
+                assertTrue("EQ must change the decoded signal at $precision", rms < .14)
+                assertTrue("EQ must not mute the decoded signal at $precision", rms > .02)
+            } finally { sink.release() }
+        }
     }
 
     @Test fun actualMedia3AudioTrackReceivesSelectedEncodingForPcm16DecoderInput() {

@@ -20,6 +20,18 @@ import org.robolectric.annotation.Config
 class AudioEffectsPreferencesTest {
     private val base = AudioEffectsState(bands = listOf(BandState(0, 60, 0), BandState(1, 230, 0)))
 
+    @Test fun olderFactoryPresetsUpgradeButCustomCurvesAndPowerChoicesArePreserved() {
+        val old = base.copy(isEnabled = false, selectedPreset = "Bass Booster",
+            bands = base.bands.map { it.copy(levelMb = 1000) })
+        val raw = JSONObject(AudioEffectsPreferences.encode(old)).apply { remove("presetVersion") }.toString()
+        val upgraded = AudioEffectsPreferences.decode(raw, base)
+        assertFalse(upgraded.isEnabled)
+        assertEquals(listOf<Short>(400, 150), upgraded.bands.map { it.levelMb })
+        val custom = JSONObject(raw).put("preset", "Custom").toString()
+        assertEquals(listOf<Short>(1000, 1000), AudioEffectsPreferences.decode(custom, base).bands.map { it.levelMb })
+        assertEquals(old, AudioEffectsPreferences.decode(AudioEffectsPreferences.encode(old), base))
+    }
+
     @Test fun portableConfigurationRoundTripsWithoutRestoringTheOldAudioSession() {
         val selected = base.copy(isEnabled = true, crystalClarityEnabled = true, bassBoostStrength = 600,
             virtualizerStrength = 300, loudnessGainMb = 150, selectedPreset = "Custom", audioSessionId = 123,

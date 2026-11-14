@@ -233,46 +233,42 @@ object AudioEffectsManager {
         return anchorDbs.getOrNull(0) ?: 0
     }
 
-    private fun presetState(state: AudioEffectsState, presetName: String): AudioEffectsState {
+    internal fun presetState(state: AudioEffectsState, presetName: String): AudioEffectsState {
 
         // Conservative tonal starting points for this five-band filter layout, not
         // headphone-specific correction. Keep bass/width stages separate to avoid stacking boosts.
         // Anchors: 60 Hz, 230 Hz, 910 Hz, 3.6 kHz and 14 kHz. Levels are millibels.
         val bandDbs: List<Short> = when (presetName.lowercase().trim()) {
-            "crystal clarity" -> listOf(0, -100, 50, 150, 200)
-            "studio master" -> listOf(50, -50, 0, 50, 100)
-            "bass booster", "bass boost" -> listOf(400, 200, 0, -50, 0)
-            "deep sub" -> listOf(500, 100, -50, 0, 0)
-            "bass reducer" -> listOf(-450, -250, 0, 0, 0)
-            "electronic / edm", "electronic", "edm" -> listOf(350, 150, -100, 150, 200)
-            "rock & metal", "rock", "metal" -> listOf(250, 100, -100, 200, 150)
-            "hip-hop & r&b", "hip-hop", "r&b" -> listOf(400, 200, -50, 100, 100)
-            "dance & club", "dance", "club" -> listOf(350, 150, -50, 150, 200)
-            "pop commercial", "pop" -> listOf(150, 0, 50, 150, 150)
-            "vocal & podcast", "vocal enhance", "vocal", "podcast" -> listOf(-250, -100, 150, 250, -50)
-            "acoustic live", "acoustic" -> listOf(100, -50, 50, 150, 100)
-            "classical concert", "classical" -> listOf(100, 0, -50, 50, 150)
-            "jazz lounge", "jazz" -> listOf(150, 50, 0, 100, 100)
-            "treble booster", "treble boost" -> listOf(0, 0, 50, 200, 350)
-            "treble reducer" -> listOf(0, 0, 0, -200, -350)
-            "dynamic cinema", "cinema" -> listOf(250, -50, 100, 150, 100)
-            "car audio (cabin dynamics)", "car audio", "car" -> listOf(-100, -200, 50, 150, 100)
-            "gaming & spatial", "gaming" -> listOf(-100, -100, 100, 250, 100)
+            "crystal clarity" -> listOf(0, -150, 0, 150, 50)
+            "studio master" -> listOf(0, -50, 0, 50, 50)
+            "bass booster", "bass boost" -> listOf(400, 150, -50, 0, 0)
+            "deep sub" -> listOf(450, -50, -50, 0, 0)
+            "bass reducer" -> listOf(-400, -200, 0, 0, 0)
+            "electronic / edm", "electronic", "edm" -> listOf(300, 50, -100, 100, 150)
+            "rock & metal", "rock", "metal" -> listOf(200, 50, -50, 150, 100)
+            "hip-hop & r&b", "hip-hop", "r&b" -> listOf(350, 100, -50, 50, 50)
+            "dance & club", "dance", "club" -> listOf(300, 100, -50, 100, 150)
+            "pop commercial", "pop" -> listOf(100, 50, 0, 100, 100)
+            "vocal & podcast", "vocal enhance", "vocal", "podcast" -> listOf(-250, -100, 100, 200, -50)
+            "acoustic live", "acoustic" -> listOf(50, -50, 50, 100, 50)
+            "classical concert", "classical" -> listOf(50, 0, 0, 50, 100)
+            "jazz lounge", "jazz" -> listOf(100, 50, 50, 50, 50)
+            "treble booster", "treble boost" -> listOf(0, 0, 0, 150, 300)
+            "treble reducer" -> listOf(0, 0, 0, -150, -300)
+            "dynamic cinema", "cinema" -> listOf(200, -50, 50, 150, 50)
+            "car audio (cabin dynamics)", "car audio", "car" -> listOf(-150, -200, 0, 100, 50)
+            "gaming & spatial", "gaming" -> listOf(-150, -100, 50, 200, 50)
             else -> listOf(0, 0, 0, 0, 0)
         }
 
-        val updatedBands = state.bands.mapIndexed { index, band ->
-            val targetLevel = if (state.bands.size == 5) {
-                bandDbs.getOrElse(index) { 0.toShort() }
-            } else {
-                interpolateGain(band.centerFreqHz, bandDbs)
-            }
+        val updatedBands = state.bands.map { band ->
+            val targetLevel = interpolateGain(band.centerFreqHz, bandDbs)
             val clampedLevel = targetLevel.coerceIn(band.minLevelMb, band.maxLevelMb)
             band.copy(levelMb = clampedLevel)
         }
 
         // The curve already supplies its bass contour. Do not add a second bass
-        // boost or positive make-up gain; the float processor retains its limiter/headroom.
+        // boost or positive make-up gain; the float processor budgets the combined response before its safety limiter.
         val targetBass = 0
         val targetVirt = when (presetName.lowercase().trim()) {
             "gaming & spatial", "gaming" -> 300

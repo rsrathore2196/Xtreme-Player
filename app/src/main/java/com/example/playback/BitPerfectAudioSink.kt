@@ -94,7 +94,8 @@ class BitPerfectAudioSink private constructor(
         sourceFormat(source)
         return if (outputPrecision() == OutputPrecision.PCM_16 && source.pcmEncoding == C.ENCODING_PCM_16BIT &&
             allowDirect() && Build.VERSION.SDK_INT >= 34 && volume == 1f && parameters == PlaybackParameters.DEFAULT &&
-            !skipSilence && !PsychoacousticAudioProcessor.spatialEnabled)
+            !skipSilence && !PsychoacousticAudioProcessor.settings.get().isEnabled &&
+            !PsychoacousticAudioProcessor.spatialEnabled)
             NativeUsb.preferredEncoding(context, source, attributes, preferred) else null
     }
     private var attributes = AudioAttributes.DEFAULT
@@ -212,7 +213,8 @@ class BitPerfectAudioSink private constructor(
         native = if (desiredEncoding() == C.ENCODING_PCM_16BIT && nativeFormat.pcmEncoding == C.ENCODING_PCM_16BIT &&
             allowDirect() && Build.VERSION.SDK_INT >= 34 && failedDirectFormat != nativeKey && identityChannels &&
             (sourceEncoding == C.ENCODING_INVALID || sourceEncoding == nativeFormat.pcmEncoding) && parameters == PlaybackParameters.DEFAULT &&
-            volume == 1f && !skipSilence && !PsychoacousticAudioProcessor.spatialEnabled &&
+            volume == 1f && !skipSilence && !PsychoacousticAudioProcessor.settings.get().isEnabled &&
+            !PsychoacousticAudioProcessor.spatialEnabled &&
             inputFormat.encoderDelay == 0 && inputFormat.encoderPadding == 0)
             NativeUsb.open(context, nativeFormat, attributes, preferred, sessionId, specifiedBufferSize) else null
         native?.let { lease ->
@@ -310,7 +312,8 @@ class BitPerfectAudioSink private constructor(
         }
         // Route loss changes only the sink. Drain the already-written native audio,
         // then continue at the next unconsumed PCM buffer without a queue/source reset.
-        if (native != null && (!allowDirect() || directUnavailable || PsychoacousticAudioProcessor.spatialEnabled ||
+        if (native != null && (!allowDirect() || directUnavailable ||
+            PsychoacousticAudioProcessor.settings.get().isEnabled || PsychoacousticAudioProcessor.spatialEnabled ||
             desiredEncoding() != native?.encoding) && nativeInput == null) {
             if (hasPendingData()) return false
             closeNative(); directUnavailable = false
