@@ -552,11 +552,15 @@ object YouTubeAudioStreamService {
         requireOpus: Boolean, sabrOnly: Boolean, extracted: ExtractedStream,
         probe: suspend (String, Map<String, String>, Boolean, Int, String) -> AudioProbe?): AudioStream {
         fun reject(reason: PlaybackDiagnostics.Reason): Nothing = throw PlaybackDiagnostics.Failure(reason, PlaybackDiagnostics.Stage.VALIDATION)
-        if (extracted.videoId != videoId || extracted.videoUrl != null || extracted.videoWidth != null || extracted.videoHeight != null)
-            reject(PlaybackDiagnostics.Reason.UNSUPPORTED_TRANSPORT)
         val codec = displayCodec(extracted.mimeType, extracted.codecs)
         val bootstrap = extracted.sabrBootstrap
         val hls = bootstrap == null && isHls(extracted.audioUrl, extracted.mimeType)
+        // Native live extraction puts the same HLS master in both URL fields.
+        // The probe below selects verified audio before anything reaches Media3.
+        val sharedHlsManifest = hls && extracted.videoUrl == extracted.audioUrl
+        if (extracted.videoId != videoId || extracted.videoUrl != null && !sharedHlsManifest ||
+            extracted.videoWidth != null || extracted.videoHeight != null)
+            reject(PlaybackDiagnostics.Reason.UNSUPPORTED_TRANSPORT)
         if (hlsOnly == true && !hls || sabrOnly && bootstrap == null) reject(PlaybackDiagnostics.Reason.UNSUPPORTED_TRANSPORT)
         if (!hls && (extracted.mimeType?.startsWith("audio/") != true || codec !in setOf("AAC", "Opus", "Vorbis")))
             reject(PlaybackDiagnostics.Reason.NO_FORMAT)
@@ -625,16 +629,20 @@ object YouTubeAudioStreamService {
         runtime().sabrChunks(requireNotNull(stream.sabrBootstrap), startMs)
 
     internal data class AudioProbe(val url: String, val bitrate: Int? = null, val codec: String? = null)
-    private data class MediaProbe(val url: String, val bytes: ByteArray, val type: String, val redirect: String? = null,
+    internal data class MediaProbe(val url: String, val bytes: ByteArray, val type: String, val redirect: String? = null,
         val transient: Boolean = false)
 
     /** Only verified audio playlists are handed to Media3; never a muxed video master. */
-    private suspend fun probeAudio(url: String, headers: Map<String, String>, hls: Boolean, cap: Int, codec: String): AudioProbe? {
-        val response = if (hls) fetchMediaProbe(url, headers, manifest = true) else {
+    private suspend fun probeAudio(url: String, headers: Map<String, String>, hls: Boolean, cap: Int, codec: String): AudioProbe? =
+        probeAudio(url, headers, hls, cap, codec, ::fetchMediaProbe)
+
+    internal suspend fun probeAudio(url: String, headers: Map<String, String>, hls: Boolean, cap: Int, codec: String,
+        fetch: suspend (String, Map<String, String>, Boolean) -> MediaProbe?): AudioProbe? {
+        val response = if (hls) fetch(url, headers, true) else {
             // Bound speculative latency separately from extraction. A definite HTTP
             // rejection is still fatal; a probe timeout is not proof of unplayability.
             val result = withTimeoutOrNull(1_500L) {
-                Result.success(fetchMediaProbe(url, headers, manifest = false))
+                Result.success(fetch(url, headers, false))
             } ?: return AudioProbe(url, codec = codec)
             result.getOrNull()
         } ?: return null
@@ -654,7 +662,7 @@ object YouTubeAudioStreamService {
             val segment = playlist.segments.firstOrNull() ?: return null
             val init = segment.initializationSegment?.url ?: segment.url
             val address = response.url.toHttpUrlOrNull()?.resolve(init)?.toString() ?: return null
-            val probe = fetchMediaProbe(address, headers, manifest = false) ?: return null
+            val probe = fetch(address, headers, false) ?: return null
             if (probe.type.startsWith("audio/") && probe.bytes.isNotEmpty()) return AudioProbe(response.url)
             val bytes = probe.bytes
             val audioContainer = bytes.size >= 12 &&
@@ -682,7 +690,7 @@ object YouTubeAudioStreamService {
             .filter { YouTubeAudioFormatPolicy.acceptsBitrate(bitrate(it.second), cap) }
             .maxByOrNull { bitrate(it.second) ?: 0 }
             ?: return null
-        val audio = fetchMediaProbe(selected.first, headers, manifest = true) ?: return null
+        val audio = fetch(selected.first, headers, true) ?: return null
         val media = try { withContext(AppDispatchers.CpuBounded) {
             HlsPlaylistParser().parse(Uri.parse(audio.url), audio.bytes.inputStream())
         } } catch (e: CancellationException) { throw e } catch (_: IOException) { return null }
