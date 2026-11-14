@@ -14,7 +14,8 @@ import com.example.BuildConfig
 internal class LastFmException(val code: Int) : IOException("Last.fm request failed ($code)")
 internal class LastFmConfigurationException : IllegalStateException("Last.fm sign-in is unavailable in this build")
 internal data class LastFmAppCredentials(val apiKey: String, val secret: String) {
-    val configured get() = apiKey.isNotBlank() && secret.isNotBlank()
+    val configured get() = apiKey.isNotBlank() && secret.isNotBlank() &&
+        apiKey != "MY_LASTFM_API_KEY" && secret != "MY_LASTFM_SECRET"
     override fun toString() = "LastFmAppCredentials(configured=$configured)"
 }
 internal fun lastFmSignature(parameters: Map<String, String>, secret: String): String {

@@ -1,5 +1,4 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
-import java.util.Properties
 
 plugins {
   alias(libs.plugins.android.application)
@@ -9,10 +8,6 @@ plugins {
   alias(libs.plugins.roborazzi)
   alias(libs.plugins.secrets)
   alias(libs.plugins.google.services)
-}
-
-val localBuildProperties = Properties().apply {
-  rootProject.file("local.properties").takeIf { it.isFile }?.inputStream()?.use(::load)
 }
 
 android {
@@ -31,11 +26,6 @@ android {
     // Optional authenticated lyrics routes; public providers work without these values.
     for (keyName in listOf("PAXSENIX_API_KEY", "MUSIXMATCH_API_KEY")) {
       val value = providers.gradleProperty(keyName).orElse(providers.environmentVariable(keyName)).orElse("").get()
-      buildConfigField("String", keyName, "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
-    }
-    for (keyName in listOf("LASTFM_API_KEY", "LASTFM_SECRET")) {
-      val value = providers.gradleProperty(keyName).orElse(providers.environmentVariable(keyName))
-        .getOrElse(localBuildProperties.getProperty(keyName, "")).trim()
       buildConfigField("String", keyName, "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\"")
     }
 
