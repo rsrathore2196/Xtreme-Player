@@ -18,6 +18,29 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34], application = Application::class)
 class ServerHomeCollectionsTest {
+    @Test fun listenTogetherIsOmittedFromInitialAndContinuationFeedsWithoutLosingOtherShelvesOrThePageCursor() {
+        val station = NativeFeedFixtures.shelf("Listen together", 1).apply {
+            getJSONObject("musicCarouselShelfRenderer").put("continuations", org.json.JSONArray().put(
+                JSONObject().put("nextContinuationData", JSONObject().put("continuation", "station-cursor"))))
+        }
+        val first = YouTubeHomeParser.parseHomeFeed(JSONObject(NativeFeedFixtures.home(
+            station, NativeFeedFixtures.shelf("Music videos", 2), continuation = "home-next")))
+        assertEquals(listOf("Music videos"), first.shelves.map { it.title })
+        assertEquals("home-next", first.continuationToken)
+        val continued = JSONObject().put("continuationContents", JSONObject().put("sectionListContinuation",
+            JSONObject().put("contents", org.json.JSONArray().put(station))))
+        assertTrue(YouTubeHomeParser.parseHomeFeed(continued).shelves.isEmpty())
+    }
+
+    @Test fun previouslyCachedListenTogetherIsRemovedWithoutRemovingOtherStationOrPlaylistShelves() {
+        val song = MusicTrack("yt_abcdefghijk", "Song", "Artist", "Album", 180000, "", "")
+        val rows = listOf("Listen Together!", "Fresh finds, old favourites", "Listen again").map { title ->
+            ServerHomeShelf(title, title, tracks = listOf(song))
+        }
+        assertEquals(listOf("Fresh finds, old favourites", "Listen again"),
+            appendServerShelves(emptyList(), rows).map { it.title })
+    }
+
     private fun feed() = YouTubeHomeParser.parseHomeFeed(JSONObject(NativeFeedFixtures.home(
         NativeFeedFixtures.collectionShelf("Albums & Singles", NativeFeedFixtures.album(1)),
         NativeFeedFixtures.shelf("Quick Picks", 2, 3),

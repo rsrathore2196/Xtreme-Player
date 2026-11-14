@@ -278,6 +278,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
                         } ?: result }))
             }
             val refreshed = retained.mapValues { (_, state) ->
+                if (state.destination.isAppLikedSongs()) return@mapValues state
                 val tracks = liked(state.tracks, ids)
                 val pending = liked(state.pending, ids)
                 if (tracks === state.tracks && pending === state.pending) state else state.withTracks(tracks, pending)
@@ -292,6 +293,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             ensureActive()
             if (favoriteIds === ids) _detail.update {
                 it?.let { state ->
+                    if (state.destination.isAppLikedSongs()) return@let state
                     val tracks = liked(state.tracks, ids)
                     val pending = liked(state.pending, ids)
                     if (tracks === state.tracks && pending === state.pending) state else state.withTracks(tracks, pending)
@@ -446,7 +448,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
             is CatalogDestination.Playlist -> repository.playlistSongs(destination.playlist, 1)
             else -> error("Only albums and playlists can be played as collections")
         }
-        CatalogDetailState(destination, tracks = liked(page.tracks), nextPage = page.nextPage,
+        CatalogDetailState(destination, tracks = if (destination.isAppLikedSongs()) page.tracks else liked(page.tracks), nextPage = page.nextPage,
             browseContinuation = page.browseContinuation, initialized = true)
     }
 
@@ -462,7 +464,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         _detail.value = details[key]?.let { it.copy(loading = false,
             scrollIndex = position?.first ?: it.scrollIndex, scrollOffset = position?.second ?: it.scrollOffset,
             requestId = detailGeneration) } ?: CatalogDetailState(destination, requestId = detailGeneration)
-        if (_detail.value?.initialized != true) loadMoreDetail()
+        if (_detail.value?.initialized != true || destination.isAppLikedSongs()) loadMoreDetail()
     }
     /** Playback continuation captures catalog identity only; closing the page cannot cancel music. */
     fun playlistPlaybackContinuation(state: CatalogDetailState): com.example.playback.CollectionPlaybackContinuation? {
@@ -488,7 +490,7 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
         _detail.value = parent.copy(loading = false, requestId = detailGeneration,
             scrollIndex = position?.first ?: parent.scrollIndex,
             scrollOffset = position?.second ?: parent.scrollOffset)
-        if (!parent.initialized) loadMoreDetail()
+        if (!parent.initialized || parent.destination.isAppLikedSongs()) loadMoreDetail()
     }
 
     fun close() {
@@ -502,6 +504,26 @@ class CatalogBrowserState(private val repository: CatalogRepository, private val
     }
     fun loadMoreDetail() {
         val state = _detail.value ?: return
+        if (state.destination.isAppLikedSongs()) {
+            if (detailJob?.isActive == true) return
+            val generation = detailGeneration
+            _detail.update { it?.copy(loading = true, error = null) }
+            detailJob = dataScope.launch {
+                try {
+                    // Observe only the opened local collection; stop Room work in the background.
+                    com.example.performance.BackgroundWorkCoordinator.uiForeground.flatMapLatest { active ->
+                        if (active) repository.likedSongs() else emptyFlow()
+                    }.collect { tracks ->
+                        _detail.update { current -> if (current?.requestId != generation) current else
+                            current.copy(loading = false, initialized = true, error = null, nextPage = null,
+                                browseContinuation = null).withTracks(tracks, emptyList()) }
+                    }
+                } catch (cancelled: CancellationException) { throw cancelled }
+                catch (_: Exception) { _detail.update { current -> if (current?.requestId != generation) current else
+                    current.copy(loading = false, error = "Couldn't load this catalog page. Tap to retry.") } }
+            }
+            return
+        }
         if (state.loading || (state.initialized && state.nextPage == null && state.browseContinuation == null && state.pending.isEmpty())) return
         val generation = detailGeneration
         _detail.update { it?.copy(loading = true, error = null) }

@@ -15,6 +15,10 @@ import com.example.playback.AudioQuality
 import com.example.data.remote.catalogGet
 import com.example.data.remote.catalogRequest
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -60,11 +64,16 @@ internal suspend fun loadSearchCategories(load: suspend (String) -> CatalogPage,
 /** Typed browsing through the app's existing catalog provider and stream URL decoder. */
 class CatalogRepository(context: Context? = null,
     private val trackSearchLoader: (suspend (String, TrackSearchContinuation) -> AudioRoutingService.SearchPage)? = null,
+    private val likedTracksSource: (() -> Flow<List<MusicTrack>>)? = null,
     private val browseLoader: suspend (String, String?, String?, String, String) -> String =
         { id, params, continuation, country, language ->
             YouTubeAudioStreamService.discoveryResponse("browse", id, country, params, continuation, language)
         }) {
     private val application = context?.applicationContext
+    internal fun likedSongs(): Flow<List<MusicTrack>> = likedTracksSource?.invoke() ?: application?.let { app ->
+        com.example.data.local.MusicDatabase.getDatabase(app).musicDao().getFavoriteTracks()
+            .map { rows -> rows.map { it.toMusicTrack() } }
+    } ?: flowOf(emptyList())
     private val metadataCache by lazy { application?.let(RecommendationCache::get) }
     // Construct TLS/network resources on the first IO request, not a UI-owned browser constructor.
     private val client by lazy { OkHttpClient.Builder().connectTimeout(10, TimeUnit.SECONDS)
@@ -608,6 +617,7 @@ class CatalogRepository(context: Context? = null,
         CatalogPage(tracks = fallbackTracks)
     }
     suspend fun playlistSongs(selected: CatalogPlaylist, page: Int, continuation: CatalogBrowseContinuation? = null): CatalogPage = withContext(AppDispatchers.CpuBounded) {
+        if (selected.isAppLikedSongs()) return@withContext CatalogPage(tracks = likedSongs().first())
         if (selected.provider == CatalogProvider.YOUTUBE_MUSIC) return@withContext youtubeBrowse(selected.id,
             selected.browseParams, selected.countryCode, selected.languageCode, continuation, collectionOnly = true)
         val root = request("playlist.getDetails", "listid" to selected.id, "p" to page.toString(), "n" to "10")

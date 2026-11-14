@@ -30,6 +30,13 @@ data class CatalogAlbum(val id: String, val title: String, val artists: List<Cat
 data class CatalogPlaylist(val id: String, val title: String, val image: String,
     val provider: CatalogProvider = CatalogProvider.JIOSAAVN, val browseParams: String? = null,
     val countryCode: String = "US", val languageCode: String = "en")
+
+/** YouTube's automatic Liked Music card represents the app's own liked collection. */
+internal fun CatalogPlaylist.isAppLikedSongs(): Boolean =
+    provider == CatalogProvider.YOUTUBE_MUSIC && id.removePrefix("VL") == "LM"
+
+internal fun CatalogDestination.isAppLikedSongs(): Boolean =
+    this is CatalogDestination.Playlist && playlist.isAppLikedSongs()
 /** Immutable next-page request; a token is never consumed before its result is accepted. */
 data class CatalogBrowseContinuation(val browseId: String, val params: String?, val token: String,
     val countryCode: String = "US", val languageCode: String = "en",

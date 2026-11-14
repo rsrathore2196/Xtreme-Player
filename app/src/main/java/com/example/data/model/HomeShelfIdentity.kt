@@ -9,6 +9,7 @@ internal object HomeShelfIdentity {
     private val punctuation = Regex("[^\\p{L}\\p{N}]+")
     fun title(value: String) = Normalizer.normalize(value, Normalizer.Form.NFKC)
         .lowercase(Locale.ROOT).replace("&amp;", "&").replace(punctuation, " ").trim()
+    fun isExcluded(value: String): Boolean = title(value) == "listen together"
     fun entries(shelf: ServerHomeShelf): List<ServerHomeItem> = shelf.items.ifEmpty { shelf.tracks.map { ServerHomeItem.Song(it) } }
     fun item(entry: ServerHomeItem): String = when (entry) {
         is ServerHomeItem.Song -> "song:${entry.track.id.removePrefix("yt_")}"
@@ -62,7 +63,7 @@ internal object HomeShelfIdentity {
     fun deduplicate(shelves: List<ServerHomeShelf>): List<ServerHomeShelf> {
         val result = mutableListOf<Signature>()
         for (raw in shelves) {
-            if (raw.title.isBlank()) continue
+            if (raw.title.isBlank() || isExcluded(raw.title)) continue
             val seen = hashSetOf<String>()
             val originalEntries = entries(raw)
             val valid = originalEntries.filter { entry -> when (entry) {

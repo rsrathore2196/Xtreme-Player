@@ -236,6 +236,8 @@ object YouTubeHomeParser {
                         ?: shelfRenderer.optJSONObject("header")?.optJSONObject("musicShelfRenderer")
                         ?: shelfRenderer.optJSONObject("header")
                     val title = text(headerObj?.optJSONObject("title")).ifBlank { text(shelfRenderer.optJSONObject("title")) }
+                    // Ignore this shelf before parsing items, artwork or its cursor.
+                    if (HomeShelfIdentity.isExcluded(title)) continue
                     val subtitle = text(headerObj?.optJSONObject("strapline")).ifBlank { text(headerObj?.optJSONObject("subtitle")) }
 
                     val itemsArray = shelfRenderer.optJSONArray("contents")

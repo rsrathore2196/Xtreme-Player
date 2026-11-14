@@ -120,7 +120,7 @@ class MusicRepository private constructor(
     }
     val recommendations = TrackAvailabilityTracker()
 
-    val catalogBrowser = CatalogRepository(context)
+    val catalogBrowser = CatalogRepository(context, likedTracksSource = { getFavoriteTracks() })
     // Home's owners and workers share this cap, including discovery ranking.
     internal val homeDispatcher = BackgroundWorkCoordinator.optionalCpuDispatcher
     internal suspend fun cacheRecommendationTracks(tracks: List<MusicTrack>) = withContext(homeDispatcher) {
