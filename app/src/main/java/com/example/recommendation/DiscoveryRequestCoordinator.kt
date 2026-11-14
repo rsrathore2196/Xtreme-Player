@@ -45,7 +45,7 @@ internal object DiscoveryRequestCoordinator {
     suspend fun <T> network(essential: Boolean = false, block: suspend () -> T): T {
         val priority = currentCoroutineContext()[SharedPriority]
         val urgent = priority?.urgent ?: MutableStateFlow(essential)
-        if (essential) urgent.value = true
+        if (essential) { urgent.value = true; BackgroundWorkCoordinator.admissionChanged() }
         return permit(urgent, awaitFrameQuiet = priority?.awaitFrameQuiet != false) {
             // Finish this bounded transport/parse batch and release its permit.
             // Catalog processing after the response remains interaction-preemptible.
@@ -60,10 +60,11 @@ internal object DiscoveryRequestCoordinator {
 
     suspend fun <T> playback(block: suspend () -> T): T {
         resolving.update { it + 1 }
+        BackgroundWorkCoordinator.admissionChanged()
         try { return BackgroundWorkCoordinator.traceWork("Playback source resolution") {
             BackgroundWorkCoordinator.finishBoundedBatch(block)
         } }
-        finally { resolving.update { (it - 1).coerceAtLeast(0) } }
+        finally { resolving.update { (it - 1).coerceAtLeast(0) }; BackgroundWorkCoordinator.admissionChanged() }
     }
 
     suspend fun shared(key: String, essential: Boolean, network: Boolean = true, playbackMetadata: Boolean = false,
@@ -88,6 +89,7 @@ internal object DiscoveryRequestCoordinator {
                 it.readers++
                 if (essential) it.essentialReaders++
                 it.urgent.value = it.essentialReaders > 0
+                BackgroundWorkCoordinator.admissionChanged()
             }
         }
         try {
@@ -99,6 +101,7 @@ internal object DiscoveryRequestCoordinator {
             synchronized(flights) {
                 if (essential) flight.essentialReaders--
                 flight.urgent.value = flight.essentialReaders > 0
+                BackgroundWorkCoordinator.admissionChanged()
                 if (--flight.readers == 0) {
                     if (flights[key] === flight) flights.remove(key)
                     if (!flight.result.isCompleted) flight.result.cancel()

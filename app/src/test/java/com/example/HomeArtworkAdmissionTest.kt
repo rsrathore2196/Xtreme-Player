@@ -82,6 +82,28 @@ class HomeArtworkAdmissionTest {
         }
     }
 
+    @Test fun repeatedCoverWaitersLeaveACacheDecodeSlotForAnotherVisibleCover() = runBlocking {
+        val cache = Cache()
+        val shared = "https://covers.example/shared.jpg"
+        val other = generateSequence("https://covers.example/other.jpg") { it + "x" }
+            .first { (it.hashCode() and Int.MAX_VALUE) % 32 != (shared.hashCode() and Int.MAX_VALUE) % 32 }
+        val jobs = mutableListOf<Deferred<ImageResult>>()
+        try {
+            jobs += async { ArtworkResolutionInterceptor().intercept(cache.chain(shared)) }
+            withTimeout(3_000) { cache.probes.receive(); assertEquals(shared, cache.diskStarts.receive()) }
+            repeat(4) { jobs += async { ArtworkResolutionInterceptor().intercept(cache.chain(shared)) } }
+            withTimeout(3_000) { repeat(4) { cache.probes.receive() } }
+            delay(50)
+            jobs += async { ArtworkResolutionInterceptor().intercept(cache.chain(other)) }
+            withTimeout(3_000) { assertEquals(other, cache.diskStarts.receive()) }
+            cache.release.complete(Unit)
+            assertTrue(withTimeout(3_000) { jobs.awaitAll() }.all { it is SuccessResult })
+            assertEquals(2, cache.decodes.get())
+        } finally {
+            cache.release.complete(Unit); jobs.forEach { it.cancel() }; jobs.joinAll()
+        }
+    }
+
     @Test fun coldVisibleDiskDecodesAreBoundedButMemoryHitsDoNotWaitForThem() = runBlocking {
         val cache = Cache()
         val jobs = List(8) { index -> async { ArtworkResolutionInterceptor().intercept(cache.chain("https://covers.example/$index.jpg")) } }

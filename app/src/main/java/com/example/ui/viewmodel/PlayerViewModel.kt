@@ -242,6 +242,7 @@ class PlayerViewModel(
     private val legacySearchGeneration = AtomicLong()
     private val recentSearchDispatcher = AppDispatchers.Io
     private val recentSearchMutex = Mutex()
+    private var restoredRecentSearchRevision: Long? = null
     private val recentSearchRevision = AtomicLong()
     private val favoriteUpdateMutex = Mutex()
     private var playlistTracksJob: Job? = null
@@ -319,6 +320,7 @@ class PlayerViewModel(
                         ensureActive()
                         if (categories.isNotEmpty() && userProfile.value.countryCode == profile.countryCode &&
                             !_searchState.value.exploreIndexReady) _searchState.update { it.copy(exploreCategories = categories) }
+                        restoreRecentSearches()
                     } catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { /* A missing category cache is a settled stage. */ }
                 }
@@ -383,11 +385,7 @@ class PlayerViewModel(
             com.example.performance.BackgroundWorkCoordinator.trace("Search first access").close()
             viewModelScope.launch(recentSearchDispatcher) {
                 com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
-                val revision = recentSearchRevision.get()
-                recentSearchMutex.withLock {
-                    val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
-                    if (recentSearchRevision.get() == revision) _searchState.update { it.copy(recentSearches = recent) }
-                }
+                restoreRecentSearches()
             }
         }
         if ((searchVisible || detailVisible) && !catalogFavoritesStarted) {
@@ -397,6 +395,16 @@ class PlayerViewModel(
                     com.example.performance.BackgroundWorkCoordinator.uiForeground,
                     repository::getFavoriteTracks).collect { catalogBrowser.updateFavorites(it) }
             }
+        }
+    }
+
+    private suspend fun restoreRecentSearches() = recentSearchMutex.withLock {
+        val revision = recentSearchRevision.get()
+        if (restoredRecentSearchRevision == revision) return@withLock
+        val recent = com.example.data.local.RecentSearchPreferences.getRecentSearches(application)
+        if (recentSearchRevision.get() == revision) {
+            _searchState.update { it.copy(recentSearches = recent) }
+            restoredRecentSearchRevision = revision
         }
     }
 

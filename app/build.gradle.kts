@@ -61,6 +61,13 @@ android {
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
+    create("benchmark") {
+      initWith(getByName("release"))
+      applicationIdSuffix = ".benchmark"
+      isDebuggable = false
+      signingConfig = signingConfigs.getByName("debug")
+      matchingFallbacks += listOf("release")
+    }
   }
   compileOptions {
     isCoreLibraryDesugaringEnabled = true

@@ -290,6 +290,24 @@ class ArtworkLoadingWorkloadTest {
         assertEquals(1, downloads.get())
     }
 
+    @Test fun savedSufficientRenditionAvoidsDecodingEarlierUndersizedCandidatesOnReopen() = runBlocking {
+        val original = "https://lh3.googleusercontent.com/cover=w60-h60-l90-rj"
+        val metadata = ArtworkRequestMetadata(original, 600, trackId = "yt_abcdefghijk")
+        val selected = youtubeArtworkAlternatives(metadata.trackId, listOf(original))[1]
+        val key = ArtworkRenditionCache.key(metadata, 300, 300)
+        val saved = com.example.data.cache.RecommendationCacheEntry(key, selected, 0, Long.MAX_VALUE)
+        val hints = ArtworkRenditionCache({ saved }, { _, _, _ -> })
+        val req = request().newBuilder().data(original)
+            .setParameter(ARTWORK_METADATA_PARAMETER, metadata, null).build()
+        val smaller = providerArtworkUrl(original, 600)
+        val chain = Chain(req, cached = setOf(smaller, selected), diskOnly = true,
+            dimensions = mapOf(smaller to 100, selected to 600))
+        val result = ArtworkResolutionInterceptor(hints).intercept(chain) as SuccessResult
+        assertEquals(selected, result.request.data)
+        assertEquals("The saved valid rendition should be the only disk decode", 1, chain.diskProbes.get())
+        assertTrue(chain.calls.none { it.second })
+    }
+
     @Test fun hiddenUnfinishedArtworkCancelsNetworkAndResumesOnlyWhenVisible() = runBlocking {
         val entered = CompletableDeferred<Unit>()
         val cancelled = CompletableDeferred<Unit>()
@@ -444,6 +462,22 @@ class ArtworkLoadingWorkloadTest {
             } is SuccessResult)
             assertTrue(chain.calls.any { it.second })
         } finally { coordinator.scrolling(scrollOwner, false) }
+    }
+
+    @Test fun aQueuedBackgroundCoverDoesNotBlockTheSameCurrentPlayerCoverBehindGlobalSlots() = runBlocking {
+        val slots = ArtworkResolutionInterceptor::class.java.getDeclaredField("coldArtworkRequests")
+            .apply { isAccessible = true }.get(null) as kotlinx.coroutines.sync.Semaphore
+        slots.acquire(); slots.acquire()
+        val interceptor = ArtworkResolutionInterceptor()
+        val background = async { interceptor.intercept(Chain(request())) }
+        try {
+            delay(100)
+            val urgent = request().newBuilder().setParameter(ARTWORK_METADATA_PARAMETER,
+                ArtworkRequestMetadata(provider, 600, currentTrack = true), null).build()
+            assertTrue(withTimeout(1_000) { interceptor.intercept(Chain(urgent)) } is SuccessResult)
+        } finally {
+            background.cancelAndJoin(); slots.release(); slots.release()
+        }
     }
 
 }

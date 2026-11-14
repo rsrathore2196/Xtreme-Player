@@ -24,6 +24,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.LayoutDirection
@@ -33,19 +34,29 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.ui.util.LocalArtworkRequestsActive
+import kotlinx.coroutines.CompletableDeferred
+
+/** The first layout happens before page motion, with collectors/artwork still paused. */
+internal class TabDestinationPreparation {
+    private val laidOut = List(3) { CompletableDeferred<Unit>() }
+    fun prepared(page: Int) { laidOut.getOrNull(page)?.complete(Unit) }
+    suspend fun await(page: Int) { laidOut[page].await() }
+}
 
 /** Mount requested destinations only, retaining their composition and scroll state after first use. */
 @Composable
 internal fun MainTabPager(
     state: PagerState,
     pageCovered: Boolean,
+    requestedPage: Int = state.targetPage,
+    onPagePrepared: (Int) -> Unit = {},
     content: @Composable (Int) -> Unit
 ) {
     val parentEffectsActive = LocalVisualEffectsActive.current
     var mounted by remember { mutableStateOf(setOf(state.currentPage)) }
-    LaunchedEffect(state.currentPage, state.targetPage) {
-        if (state.currentPage !in mounted || state.targetPage !in mounted) {
-            mounted = mounted + state.currentPage + state.targetPage
+    LaunchedEffect(state.currentPage, state.targetPage, requestedPage) {
+        if (state.currentPage !in mounted || state.targetPage !in mounted || requestedPage !in mounted) {
+            mounted = mounted + state.currentPage + state.targetPage + requestedPage
         }
     }
     HorizontalPager(state = state, beyondViewportPageCount = 2, userScrollEnabled = false,
@@ -70,9 +81,10 @@ internal fun MainTabPager(
         CompositionLocalProvider(LocalVisualEffectsActive provides (visible && parentEffectsActive),
             LocalArtworkRequestsActive provides settled, LocalLifecycleOwner provides page) {
             Box(Modifier.fillMaxSize().graphicsLayer { clip = false }
+                .onGloballyPositioned { if (index in mounted || index == requestedPage) onPagePrepared(index) }
                 .testTag(if (settled) "main_tab_${index}_settled" else "main_tab_${index}_retained")) {
                 // Adjacent page containers stay cheap until navigation requests them.
-                if (index in mounted) content(index)
+                if (index in mounted || index == requestedPage) content(index)
             }
         }
     }
@@ -103,7 +115,8 @@ private class RetainedPageLifecycle(private val parent: Lifecycle) : LifecycleOw
 @Composable
 internal fun RetainedPrimaryTabHost(
     state: PagerState, transition: androidx.compose.animation.core.Transition<Int>, covered: Boolean,
-    inputBlocked: Boolean = covered, content: @Composable (Int) -> Unit
+    inputBlocked: Boolean = covered, requestedPage: Int = state.targetPage,
+    onPagePrepared: (Int) -> Unit = {}, content: @Composable (Int) -> Unit
 ) {
     val settingsCoversContent = transition.currentState == 3 || transition.targetState == 3 || transition.isRunning
     val settingsSettled = transition.currentState == 3 && transition.targetState == 3 && !transition.isRunning
@@ -116,7 +129,8 @@ internal fun RetainedPrimaryTabHost(
                 while (true) awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial).changes.forEach { it.consume() }
             }
         } else Modifier.testTag("retained_primary_tabs"))) {
-        MainTabPager(state, pageCovered = covered || settingsCoversContent, content = content)
+        MainTabPager(state, pageCovered = covered || settingsCoversContent,
+            requestedPage = requestedPage, onPagePrepared = onPagePrepared, content = content)
     }
 }
 

@@ -29,7 +29,7 @@ import org.robolectric.shadows.ShadowSystemClock
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [32], application = Application::class, instrumentedPackages = ["com.example.ui.viewmodel"])
 class HomeDeferredWorkTest {
-    @Test fun localStagesWaitForFiveIdleSecondsAfterEachPreviousStageSettles() = runBlocking<Unit> {
+    @Test fun localStagesUseShortQuietWindowsAfterEachPreviousStageSettles() = runBlocking<Unit> {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         val app = ApplicationProvider.getApplicationContext<Application>()
         val coordinator = BackgroundWorkCoordinator
@@ -73,18 +73,18 @@ class HomeDeferredWorkTest {
             vm.onHomeFrameDrawn()
             withTimeout(5_000) { vm.coreTabsReady.first { it } }
             coordinator.interaction()
-            ShadowSystemClock.advanceBy(Duration.ofMillis(4_999)); delay(300)
+            ShadowSystemClock.advanceBy(Duration.ofMillis(749)); delay(300)
             assertEquals(0, searches.get()); assertEquals(0, queries.get())
             ShadowSystemClock.advanceBy(Duration.ofMillis(1)); delay(300)
             withTimeout(5_000) { vm.hasRecentlyPlayed.first { it } }
             assertEquals(0, searches.get()); assertEquals(0, queries.get())
-            ShadowSystemClock.advanceBy(Duration.ofSeconds(5))
+            ShadowSystemClock.advanceBy(Duration.ofMillis(750))
             withTimeout(5_000) { vm.profileShelf.first { it != null } }
             assertEquals(1, searches.get()); assertEquals(0, queries.get())
             @Suppress("UNCHECKED_CAST")
             val profileSettled = vm.javaClass.getDeclaredField("initialProfileSettledAt").apply { isAccessible = true }.get(vm) as kotlinx.coroutines.flow.StateFlow<Long?>
             withTimeout(5_000) { profileSettled.first { it != null } }
-            ShadowSystemClock.advanceBy(Duration.ofMillis(4_999)); delay(300)
+            ShadowSystemClock.advanceBy(Duration.ofMillis(749)); delay(300)
             assertEquals(0, queries.get()); assertFalse(vm.artistPortraitsReady.value)
             ShadowSystemClock.advanceBy(Duration.ofMillis(1))
             withTimeout(5_000) { vm.mostListenedArtists.first { it.isNotEmpty() } }

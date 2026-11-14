@@ -157,6 +157,7 @@ fun MainNavigationScaffold(
         initialPage = selectedTabIndex.coerceIn(0, 2),
         pageCount = { 3 }
     )
+    val tabPreparation = remember { TabDestinationPreparation() }
     // The three primary pages stay mounted. Visibility still controls optional
     // data preparation and effects; tab motion does not reconstruct their trees.
     val previousTabIndex = remember { mutableIntStateOf(selectedTabIndex) }
@@ -178,6 +179,9 @@ fun MainNavigationScaffold(
         try {
             if (selectedTabIndex in 0..2 &&
                 (tabPagerState.currentPage != selectedTabIndex || tabPagerState.currentPageOffsetFraction != 0f)) {
+                // Mount/measure the requested destination before the animation's
+                // first moving frame, rather than constructing it during the slide.
+                tabPreparation.await(selectedTabIndex)
                 if (returningFromSettings) {
                     // Settings owns its page reveal; prepare the destination
                     // behind it without adding an unrelated horizontal animation.
@@ -458,7 +462,9 @@ fun MainNavigationScaffold(
                     }
                     val primaryCovered = playerCoversContent || catalogDetail != null || currentPlaylist != null
                     RetainedPrimaryTabHost(state = tabPagerState, transition = tabTransition,
-                        covered = primaryCovered, inputBlocked = primaryCovered || selectedTabIndex == 3) { tabIndex -> tabContent(tabIndex) }
+                        covered = primaryCovered, inputBlocked = primaryCovered || selectedTabIndex == 3,
+                        requestedPage = selectedTabIndex.takeIf { it in 0..2 } ?: tabPagerState.currentPage,
+                        onPagePrepared = tabPreparation::prepared) { tabIndex -> tabContent(tabIndex) }
                     SettingsNavigationOverlay(tabTransition) { tabContent(3) }
 
                 }

@@ -1,6 +1,16 @@
+import com.android.build.api.variant.BuildConfigField
+
 plugins {
   alias(libs.plugins.android.test)
   alias(libs.plugins.androidx.baselineprofile)
+}
+
+androidComponents.onVariants { variant ->
+  // The baseline-profile plugin also creates nonMinifiedBenchmark and
+  // benchmarkBenchmark variants; all must address the isolated target.
+  val suffix = if (variant.name.endsWith("Benchmark") || variant.name == "benchmark") ".benchmark" else ""
+  variant.buildConfigFields?.put("TARGET_PACKAGE", BuildConfigField("String",
+    "\"com.aistudio.xtremeplayer.vkmz$suffix\"", "Application exercised by this test variant"))
 }
 
 android {
@@ -10,6 +20,15 @@ android {
     minSdk = 28
     targetSdk = 36
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    buildConfigField("String", "TARGET_PACKAGE", "\"com.aistudio.xtremeplayer.vkmz\"")
+  }
+  buildFeatures { buildConfig = true }
+  buildTypes {
+    create("benchmark") {
+      isDebuggable = true
+      matchingFallbacks += listOf("release")
+      buildConfigField("String", "TARGET_PACKAGE", "\"com.aistudio.xtremeplayer.vkmz.benchmark\"")
+    }
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_17

@@ -228,7 +228,7 @@ class MainActivity : ComponentActivity() {
                 androidx.compose.animation.Crossfade(
                     targetState = isOnboardingCompleted,
                     // Export existing tags only in the profile-generation variant; release semantics stay unchanged.
-                    modifier = if (BuildConfig.BUILD_TYPE.startsWith("nonMinified")) Modifier.semantics {
+                    modifier = if (BuildConfig.BUILD_TYPE.startsWith("nonMinified") || BuildConfig.BUILD_TYPE == "benchmark") Modifier.semantics {
                         testTagsAsResourceId = true
                     } else Modifier,
                     label = "onboarding_crossfade"

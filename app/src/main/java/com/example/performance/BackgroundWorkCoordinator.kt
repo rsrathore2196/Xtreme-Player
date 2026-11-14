@@ -5,6 +5,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
@@ -28,12 +29,40 @@ object BackgroundWorkCoordinator {
     val optionalCpuDispatcher = AppDispatchers.CpuBounded
     private val traceCookies = AtomicInteger()
     private val corePreparations = AtomicInteger()
+    private val noUrgency: () -> Boolean = { false }
+    private val admissionRevision = MutableStateFlow(0L)
+
+    /** State changes wake all eligible consumers; quiet periods use their actual deadline. */
+    internal fun admissionChanged() { admissionRevision.update { it + 1L } }
+
+    private suspend fun awaitAdmissionChange(observed: Long, deadline: Long? = null, externalUrgency: Boolean = false) {
+        val remaining = deadline?.let { (it - SystemClock.elapsedRealtime()).coerceAtLeast(1L) }
+        // Some callers expose an ordinary Boolean callback rather than a Flow.
+        // Keep promotion responsive without polling every blocked worker at 20Hz.
+        val timeout = if (externalUrgency) minOf(remaining ?: 250L, 250L) else remaining
+        if (timeout == null) admissionRevision.first { it != observed }
+        else withTimeoutOrNull(timeout) { admissionRevision.first { it != observed } }
+    }
+
+    private fun nextInteractionDeadline(requireForeground: Boolean = false, awaitFrameQuiet: Boolean = true,
+        awaitWork: Boolean = false, awaitCore: Boolean = false, notBefore: Long = 0L): Long? {
+        if (requireForeground && !foreground.get() || foregroundDrawPending.get() || touching.get() ||
+            scrolling.get() || navigationJobs.get() != 0 || awaitWork && jobs.get() != 0 ||
+            awaitCore && foreground.get() && corePreparations.get() != 0) return null
+        val now = SystemClock.elapsedRealtime()
+        val quietAt = if (foreground.get() || requireForeground) maxOf(lastInteraction.get() + 250L,
+            navigationUntil.get(), if (awaitFrameQuiet) lastSlowFrame.get() + 250L else 0L) else 0L
+        return maxOf(quietAt, notBefore).takeIf { it > now }
+    }
 
     /** Optional process work yields to data-only core preparation, never UI or playback. */
     fun coreTabsPreparation(): AutoCloseable {
         corePreparations.incrementAndGet()
+        admissionChanged()
         val closed = AtomicBoolean()
-        return AutoCloseable { if (closed.compareAndSet(false, true)) corePreparations.decrementAndGet() }
+        return AutoCloseable { if (closed.compareAndSet(false, true)) {
+            corePreparations.decrementAndGet(); admissionChanged()
+        } }
     }
 
     fun trace(name: String): AutoCloseable {
@@ -65,6 +94,7 @@ object BackgroundWorkCoordinator {
     fun expectForegroundDraw() {
         if (!foregroundDrawPending.getAndSet(true))
             androidx.tracing.Trace.beginAsyncSection("Xtreme/Foreground first draw", 0)
+        admissionChanged()
     }
     private fun finishForegroundDrawTrace() {
         if (foregroundDrawPending.getAndSet(false))
@@ -73,6 +103,7 @@ object BackgroundWorkCoordinator {
     fun firstFrameRendered() {
         finishForegroundDrawTrace()
         firstFrame.complete(Unit)
+        admissionChanged()
     }
     suspend fun awaitFirstFrame() { firstFrame.await() }
 
@@ -100,7 +131,9 @@ object BackgroundWorkCoordinator {
             essentialActive = false
             optionalActive = false
             cardActive = false
+            lastCardCompleted = 0L
         }
+        admissionChanged()
     }
 
     private val _interactions = MutableStateFlow(0L)
@@ -118,13 +151,16 @@ object BackgroundWorkCoordinator {
     suspend fun awaitContinuousForegroundIdle(homeDrawAt: Long, quietMillis: Long = 10_000L) {
         var idleSince = homeDrawAt
         while (true) {
+            val observed = admissionRevision.value
             currentCoroutineContext().ensureActive()
             val now = SystemClock.elapsedRealtime()
             val eligible = foreground.get() && focused.get() && isInteractionIdle(awaitFrameQuiet = false)
             if (!eligible) idleSince = now
             val remaining = quietMillis - (now - maxOf(idleSince, lastInteraction.get()))
             if (eligible && remaining <= 0L) return
-            delay(if (eligible) remaining.coerceIn(1L, 250L) else 250L)
+            val deadline = if (eligible) now + remaining else if (focused.get())
+                nextInteractionDeadline(requireForeground = true, awaitFrameQuiet = false) else null
+            awaitAdmissionChange(observed, deadline)
         }
     }
 
@@ -133,6 +169,7 @@ object BackgroundWorkCoordinator {
      * Do not await Home milestones when there is no foreground Activity. */
     suspend fun awaitMaintenanceIdle() {
         while (true) {
+            val observed = admissionRevision.value
             currentCoroutineContext().ensureActive()
             // A paused Activity may retain a navigation/optional-work lease.
             // Headless workers must not wait for a UI that will not draw.
@@ -140,7 +177,7 @@ object BackgroundWorkCoordinator {
             val now = SystemClock.elapsedRealtime()
             val uiReady = firstFrame.isCompleted && corePreparations.get() == 0 && optionalInteractionIdle(now)
             if (uiReady && jobs.get() == 0 && isInteractionIdle()) return
-            delay(250L)
+            awaitAdmissionChange(observed, nextInteractionDeadline(awaitWork = true, awaitCore = true))
         }
     }
 
@@ -172,11 +209,13 @@ object BackgroundWorkCoordinator {
 
     internal fun optionalPlaybackWorkMayProceed(): Boolean = optionalCanRun(false, urgent = { false })
 
-    private suspend fun optionalContext(requireForeground: Boolean, urgent: () -> Boolean = { false }, awaitFrameQuiet: Boolean = true) =
+    private suspend fun optionalContext(requireForeground: Boolean, urgent: () -> Boolean = noUrgency, awaitFrameQuiet: Boolean = true) =
         NonEssentialWork(currentCoroutineContext()[Job], { optionalCanRun(requireForeground, urgent, awaitFrameQuiet) }) {
-            while (!optionalCanRun(requireForeground, urgent, awaitFrameQuiet)) {
+            while (true) {
+                val observed = admissionRevision.value
+                if (optionalCanRun(requireForeground, urgent, awaitFrameQuiet)) break
                 currentCoroutineContext().ensureActive()
-                delay(50L)
+                awaitAdmissionChange(observed, nextInteractionDeadline(requireForeground, awaitFrameQuiet, awaitCore = true), urgent !== noUrgency)
             }
         }
 
@@ -191,9 +230,11 @@ object BackgroundWorkCoordinator {
         fun canRun() = urgent() || !foreground.get() ||
             (isInteractionIdle(awaitFrameQuiet = awaitFrameQuiet) && !com.example.recommendation.DiscoveryRequestCoordinator.playbackResolving)
         return NonEssentialWork(currentCoroutineContext()[Job], ::canRun) {
-            while (!canRun()) {
+            while (true) {
+                val observed = admissionRevision.value
+                if (canRun()) break
                 currentCoroutineContext().ensureActive()
-                delay(50L)
+                awaitAdmissionChange(observed, nextInteractionDeadline(awaitFrameQuiet = awaitFrameQuiet), urgent !== noUrgency)
             }
         }
     }
@@ -201,7 +242,7 @@ object BackgroundWorkCoordinator {
     /** Local snapshots use the short interaction fence without a startup/network lease.
      * Visible loading content can ignore slow-frame signals to avoid waiting on its own shimmer;
      * input, navigation and playback admission still apply. Other callers keep frame gating. */
-    internal suspend fun <T> localDataPreparation(urgent: () -> Boolean = { false }, awaitFrameQuiet: Boolean = true,
+    internal suspend fun <T> localDataPreparation(urgent: () -> Boolean = noUrgency, awaitFrameQuiet: Boolean = true,
         block: suspend () -> T): T = withContext(uiContinuationContext(urgent, awaitFrameQuiet)) { block() }
 
     /** WorkManager also participates in dock preemption, without requiring a headless Home. */
@@ -209,7 +250,7 @@ object BackgroundWorkCoordinator {
         optionalProcessing(block = block)
 
     /** Shared flights use their own live urgency, not a single consumer's cancellation. */
-    internal suspend fun <T> optionalProcessing(urgent: () -> Boolean = { false }, awaitFrameQuiet: Boolean = true,
+    internal suspend fun <T> optionalProcessing(urgent: () -> Boolean = noUrgency, awaitFrameQuiet: Boolean = true,
         block: suspend () -> T): T =
         withContext(optionalContext(requireForeground = false, urgent = urgent, awaitFrameQuiet = awaitFrameQuiet)) { block() }
 
@@ -231,7 +272,7 @@ object BackgroundWorkCoordinator {
      * queues behind either lane. Network/image consumers retain their own limits.
      */
     suspend fun <T> startup(priority: StartupPriority, requireForeground: Boolean = true,
-        urgent: () -> Boolean = { false },
+        urgent: () -> Boolean = noUrgency,
         cardWork: Boolean = false,
         label: String = priority.name,
         block: suspend () -> T): T {
@@ -241,10 +282,12 @@ object BackgroundWorkCoordinator {
         if (requireForeground || foreground.get()) awaitFirstFrame()
         val ticket = Ticket(priority, requireForeground, cardWork, urgent)
         synchronized(admissionLock) { waiting.add(ticket) }
+        admissionChanged()
         var admitted = false
         var admittedEssential = false
         try {
             while (!admitted) {
+                val observed = admissionRevision.value
                 currentCoroutineContext().ensureActive()
                 if (!cardWork && urgent()) {
                     synchronized(admissionLock) { waiting.remove(ticket) }
@@ -281,7 +324,16 @@ object BackgroundWorkCoordinator {
                         true
                     } else false
                 }
-                if (!admitted) delay(50L)
+                if (!admitted) {
+                    val deadline = synchronized(admissionLock) {
+                        val essential = ticket.essential()
+                        if (essentialActive || !essential && optionalActive || cardWork && cardActive) null
+                        else nextInteractionDeadline(requireForeground, awaitWork = !essential, awaitCore = !essential,
+                            notBefore = maxOf(if (!essential && lastOptionalCompleted.get() > 0L) lastOptionalCompleted.get() + BETWEEN_JOBS_MS else 0L,
+                                if (cardWork && lastCardCompleted > 0L) lastCardCompleted + BETWEEN_JOBS_MS else 0L))
+                    }
+                    awaitAdmissionChange(observed, deadline, urgent !== noUrgency)
+                }
             }
             val effectivePriority = if (admittedEssential) StartupPriority.ESSENTIAL_UI
                 else priority
@@ -309,18 +361,20 @@ object BackgroundWorkCoordinator {
                     }
                 }
             }
+            admissionChanged()
         }
     }
 
     /** Pause a long maintenance/batch loop for interaction, without waiting on its own lease. */
     suspend fun yieldToInteraction(requireForeground: Boolean = false, awaitFrameQuiet: Boolean = true,
-        bypass: () -> Boolean = { false }) {
+        bypass: () -> Boolean = noUrgency) {
         // A fast batch must also give other coroutines a turn, even when no gesture
         // is active. This gate never waits for jobs == 0 (the caller may own a lease).
         yield()
         if (!bypass()) currentCoroutineContext()[NonEssentialWork]?.awaitAdmission?.invoke()
         val admission = currentCoroutineContext()[Admission]
         while (true) {
+            val observed = admissionRevision.value
             currentCoroutineContext().ensureActive()
             val essentialWaiting = if (admission?.priority == StartupPriority.DEFERRED ||
                 admission?.priority == StartupPriority.MAINTENANCE) synchronized(admissionLock) {
@@ -334,7 +388,8 @@ object BackgroundWorkCoordinator {
             val frameQuiet = awaitFrameQuiet && admission?.priority != StartupPriority.ESSENTIAL_UI
             if (bypass() || !essentialWaiting && (!optional || !foreground.get() || corePreparations.get() == 0) && isInteractionIdle(requireForeground, frameQuiet) &&
                 (!optional || optionalInteractionIdle(SystemClock.elapsedRealtime()))) return
-            delay(50L)
+            awaitAdmissionChange(observed, if (essentialWaiting) null else nextInteractionDeadline(requireForeground, frameQuiet,
+                awaitCore = optional), bypass !== noUrgency)
         }
     }
 
@@ -391,12 +446,14 @@ object BackgroundWorkCoordinator {
     fun cancelNonEssentialWork() {
         interaction()
         navigationUntil.set(SystemClock.elapsedRealtime() + 350L)
+        admissionChanged()
     }
 
     /** A lifecycle-owned lease for first layout and full-screen transitions. */
     fun navigationBusy(): AutoCloseable {
         interaction()
         navigationJobs.incrementAndGet()
+        admissionChanged()
         val work = busy()
         val section = trace("Navigation transition")
         val closed = AtomicBoolean(false)
@@ -419,12 +476,15 @@ object BackgroundWorkCoordinator {
         navigationJobs.get() == 0 && SystemClock.elapsedRealtime() >= navigationUntil.get()
 
     suspend fun awaitNavigationIdle(requireForeground: Boolean = false,
-        bypass: () -> Boolean = { false }) {
+        bypass: () -> Boolean = noUrgency) {
         while (true) {
+            val observed = admissionRevision.value
             currentCoroutineContext().ensureActive()
             if (bypass() || (!requireForeground || foreground.get()) &&
                 navigationIsIdle()) return
-            delay(50L)
+            val deadline = if ((!requireForeground || foreground.get()) && !foregroundDrawPending.get() && navigationJobs.get() == 0)
+                navigationUntil.get().takeIf { it > SystemClock.elapsedRealtime() } else null
+            awaitAdmissionChange(observed, deadline, bypass !== noUrgency)
         }
     }
 
@@ -440,7 +500,7 @@ object BackgroundWorkCoordinator {
         }
         _uiForeground.value = visible
     }
-    fun interaction() { lastInteraction.set(SystemClock.elapsedRealtime()); _interactions.update { it + 1 } }
+    fun interaction() { lastInteraction.set(SystemClock.elapsedRealtime()); _interactions.update { it + 1 }; admissionChanged() }
     fun frame(durationNanos: Long, budgetNanos: Long) {
         if (durationNanos > budgetNanos) {
             lastSlowFrame.set(SystemClock.elapsedRealtime())
@@ -448,11 +508,13 @@ object BackgroundWorkCoordinator {
     }
     fun busy(): AutoCloseable {
         jobs.incrementAndGet()
+        admissionChanged()
         val closed = AtomicBoolean(false)
         return AutoCloseable {
             if (closed.compareAndSet(false, true)) {
                 jobs.decrementAndGet()
                 lastWork.set(SystemClock.elapsedRealtime())
+                admissionChanged()
             }
         }
     }
@@ -462,7 +524,7 @@ object BackgroundWorkCoordinator {
     }
     /** Wait for observed interaction/frame quiet; no process-wide initialization prerequisite. */
     suspend fun awaitIdle(quietMillis: Long = 750L, requireForeground: Boolean = true,
-        minimumUptimeMillis: Long = 0L, userRequested: () -> Boolean = { false }) {
+        minimumUptimeMillis: Long = 0L, userRequested: () -> Boolean = noUrgency) {
         // An admitted task owns a busy lease. Waiting for jobs == 0 here would
         // wait for itself (including nested cache/repository calls).
         if (currentCoroutineContext()[Admission] != null) {
@@ -470,13 +532,16 @@ object BackgroundWorkCoordinator {
             return
         }
         while (true) {
+            val observed = admissionRevision.value
             currentCoroutineContext().ensureActive()
             val now = SystemClock.elapsedRealtime()
             val last = maxOf(lastInteraction.get(), lastSlowFrame.get(), lastWork.get())
             val quiet = !foregroundDrawPending.get() && jobs.get() == 0 &&
                 now - startedAt >= minimumUptimeMillis && now - last >= quietMillis
             if ((!requireForeground || foreground.get()) && (userRequested() || quiet)) return
-            delay(250L)
+            val deadline = if ((!requireForeground || foreground.get()) && !foregroundDrawPending.get() && jobs.get() == 0)
+                maxOf(startedAt + minimumUptimeMillis, last + quietMillis).takeIf { it > now } else null
+            awaitAdmissionChange(observed, deadline, userRequested !== noUrgency)
         }
     }
 

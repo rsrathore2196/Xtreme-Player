@@ -12,6 +12,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.TestScope
 import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -47,6 +48,13 @@ class StartupCooperationRegressionTest {
     @After fun stop() {
         coordinator.scrolling(false)
         coordinator.foreground(false)
+    }
+
+    // Deadline-driven waits use the coroutine scheduler's clock as well as Android uptime.
+    private fun TestScope.advance(millis: Long) {
+        ShadowSystemClock.advanceBy(Duration.ofMillis(millis))
+        advanceTimeBy(millis)
+        runCurrent()
     }
 
     private fun schedulerState(): String = listOf("jobs", "essentialActive", "optionalActive", "foreground",
@@ -101,9 +109,7 @@ class StartupCooperationRegressionTest {
         assertTrue(playbackRestored)
         assertFalse(resumed.isCompleted)
         coordinator.scrolling(false)
-        ShadowSystemClock.advanceBy(Duration.ofSeconds(15))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(15000)
         assertTrue(schedulerState(), resumed.isCompleted)
         optional.join()
     }
@@ -117,13 +123,9 @@ class StartupCooperationRegressionTest {
         }
         runCurrent()
         assertFalse(published)
-        ShadowSystemClock.advanceBy(Duration.ofMillis(249))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(249)
         assertFalse(published)
-        ShadowSystemClock.advanceBy(Duration.ofMillis(1))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(1)
         assertTrue(published)
         presentation.join()
     }
@@ -137,9 +139,7 @@ class StartupCooperationRegressionTest {
         runCurrent()
         assertFalse(ran)
         coordinator.scrolling(false)
-        ShadowSystemClock.advanceBy(Duration.ofSeconds(15))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(15000)
         assertTrue(schedulerState(), ran)
         optional.join()
     }
@@ -207,18 +207,12 @@ class StartupCooperationRegressionTest {
         assertTrue(visibleRan)
         runCurrent()
         assertFalse(optionalRan)
-        ShadowSystemClock.advanceBy(Duration.ofMillis(249))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(249)
         assertFalse(optionalRan)
         coordinator.interaction() // Interaction restarts the short quiet window.
-        ShadowSystemClock.advanceBy(Duration.ofMillis(249))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(249)
         assertFalse(optionalRan)
-        ShadowSystemClock.advanceBy(Duration.ofMillis(1))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(1)
         assertTrue(schedulerState(), optionalRan)
         optional.join()
     }
@@ -244,13 +238,9 @@ class StartupCooperationRegressionTest {
         assertTrue(played)
         release.complete(Unit)
         runCurrent()
-        ShadowSystemClock.advanceBy(Duration.ofMillis(749))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(749)
         assertEquals(listOf(1), order)
-        ShadowSystemClock.advanceBy(Duration.ofMillis(1))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(1)
         assertEquals(listOf(1, 2), order)
         assertEquals(1, maximum)
         first.join(); second.join()
@@ -267,7 +257,7 @@ class StartupCooperationRegressionTest {
         runCurrent()
         assertFalse(ran)
         requested = true
-        advanceTimeBy(100)
+        advanceTimeBy(250)
         runCurrent()
         assertTrue(ran)
         card.join()
@@ -286,12 +276,10 @@ class StartupCooperationRegressionTest {
         assertFalse(ran)
         ShadowSystemClock.advanceBy(Duration.ofSeconds(15))
         coordinator.frame(20_000_000L, 8_000_000L)
-        advanceTimeBy(100)
+        advanceTimeBy(250)
         runCurrent()
         assertFalse(ran)
-        ShadowSystemClock.advanceBy(Duration.ofMillis(250))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(250)
         assertTrue(ran)
         work.join()
     }
@@ -302,9 +290,7 @@ class StartupCooperationRegressionTest {
         val second = launch { coordinator.startup(BackgroundWorkCoordinator.StartupPriority.MAINTENANCE) { order.add(2) } }
         runCurrent()
         assertEquals(listOf(1), order)
-        ShadowSystemClock.advanceBy(Duration.ofMillis(750))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(750)
         assertEquals(listOf(1, 2), order)
         first.join(); second.join()
     }
@@ -351,9 +337,7 @@ class StartupCooperationRegressionTest {
         runCurrent()
         assertTrue("A card may not yield to a waiter that can only start after it finishes", firstCompleted)
         assertFalse(secondCompleted)
-        ShadowSystemClock.advanceBy(Duration.ofMillis(750))
-        advanceTimeBy(100)
-        runCurrent()
+        advance(750)
         assertTrue(secondCompleted)
         first.join(); second.join()
     }

@@ -4,23 +4,32 @@ The `benchmark` module records real startup, Home/Search/Library navigation, and
 expansion/collapse paths. It does not replace app UI, inject music, or bypass recommendation gates.
 The startup-only journey also supplies the startup profile used for DEX layout.
 
-Use a dedicated portrait Android 13+ device/emulator (API 28+ is supported; older devices may
-require root for collection). Enable USB debugging and connect it with ADB. The target uses
-the plugin's non-debuggable, debug-signed `nonMinifiedRelease` variant. Install that variant,
-finish onboarding, and play then pause a real song before collection so playback resumption
-provides a mini-player. A production installation signed with another key cannot be updated by
-this variant; use a dedicated device rather than deleting personal app data.
+Use a dedicated portrait Android 13+ device (API 28+ is supported; older devices may
+require root for collection). Enable USB debugging and connect it with ADB.
+The `benchmark` app build is minified, resource-shrunk, non-debuggable and shell-profileable,
+with debug signing and the separate package `com.aistudio.xtremeplayer.vkmz.benchmark`.
+It can coexist with the normal app and does not replace that app's data. Its normal cache
+budgets, animation specifications, artwork quality and glass settings are unchanged.
 
 ```sh
-gradle :app:installNonMinifiedRelease
-# Open the profiling installation, complete onboarding, play and pause a song.
-gradle :benchmark:generateBaselineProfile
+bash gradlew :app:installBenchmark
+# In the isolated installation: finish onboarding, play and pause a real song.
+bash gradlew :benchmark:connectedBenchmarkBenchmarkAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.example.benchmark.StartupResponsivenessBenchmark
 ```
 
-The second command intentionally runs device instrumentation to **generate profiles**. It was
-not run as part of this change. It fails with a preparation message if no real session exists,
-rather than silently producing a profile missing the player path. It never manually refreshes
-Home or searches for music; existing recommendation caching, viewport loading and bounded request coordination apply.
+For profile collection use `:app:installNonMinifiedBenchmark`, prepare that same isolated
+installation, then run `:app:generateBenchmarkBaselineProfile`. The plugin deliberately uses
+an unminified target when collecting profiles; timing measurements above use the minified
+`benchmark` target instead. The legacy `nonMinifiedRelease` / `:benchmark:generateBaselineProfile`
+entry points still address the original package and require a dedicated device if its
+production installation has a different signing key. Do not delete personal data to resolve
+a signing mismatch.
+
+Profile generation is an explicit device operation. It fails with a preparation message if
+no real session exists, rather than producing a profile missing the player path. It does not
+manually refresh Home or inject music. Generation was not run in the cloud workspace because
+no Android device was connected.
 
 The consumer plugin saves the combined output to `app/src/main/baselineProfiles/baseline-prof.txt` (and startup
 rules to `startup-prof.txt` in the same directory) for review and commit. Existing profile rules remain in place until
@@ -36,7 +45,7 @@ soon as Home navigation is available. There is no initialization popup, global p
 boundary, hidden-tab warmup, or wait for optional recommendations.
 
 ```sh
-gradle :benchmark:connectedNonMinifiedReleaseAndroidTest \
+bash gradlew :benchmark:connectedBenchmarkBenchmarkAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=com.example.benchmark.StartupResponsivenessBenchmark
 ```
 
@@ -54,8 +63,7 @@ exists. The Home navigation readiness check fails explicitly if onboarding is in
 `warmInitialTwentySecondsThenInteraction` leaves the initial Home untouched for twenty
 seconds, then exercises the first scroll, first visits to Search/Library, and the player.
 Use its Perfetto trace to inspect 0–2, 2–6, 6–12 and 12–20 seconds after the first foreground
-draw. These intervals include the existing six-second Home admissions; there is no new
-production delay. `optionalWorkWakeupAndInteraction` records twenty idle seconds after its
+draw. The timestamps come from the actual draw and worker trace sections; idle waits are not CPU time. `optionalWorkWakeupAndInteraction` records twenty idle seconds after its
 initial interaction journey, then interrupts optional work with tab changes.
 
 `coldFirstInteractionAfterOneMinute` and `warmFirstInteractionAfterOneMinute` record sixty
@@ -79,7 +87,7 @@ Current application trace names are:
 - `Xtreme/Home row composition`, `Xtreme/Navigation transition`,
   `Xtreme/Search first access`, `Xtreme/Library first access`.
 - `Xtreme/Discovery optional network`, `Xtreme/Playback source resolution`.
-- `Xtreme/Baseline profile install`.
+- `Xtreme/Baseline profile install`, `Xtreme/Glass backdrop capture`.
 
 `Home row composition` wraps existing lazy item content without adding layout nodes.
 `AndroidOwner:measureAndLayout` is emitted by the current Compose UI dependency; it covers
@@ -96,31 +104,56 @@ span includes the admitted candidate attempt and must not be added to its nested
 
 Trace metrics use `Mode.Sum` to include repeated occurrences instead of reporting only the
 first row/decode/navigation. Sums of overlapping async spans are elapsed request time, not
-CPU time or frame latency. Admission spans include the intentional idle wait; a six-second
-span is not six seconds of CPU work. Use frame-overrun percentiles and Perfetto scheduling,
+CPU time or frame latency. Admission spans include their intentional quiet wait and must not be interpreted as CPU work. Use frame-overrun percentiles and Perfetto scheduling,
 GC, disk, database and RenderThread tracks to establish a cause before tuning concurrency,
 cache sizes, retained-tab behavior or image quality.
 
-## Sequential startup stages
+## Startup work and cache reuse
 
-The initial cache projection contains only Quick Picks, Albums & Singles and Trending
-Community Playlists. Missing native shelves receive bounded native browse attempts; a
-terminal response settles startup without fabricating sections. First draw is independent
-of the network and optional data.
+Home first draw does not wait for the network. Cached Recently Played, Music for You and
+artist portraits restore after that draw, independently of native Home transport and live
+historical aggregation. Search restores saved categories and recent queries; Library prepares
+its lightweight playlist snapshot. This preparation does not compose unopened tabs, scan
+liked/playlist tracks or start a historical query. A requested tab gets its first layout before
+its slide starts, with artwork and live collectors paused until the slide settles.
 
-After usable priority content is drawn (or its fetch terminates), `Startup core tabs`
-contains cache-only Search restore and lightweight Library playlist preparation. Deferred
-read stages then wait five continuous foreground idle seconds each: Recently Played,
-Music for You, Most Listened Artists. Each timer starts after the preceding data stage
-settles. Remaining native cache restoration follows six further idle seconds. Playback
-recording/journaling and explicit user actions bypass optional startup admission.
+Once the initial native projection settles, authoritative history, profile discovery, artist
+aggregation and remaining native shelves use serial **750 ms continuous foreground quiet**
+windows. Input, navigation and backgrounding restart pending quiet windows. Successful cached
+cards remain usable on a warm return while live Room subscriptions wait for a real foreground
+draw. Completed stages remain completed; explicit user actions and playback retain their
+foreground paths. Workers wake on admission changes or their next quiet deadline, rather than
+polling a held gesture every 50 ms. Ordinary Boolean urgency callbacks retain a bounded fallback
+check because their callers do not expose a notification source.
 
-`warmStagedStartupThenInteraction` records forty foreground idle seconds before the first
-interaction. It supplements the existing first-twenty-second journeys; it does not add an
-application delay or guarantee remote work completes within forty seconds. Inspect the
-`Startup ... idle/cache`, `Startup Search cache`, `Startup Library playlists`, profile
-discovery and artist-summary spans for the actual sequence. Wait spans are elapsed idle
-time, not CPU work. No initialization popup or hidden-tab composition is involved.
+Artwork requests retain the existing memory/disk budgets and shared decode lane. URL hints
+remember only validated, sufficient renditions in the existing bounded metadata cache. They
+preserve recording, signed-source, viewport and crop identity. Memory hits precede metadata IO;
+missing or expired hints fall back to normal resolution without spending network time on the
+hint. Same-URL waiters release global image slots while waiting. Glass capture reuses a layer
+only when source revision, sampling transform, raster size/phase and effect padding match;
+stationary artwork arrivals and geometry changes invalidate it. No blur quality is reduced.
+
+`coldFirstTwentySecondsInteractive` and `warmFirstTwentySecondsInteractive` exercise scrolling
+and first tab visits as soon as Home is available, throughout the opening window.
+`sustainedNavigationAndScrolling` extends the journey to 60 seconds. `playerAndLyricsTransitions`
+requires a real retained track and records repeated maximize/minimize transitions with player
+controls returning. The initial-idle journeys remain available as separate scenarios; an idle
+launch is not interchangeable with an interactive launch. `warmStagedStartupThenInteraction`
+observes 40 seconds before interacting. None of these waits is an application delay.
+
+Validate on the HMD Vibe 2 Pro / Android 16 and a reference phone using the same display mode,
+settings, history, artwork cache state and audio route. Compare cold/warm/retained launches,
+empty/populated history, fresh/evicted caches, offline/slow transport and paused/active playback.
+Inspect first-20-second frame overrun p50/p95/p99 and missed deadlines, Main/RenderThread CPU,
+GC, image decode counts and `Xtreme/Glass backdrop capture` slices. A shorter capture sum alone
+does not establish lower GPU time. Compare sustained frame times and thermal state as well.
+
+Android App Info **Data** and **Cache** are disk storage categories, not internet usage. Measure
+actual network bytes separately with per-UID Android network statistics or a captured network
+trace over the same journey. Record disk/audio/image cache sizes separately before and after;
+cache eviction and downloads can affect both. Do not increase quotas or move audio files just
+to match another app's App Info numbers. This change leaves those storage policies intact.
 
 ## Runtime profile installation
 

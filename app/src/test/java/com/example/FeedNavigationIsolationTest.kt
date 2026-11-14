@@ -58,6 +58,47 @@ import org.robolectric.annotation.GraphicsMode
 class FeedNavigationIsolationTest {
     @get:Rule val compose = createComposeRule()
 
+    @Test fun firstDestinationLayoutPrecedesMotionAndHiddenCollectorsStayPausedUntilSettled() {
+        val mounts = IntArray(3)
+        val collectors = IntArray(3)
+        var selected by mutableIntStateOf(0)
+        var firstSearchLayout: Pair<Int, Boolean>? = null
+        lateinit var pager: PagerState
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            pager = rememberPagerState(pageCount = { 3 })
+            val preparation = remember { com.example.ui.components.TabDestinationPreparation() }
+            LaunchedEffect(selected) {
+                preparation.await(selected)
+                pager.animateScrollToPage(selected, animationSpec = androidx.compose.animation.core.tween(1000))
+            }
+            MainTabPager(pager, pageCovered = false, requestedPage = selected, onPagePrepared = { page ->
+                if (page == 1 && firstSearchLayout == null) firstSearchLayout = pager.currentPage to pager.isScrollInProgress
+                preparation.prepared(page)
+            }) { page ->
+                DisposableEffect(page) { mounts[page]++; onDispose { } }
+                val source = remember { flow { collectors[page]++; emit(42); awaitCancellation() } }
+                val value by source.collectAsStateWithLifecycle(-1)
+                Text("Prepared $page: $value")
+            }
+        } }
+        repeat(4) { compose.mainClock.advanceTimeByFrame(); compose.waitForIdle() }
+        compose.runOnIdle { selected = 1 }
+        repeat(6) { compose.mainClock.advanceTimeByFrame(); compose.waitForIdle() }
+        compose.runOnIdle {
+            assertEquals(0 to false, firstSearchLayout)
+            assertTrue(pager.isScrollInProgress)
+            assertArrayEquals(intArrayOf(1, 1, 0), mounts)
+            assertArrayEquals(intArrayOf(1, 0, 0), collectors)
+        }
+        compose.mainClock.advanceTimeBy(1500)
+        repeat(4) { compose.mainClock.advanceTimeByFrame(); compose.waitForIdle() }
+        compose.runOnIdle {
+            assertArrayEquals(intArrayOf(1, 1, 0), collectors)
+            assertArrayEquals(intArrayOf(1, 1, 0), mounts)
+        }
+    }
+
     @Test fun retainedDataDoesNotPublishIntoPagesDuringATabSlide() {
         val data = List(3) { MutableStateFlow(0) }
         val rendered = IntArray(3) { -1 }

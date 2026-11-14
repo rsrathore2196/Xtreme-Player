@@ -52,13 +52,15 @@ class LayerBackdrop internal constructor(
 
     internal var layerCoordinates: LayoutCoordinates? by mutableStateOf(null)
     internal var isRecording = false
+    internal var contentVersion = 0L
+        private set
 
     // These are draw-node dependencies, not snapshot state observed by the page.
     // Invalidating a reader's isolated layer must never recapture its source.
     private val drawListeners = mutableSetOf<() -> Unit>()
     internal fun addDrawListener(listener: () -> Unit) { drawListeners.add(listener) }
     internal fun removeDrawListener(listener: () -> Unit) { drawListeners.remove(listener) }
-    internal fun notifyContentChanged() { drawListeners.forEach { it() } }
+    internal fun notifyContentChanged() { contentVersion++; drawListeners.forEach { it() } }
     private val sourceToSurface = Matrix()
 
     private var inverseLayerScope: InverseLayerScope? = null

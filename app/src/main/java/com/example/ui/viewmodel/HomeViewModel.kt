@@ -26,13 +26,13 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         YouTubeMusicApiService.getProfileShelfResult(HomeCacheIdentity.region(profile), profile.languages, rotation, force) },
     private val accountIdentity: () -> String = YouTubeMusicApiService::discoveryAccountIdentity,
     private val accountUpdates: Flow<*> = com.example.data.remote.YouTubeAudioStreamService.discoveryAccountChanges,
-    private val idleAdmission: suspend (Long) -> Unit = { BackgroundWorkCoordinator.awaitContinuousForegroundIdle(it, 5_000L) },
+    private val idleAdmission: suspend (Long) -> Unit = { BackgroundWorkCoordinator.awaitContinuousForegroundIdle(it, 750L) },
     private val elapsedTime: () -> Long = SystemClock::elapsedRealtime,
     private val supplementalLoader: suspend (String, String, Boolean) -> com.example.data.remote.YouTubeHomeParser.ParsedHomeFeed = { region, browseId, authenticated ->
         YouTubeMusicApiService.getHomeRecommendations(region, includeAccount = authenticated, browseId = browseId) },
     private val supplementContinuationLoader: suspend (String, String, String, Boolean) -> com.example.data.remote.YouTubeHomeParser.ParsedHomeFeed = { region, browse, token, authenticated ->
         YouTubeMusicApiService.getHomeRecommendations(region, continuation = token, includeAccount = authenticated, browseId = browse) },
-    private val unlockIdleAdmission: suspend (Long) -> Unit = { BackgroundWorkCoordinator.awaitContinuousForegroundIdle(it, 6_000L) },
+    private val unlockIdleAdmission: suspend (Long) -> Unit = { BackgroundWorkCoordinator.awaitContinuousForegroundIdle(it, 750L) },
     private val prepareCoreTabs: suspend () -> Unit = { repository.prepareStartupTabs() },
     private val connectivityUpdates: Flow<Boolean> = flow {
         val monitor = withContext(AppDispatchers.Io) { com.example.playback.NetworkQualityMonitor.getInstance(application) }
@@ -75,7 +75,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     val mostListenedArtists = _mostListenedArtists.asStateFlow()
     private val _hasListenedArtists = MutableStateFlow(false)
     val hasListenedArtists = _hasListenedArtists.asStateFlow()
-    val hasRecentlyPlayed = combine(recentlyPlayed, historyAdmitted) { tracks, admitted -> admitted && tracks.isNotEmpty() }
+    val hasRecentlyPlayed = recentlyPlayed.map { it.isNotEmpty() }
         .stateIn(owner, SharingStarted.Eagerly, false)
     private val _userMode = MutableStateFlow(HomeUserMode.LOADING)
     val userMode = _userMode.asStateFlow()
@@ -94,6 +94,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
     private val localRestored = CompletableDeferred<Unit>()
     private val profileRestored = CompletableDeferred<Unit>()
     private var restoredProfileKey: String? = null
+    private var cachedArtistsRestored = false
     private val homeDrawAt = MutableStateFlow<Long?>(null)
     private val initialNativeReadyAt = MutableStateFlow<Long?>(null)
     val initialHomePreparedAt = initialNativeReadyAt.asStateFlow()
@@ -191,8 +192,8 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             var previousForeground: Boolean? = null
             val foreground = BackgroundWorkCoordinator.uiForeground.onEach { active ->
                 if (!active) {
-                    // Keep the tracks, but do not reopen Room or show the retained
-                    // card before the next foreground Home's five idle seconds.
+                    // Cached cards remain usable; live Room preparation needs
+                    // admission when Home returns to the foreground.
                     historyAdmitted.value = false
                     initialHistorySettledAt.value = null
                     initialHomeRenderedAt.value = null
@@ -341,7 +342,7 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         }
         owner.launch {
             localRestored.await()
-            combine(artistRequests, _artistPortraitsReady, homeVisible) { request, admitted, active ->
+            combine(artistRequests, _optionalWorkReady, homeVisible) { request, admitted, active ->
                 request.takeIf { admitted && active }
             }.distinctUntilChanged().flatMapLatest { request ->
                 if (request == null) emptyFlow() else database.listeningStatsDao().observeLifetimeArtists()
@@ -384,12 +385,69 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             }
         }
     }
+    /** Cached presentation is independent of discovery and historical aggregation. */
+    private suspend fun restoreCachedPresentation(current: () -> Unit) {
+        if (!localRestored.isCompleted) {
+            try {
+                val saved = BackgroundWorkCoordinator.traceWork("Startup Recently Played cache") {
+                    BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { cache.readRecent(homeKey) }
+                }
+                current()
+                saved?.let { _listeningHistoryCard.update { card -> card.copy(tracks = it.history.tracks,
+                    isLoaded = it.history.tracks.isNotEmpty()) } }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Room remains authoritative. */ }
+            localRestored.complete(Unit)
+        }
+        if (!profileRestored.isCompleted || restoredProfileKey != profileKey) {
+            val requestedKey = profileKey
+            try {
+                val saved = BackgroundWorkCoordinator.traceWork("Home profile cache restore") {
+                    BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { cache.readProfile(requestedKey) }
+                }
+                current()
+                if (requestedKey == profileKey) saved?.let {
+                    restoreProfile(it)
+                    _profileShelfVisible.value = it.profileShelf != null
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* A missing cache is not a failed stage. */ }
+            if (requestedKey == profileKey) {
+                restoredProfileKey = requestedKey
+                profileRestored.complete(Unit)
+            }
+        }
+        if (!cachedArtistsRestored) {
+            try {
+                val saved = BackgroundWorkCoordinator.traceWork("Startup artist cache") {
+                    BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { cache.readArtists(homeKey) }
+                }
+                current()
+                saved?.takeIf { it.artistDataVersion == 3 }?.artists?.take(15)?.let { artists ->
+                    _mostListenedArtists.value = artists
+                    _hasListenedArtists.value = artists.isNotEmpty()
+                    if (artists.isNotEmpty()) _artistPortraitsReady.value = true
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { /* Preserve any retained rankings. */ }
+            cachedArtistsRestored = true
+        }
+    }
+
     private suspend fun runStartupStages(revision: Long) {
         fun current() { if (revision != startupRevision.value) throw CancellationException("Home context changed") }
         restored.await()
-        combine(homeDrawAt, initialNativeReadyAt, initialHomeRenderedAt) { draw, prepared, rendered ->
-            draw != null && prepared != null && (initialHomeShelves(_serverShelves.value).size < 3 || rendered != null)
-        }.first { it }
+        homeDrawAt.first { it != null }
+        // Account/country updates may suspend while replacing native caches.
+        // Read presentation only after that context has finished changing.
+        while (true) {
+            val homeRestore = homeCacheRestore
+            val profileRestore = profileCacheRestore
+            homeRestore.await(); profileRestore.await()
+            current()
+            if (homeRestore === homeCacheRestore && profileRestore === profileCacheRestore) break
+        }
+        restoreCachedPresentation(::current)
         if (!_coreTabsReady.value) {
             try { BackgroundWorkCoordinator.traceWork("Startup core tabs") { prepareCoreTabs() } }
             catch (cancelled: CancellationException) { throw cancelled }
@@ -397,20 +455,13 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
             current(); coreSettledAt = elapsedTime(); _coreTabsReady.value = true
             corePreparationLease?.close(); corePreparationLease = null
         }
+        combine(homeDrawAt, initialNativeReadyAt, initialHomeRenderedAt) { draw, prepared, rendered ->
+            draw != null && prepared != null && (initialHomeShelves(_serverShelves.value).size < 3 || rendered != null)
+        }.first { it }
         if (!historyAdmitted.value || initialHistorySettledAt.value == null) {
             val start = maxOf(coreSettledAt ?: 0L, initialNativeReadyAt.value ?: 0L, initialHomeRenderedAt.value ?: 0L)
             BackgroundWorkCoordinator.traceWork("Startup Recently Played idle") { idleAdmission(start) }
             current()
-            if (!localRestored.isCompleted) {
-                try { BackgroundWorkCoordinator.traceWork("Startup Recently Played cache") {
-                    BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { cache.readRecent(homeKey) }
-                }?.let { saved ->
-                    _listeningHistoryCard.update { it.copy(tracks = saved.history.tracks, isLoaded = saved.history.tracks.isNotEmpty()) }
-                } }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { /* Room remains authoritative. */ }
-                finally { localRestored.complete(Unit) }
-            }
             if (!historyAdmitted.value) initialHistorySettledAt.value = null
             historyAdmitted.value = true
             initialHistorySettledAt.first { it != null }
@@ -418,15 +469,6 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         if (initialProfileSettledAt.value == null) {
             BackgroundWorkCoordinator.traceWork("Home profile admission") { idleAdmission(maxOf(initialHistorySettledAt.value ?: 0L, coreSettledAt ?: 0L)) }
             current()
-            if (!profileRestored.isCompleted || restoredProfileKey != profileKey) {
-                val requestedKey = profileKey
-                try { BackgroundWorkCoordinator.traceWork("Home profile cache restore") {
-                    BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { cache.readProfile(requestedKey) }
-                }?.let(::restoreProfile) }
-                catch (cancelled: CancellationException) { throw cancelled }
-                catch (_: Exception) { /* A missing cache is not a failed stage. */ }
-                current(); restoredProfileKey = requestedKey; profileRestored.complete(Unit)
-            }
             profileWorkReady.value = true; _profileShelfVisible.value = true
             loadProfileShelf(profileForcePending)
             current(); initialProfileSettledAt.compareAndSet(null, elapsedTime())
@@ -434,14 +476,6 @@ class HomeViewModel(private val repository: MusicRepository, private val playbac
         if (initialArtistSettledAt.value == null) {
             BackgroundWorkCoordinator.traceWork("Home artist admission") { idleAdmission(initialProfileSettledAt.value ?: elapsedTime()) }
             current()
-            try { BackgroundWorkCoordinator.traceWork("Startup artist cache") {
-                BackgroundWorkCoordinator.localDataPreparation(awaitFrameQuiet = false) { cache.readArtists(homeKey) }
-            }?.let { saved ->
-                val artists = saved.artists.take(15).takeIf { saved.artistDataVersion == 3 }.orEmpty()
-                _mostListenedArtists.value = artists; _hasListenedArtists.value = artists.isNotEmpty()
-            } }
-            catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) { /* Preserve any retained rankings. */ }
             _optionalWorkReady.value = true; _artistPortraitsReady.value = true
             initialArtistSettledAt.first { it != null }
         }

@@ -138,7 +138,10 @@ private val youtubeArtworkId = Regex("/(?:vi|vi_webp)/([A-Za-z0-9_-]{11})/")
 
 /** Resolve only larger renditions of the supplied provider image and same-video fallbacks. */
 @OptIn(coil.annotation.ExperimentalCoilApi::class)
-class ArtworkResolutionInterceptor(private val diskCache: () -> coil.disk.DiskCache? = { null }) : Interceptor {
+internal class ArtworkResolutionInterceptor(
+    private val renditionCache: ArtworkRenditionCache? = null,
+    private val diskCache: () -> coil.disk.DiskCache? = { null }
+) : Interceptor {
     override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
         val playlist = chain.request.parameters.value<Boolean>(PLAYLIST_COVER_PARAMETER) == true
         val metadata = chain.request.parameters.value<ArtworkRequestMetadata>(ARTWORK_METADATA_PARAMETER)
@@ -189,13 +192,13 @@ class ArtworkResolutionInterceptor(private val diskCache: () -> coil.disk.DiskCa
     private suspend fun <T> admittedArtwork(url: String, current: Boolean = false, visibleThumbnail: Boolean = false,
         cacheOnly: Boolean = false, block: suspend () -> T): T {
         val coordinator = com.example.performance.BackgroundWorkCoordinator
-        val lock = artworkFlights[(url.hashCode() and Int.MAX_VALUE) % artworkFlights.size]
+        val flight = artworkFlights[(url.hashCode() and Int.MAX_VALUE) % artworkFlights.size]
         // Foreground/current player artwork must execute immediately without waiting for background permits
         if (current) {
-            lock.lock()
+            flight.executing.lock()
             try {
                 return block()
-            } finally { lock.unlock() }
+            } finally { flight.executing.unlock() }
         }
         while (true) {
             // Visible cache misses wait only for the current gesture to finish.
@@ -204,14 +207,20 @@ class ArtworkResolutionInterceptor(private val diskCache: () -> coil.disk.DiskCa
             // A saved visible image must not queue behind slow provider downloads.
             // Disk work stays bounded, and all decodes retain CpuBounded's budget.
             val permits = if (visibleThumbnail && cacheOnly) cachedArtworkRequests else coldArtworkRequests
-            permits.acquire()
+            // Only one background request for this URL may wait for capacity.
+            // Current player artwork uses the execution lock alone, so a queued
+            // background request cannot hold it behind the global image limit.
+            flight.waiting.lock()
             try {
-                lock.lock()
+                permits.acquire()
                 try {
-                    if (visibleThumbnail || coordinator.isInteractionIdle(awaitFrameQuiet = false))
-                        return coordinator.finishBoundedBatch { coordinator.traceWork("Artwork decode or fetch", block) }
-                } finally { lock.unlock() }
-            } finally { permits.release() }
+                    flight.executing.lock()
+                    try {
+                        if (visibleThumbnail || coordinator.isInteractionIdle(awaitFrameQuiet = false))
+                            return coordinator.finishBoundedBatch { coordinator.traceWork("Artwork decode or fetch", block) }
+                    } finally { flight.executing.unlock() }
+                } finally { permits.release() }
+            } finally { flight.waiting.unlock() }
         }
     }
 
@@ -347,14 +356,24 @@ class ArtworkResolutionInterceptor(private val diskCache: () -> coil.disk.DiskCa
         }
         // Memory is usable during gestures. Completed requests keep their painter
         // and identity across retained-tab visibility changes.
-        val memory = best(cacheUrls, memoryOnly = true)
-        if (memory != null && sufficient(memory)) return memory
+        val renditionKey = renditionCache?.let { ArtworkRenditionCache.key(metadata, width, height) }
+        suspend fun remember(result: SuccessResult): SuccessResult {
+            if (sufficient(result) && renditionKey != null)
+                renditionCache?.remember(renditionKey, result.request.data.toString())
+            return result
+        }
+        val known = renditionKey?.let { renditionCache?.peek(it) }?.takeIf { it in cacheUrls }
+        val memory = best(listOfNotNull(known) + cacheUrls, memoryOnly = true)
+        if (memory != null && sufficient(memory)) return remember(memory)
         present(memory)
-        val persisted = better(memory, best(cacheUrls, cacheOnly = true))
-        if (persisted != null && sufficient(persisted)) return persisted
+        // A persisted choice skips failed/undersized rendition decodes on reopen.
+        // Probe it only in cache: an expired remote URL cannot consume the fetch budget.
+        val preferred = renditionKey?.let { renditionCache?.get(it) }?.takeIf { it in cacheUrls }
+        val persisted = better(memory, best(listOfNotNull(preferred) + cacheUrls, cacheOnly = true))
+        if (persisted != null && sufficient(persisted)) return remember(persisted)
         present(persisted)
         val loaded = better(persisted, best(urls))
-        return loaded ?: lastError ?: ErrorResult(null, request, IOException("Provider artwork unavailable"))
+        return loaded?.let { remember(it) } ?: lastError ?: ErrorResult(null, request, IOException("Provider artwork unavailable"))
     }
 
     private fun sufficientSize(result: SuccessResult, size: Size): Boolean {
@@ -385,8 +404,12 @@ class ArtworkResolutionInterceptor(private val diskCache: () -> coil.disk.DiskCa
     }
 
     private companion object {
+        class ArtworkFlight {
+            val waiting = Mutex()
+            val executing = Mutex()
+        }
         val coldArtworkRequests = Semaphore(2)
         val cachedArtworkRequests = Semaphore(2)
-        val artworkFlights = Array(32) { Mutex() }
+        val artworkFlights = Array(32) { ArtworkFlight() }
     }
 }

@@ -13,6 +13,7 @@ package com.example.ui.components.backdrop
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.GraphicsLayerScope
+import androidx.compose.ui.graphics.Matrix
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.drawscope.ContentDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -37,6 +38,7 @@ import com.example.ui.components.backdrop.highlight.Highlight
 import com.example.ui.components.backdrop.highlight.HighlightElement
 import com.example.ui.components.backdrop.internal.ShapeProvider
 import com.example.ui.components.backdrop.internal.BackdropRaster
+import com.example.ui.components.backdrop.internal.BackdropSampleCache
 import com.example.ui.components.backdrop.internal.backdropRaster
 import com.example.ui.components.backdrop.internal.recordLayer
 import com.example.ui.components.backdrop.shadow.InnerShadow
@@ -209,6 +211,8 @@ private class DrawBackdropElement(
     }
 
     override fun update(node: DrawBackdropNode) {
+        val effectsChanged = node.shapeProvider != shapeProvider || node.effects != effects || node.backdropScale != backdropScale
+        val samplingChanged = node.backdrop !== backdrop || node.layerBlock != layerBlock || node.onDrawBackdrop != onDrawBackdrop
         node.updateBackdrop(backdrop)
         node.shapeProvider = shapeProvider
         node.effects = effects
@@ -223,7 +227,9 @@ private class DrawBackdropElement(
         node.onDrawFront = onDrawFront
         node.backdropScale = backdropScale
         node.onSample = onSample
-        node.invalidateDrawCache()
+        if (effectsChanged) node.invalidateDrawCache()
+        else if (samplingChanged) node.invalidateSample()
+        else node.invalidateDraw()
     }
 
     override fun InspectorInfo.inspectableProperties() {
@@ -304,12 +310,15 @@ private class DrawBackdropNode(
     private var hasVisibleBackdrop = false
     private var effectsDirty = true
     private var raster: BackdropRaster? = null
-    private val sourceChanged: () -> Unit = { if (isAttached) invalidateDraw() }
+    private val sampleCache = BackdropSampleCache()
+    private val samplingTransform = Matrix()
+    private val sourceChanged: () -> Unit = { if (isAttached) invalidateSample() }
 
     fun updateBackdrop(value: Backdrop) {
         if (backdrop === value) return
         if (isAttached) (backdrop as? LayerBackdrop)?.removeDrawListener(sourceChanged)
         backdrop = value
+        sampleCache.invalidate()
         if (isAttached) (backdrop as? LayerBackdrop)?.addDrawListener(sourceChanged)
     }
 
@@ -352,12 +361,19 @@ private class DrawBackdropNode(
         if (effectScope.update(this, backdropScale, raster.size, raster.phase) || effectsDirty) observeEffects()
         // Only this surface plus its filter halo is captured. The source page is
         // still recorded once, and source-only changes reuse the effect chain.
-        recordLayer(
-            this@DrawBackdropNode,
-            layer,
-            size = raster.layerSize(padding),
-            block = recordBackdropBlock
-        )
+        val cacheable = source != null && layerBlock == null && onDrawBackdrop === DefaultOnDrawBackdrop &&
+            try {
+                samplingTransform.reset()
+                coordinates.transformFrom(checkNotNull(source.layerCoordinates), samplingTransform)
+                true
+            } catch (_: Exception) { false }
+        if (!cacheable || !sampleCache.matches(source!!.contentVersion, raster, padding, samplingTransform.values)) {
+            com.example.performance.BackgroundWorkCoordinator.traceSection("Glass backdrop capture") {
+                recordLayer(this@DrawBackdropNode, layer, size = raster.layerSize(padding), block = recordBackdropBlock)
+            }
+            if (cacheable) sampleCache.recorded(source!!.contentVersion, raster, padding, samplingTransform.values)
+            else sampleCache.invalidate()
+        }
         layer.topLeft = IntOffset.Zero
         hasVisibleBackdrop = true
         drawRecordedBackdrop()
@@ -420,6 +436,11 @@ private class DrawBackdropNode(
 
     fun invalidateDrawCache() {
         effectsDirty = true
+        invalidateSample()
+    }
+
+    fun invalidateSample() {
+        sampleCache.invalidate()
         invalidateDraw()
     }
 

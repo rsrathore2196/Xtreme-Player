@@ -1510,9 +1510,9 @@ class PlaybackManager(
     }
 
     private fun startProgressTicker() {
-        if (!uiForeground || progressTickerJob?.isActive == true) return
+        if (!uiForeground || controller?.isPlaying != true || progressTickerJob?.isActive == true) return
         progressTickerJob = scope.launch {
-            while (isActive && uiForeground) {
+            while (isActive && uiForeground && controller?.isPlaying == true) {
                 updateProgressValues()
                 delay(500L)
             }

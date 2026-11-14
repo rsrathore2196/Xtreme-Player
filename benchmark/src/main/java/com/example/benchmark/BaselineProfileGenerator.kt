@@ -79,7 +79,7 @@ class BaselineProfileGenerator {
     }
 
     private companion object {
-        const val TARGET = "com.aistudio.xtremeplayer.vkmz"
+        val TARGET = BuildConfig.TARGET_PACKAGE
         const val TIMEOUT = 10_000L
     }
 }

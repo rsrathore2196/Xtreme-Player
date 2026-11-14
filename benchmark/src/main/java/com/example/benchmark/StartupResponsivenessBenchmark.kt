@@ -47,6 +47,10 @@ class StartupResponsivenessBenchmark {
     @Test fun warmReopening() = opening(StartupMode.WARM)
     @Test fun warmStagedStartupThenInteraction() = opening(StartupMode.WARM, idleBeforeFirstInteractionMs = 40_000L)
     @Test fun warmInitialTwentySecondsThenInteraction() = opening(StartupMode.WARM, idleBeforeFirstInteractionMs = 20_000L)
+    @Test fun coldFirstTwentySecondsInteractive() = opening(StartupMode.COLD, interactionDurationMs = 20_000L)
+    @Test fun warmFirstTwentySecondsInteractive() = opening(StartupMode.WARM, interactionDurationMs = 20_000L)
+    @Test fun sustainedNavigationAndScrolling() = opening(StartupMode.WARM, interactionDurationMs = 60_000L)
+    @Test fun playerAndLyricsTransitions() = opening(StartupMode.WARM, lyricsTransitions = true)
     @Test fun coldFirstInteractionAfterOneMinute() = opening(StartupMode.COLD, idleBeforeFirstInteractionMs = 60_000L)
     @Test fun warmFirstInteractionAfterOneMinute() = opening(StartupMode.WARM, idleBeforeFirstInteractionMs = 60_000L)
     @Test fun retainedActivityReopening() = opening(StartupMode.HOT)
@@ -54,7 +58,7 @@ class StartupResponsivenessBenchmark {
     @Test fun optionalWorkWakeupAndInteraction() = opening(StartupMode.WARM, observeOptionalWakeup = true)
 
     private fun opening(mode: StartupMode, observeOptionalWakeup: Boolean = false, rapidRetargeting: Boolean = false,
-        idleBeforeFirstInteractionMs: Long = 0L) {
+        idleBeforeFirstInteractionMs: Long = 0L, interactionDurationMs: Long = 6_000L, lyricsTransitions: Boolean = false) {
         // MemoryUsageMetric captures peak target-process anonymous/file RSS, ART heap and GPU
         // allocations. High-precision PowerMetric is only available on supported physical devices
         // (notably Pixel 6+); its CPU/GPU values are system-wide, not app-only CPU utilization.
@@ -111,6 +115,7 @@ class StartupResponsivenessBenchmark {
             "Xtreme/Artwork fetch",
             "Xtreme/Artwork decode",
             "Xtreme/Artwork transform",
+            "Xtreme/Glass backdrop capture",
             "Xtreme/Home row composition",
             "AndroidOwner:measureAndLayout",
             "Xtreme/Navigation transition",
@@ -148,7 +153,7 @@ class StartupResponsivenessBenchmark {
             tab("home", waitForDestination = !rapidRetargeting)
             tab("library", waitForDestination = !rapidRetargeting)
             tab("home", waitForDestination = !rapidRetargeting)
-        } while (SystemClock.elapsedRealtime() - interactiveStart < 6_000L)
+        } while (SystemClock.elapsedRealtime() - interactiveStart < interactionDurationMs)
         check(device.wait(Until.hasObject(By.res("main_tab_0_settled")), 3_000L))
         if (observeOptionalWakeup) {
             // Measurement only: trace across optional admission, then interrupt
@@ -161,11 +166,28 @@ class StartupResponsivenessBenchmark {
             tab("home")
         }
         // Include the existing player expansion path when a paused real session is prepared.
-        device.findObject(By.res("mini_player_container"))?.let { mini ->
+        val miniPlayer = device.findObject(By.res("mini_player_container"))
+        if (lyricsTransitions) checkNotNull(miniPlayer) {
+            "Play then pause a real song before measuring lyrics. See benchmark/README.md."
+        }
+        miniPlayer?.let { mini ->
             mini.click()
             check(device.wait(Until.hasObject(By.res("player_minimize_button")), 3_000L))
+            if (lyricsTransitions) {
+                checkNotNull(device.wait(Until.findObject(By.res("player_lyrics_button")), 3_000L)).click()
+                check(device.wait(Until.hasObject(By.res("player_lyrics_expand_button")), 3_000L))
+                // Observe each complete transition, including controls returning.
+                // These sleeps are inside the measured journey, never application gates.
+                SystemClock.sleep(800L)
+                repeat(6) { index ->
+                    checkNotNull(device.findObject(By.res("player_lyrics_expand_button"))).click()
+                    check(device.wait(Until.hasObject(By.desc(if (index % 2 == 0) "Minimize lyrics" else "Maximize lyrics")), 2_000L))
+                    SystemClock.sleep(800L)
+                }
+            }
             device.pressBack()
         }
+    }
     }
 
     private fun MacrobenchmarkScope.tab(name: String, waitForDestination: Boolean = true) {
@@ -180,5 +202,5 @@ class StartupResponsivenessBenchmark {
         }
     }
 
-    private companion object { const val TARGET = "com.aistudio.xtremeplayer.vkmz" }
+    private companion object { val TARGET = BuildConfig.TARGET_PACKAGE }
 }
