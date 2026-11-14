@@ -360,15 +360,8 @@ fun ExpandedPlayerScreen(
         label = "lyrics_expansion"
     )
     val expandedLyricsVisible by remember { derivedStateOf { lyricsExpansion.value > 0f } }
-    val lyricsViewportAnimating by remember(lyricsExpanded) {
-        derivedStateOf { kotlin.math.abs(lyricsExpansion.value - if (lyricsExpanded) 1f else 0f) > 0.001f }
-    }
+    val lyricsViewportAnimating = rememberLyricsViewportActivity(lyricsExpansion, lyricsExpanded, isScreenVisible)
     val lyricsPresentationAnimating = lyricsViewportAnimating || lyricsContentAnimating || morphAnimating
-    DisposableEffect(lyricsViewportAnimating, isScreenVisible) {
-        val lease = if (lyricsViewportAnimating && isScreenVisible)
-            com.example.performance.BackgroundWorkCoordinator.navigationBusy() else null
-        onDispose { lease?.close() }
-    }
     LaunchedEffect(showLyrics) { if (!showLyrics) maximizeLyrics = false }
     BackHandler(enabled = lyricsExpanded && isScreenVisible) { maximizeLyrics = false }
     val lyricsLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
@@ -472,29 +465,27 @@ fun ExpandedPlayerScreen(
         }
 
         if (highResCoverUrl.isNotBlank()) {
-            // Preserve the opening/closing motion before starting uncached palette work.
-            com.example.performance.BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
             withContext(AppDispatchers.Io) {
                 try {
-                    val loader = context.imageLoader
-                    val request = com.example.ui.util.playerPaletteRequest(resolvedArtworkRequest)
-                    val result = loader.execute(request) as? SuccessResult ?: return@withContext
-                    val bitmap = (result.drawable as? BitmapDrawable)?.bitmap
-                    if (bitmap != null) {
-                        val extracted = withContext(AppDispatchers.CpuBounded) {
+                    val extracted = com.example.ui.util.preparePlayerArtworkColors(paletteKey) {
+                        val loader = context.imageLoader
+                        val request = com.example.ui.util.playerPaletteRequest(resolvedArtworkRequest)
+                        val result = loader.execute(request) as? SuccessResult ?: return@preparePlayerArtworkColors null
+                        val bitmap = (result.drawable as? BitmapDrawable)?.bitmap ?: return@preparePlayerArtworkColors null
+                        val colors = withContext(AppDispatchers.CpuBounded) {
                             com.example.ui.util.extractPlayerArtworkColors(bitmap, isDark)
-                        } ?: return@withContext
+                        } ?: return@preparePlayerArtworkColors null
                         val resolvedKey = com.example.ui.util.playerPaletteKey(track, isDark,
                             appColors.primaryAccent, appColors.cardBackgroundElevated, result.request.data.toString())
-                        TrackPaletteCache.put(resolvedKey, extracted)
-                        TrackPaletteCache.put(paletteKey, extracted)
-                        withContext(Dispatchers.Main) {
-                            dominantColor = extracted.dominantColor
-                            accentColor = extracted.accentColor
-                            topEdgeColor = extracted.topEdgeColor
-                            bottomEdgeColor = extracted.bottomEdgeColor
-                            artworkColorField.value = extracted.colorField
-                        }
+                        if (resolvedKey != paletteKey) TrackPaletteCache.put(resolvedKey, colors)
+                        colors
+                    } ?: return@withContext
+                    withContext(Dispatchers.Main) {
+                        dominantColor = extracted.dominantColor
+                        accentColor = extracted.accentColor
+                        topEdgeColor = extracted.topEdgeColor
+                        bottomEdgeColor = extracted.bottomEdgeColor
+                        artworkColorField.value = extracted.colorField
                     }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
@@ -3042,6 +3033,19 @@ private const val LYRICS_EXIT_MS = 440
 private const val LYRICS_EXPANSION_MS = 380
 private val LyricsExpansionEasing: Easing = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
 private val LyricsSharedEasing: Easing = CubicBezierEasing(0.22f, 0.0f, 0.18f, 1.0f)
+
+/** Optional CPU work resumes at the actual endpoint, never during the final rendered frames. */
+@Composable
+internal fun rememberLyricsViewportActivity(expansion: State<Float>, expanded: Boolean, active: Boolean): Boolean {
+    val moving by remember(expansion, expanded) {
+        derivedStateOf { expansion.value != if (expanded) 1f else 0f }
+    }
+    DisposableEffect(moving, active) {
+        val lease = if (moving && active) com.example.performance.BackgroundWorkCoordinator.navigationBusy() else null
+        onDispose { lease?.close() }
+    }
+    return moving
+}
 
 /** One transition owns foreground admission until its existing content/shared bounds settle. */
 @Composable

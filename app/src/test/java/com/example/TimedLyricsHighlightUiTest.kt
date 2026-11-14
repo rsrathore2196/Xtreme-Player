@@ -12,6 +12,7 @@ import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.unit.dp
 import com.example.data.model.*
 import com.example.ui.components.SyncedLyricsView
 import com.example.ui.theme.DarkAppColors
@@ -171,5 +172,38 @@ class TimedLyricsHighlightUiTest {
         at(2_500)
         at(2_600)
         assertTrue(ink(9..15) < 190)
+    }
+
+    @Test fun activeWordHasALuminousHaloThatDisappearsAfterItsVocal() {
+        show(syllables = false, wrapped = true)
+        at(4_500)
+        val (plain, layout) = captureLine()
+        val scaleY = plain.height.toFloat() / layout.size.height
+        val bottom = ceil(layout.getLineBottom(0) * scaleY).toInt().coerceAtMost(plain.height)
+        // Use the rendered outline as the reference: the existing active-line
+        // graphics transform also scales the captured pixels.
+        val edge = (0 until plain.width).last { x ->
+            (0 until bottom).any { y -> (plain.getRGB(x, y) and 255) > 230 }
+        }
+        fun outsideWordInk(): Int {
+            val (image, _) = captureLine()
+            // Sample empty space beyond the shaped word, never the solid glyphs.
+            val right = edge + with(compose.density) { 6.dp.roundToPx() }
+            var maximum = 0
+            for (y in 0 until bottom) {
+                for (x in edge + 1 until right.coerceAtMost(image.width)) {
+                    val pixel = image.getRGB(x, y)
+                    maximum = maxOf(maximum, ((pixel ushr 16) and 255) * ((pixel ushr 24) and 255) / 255)
+                }
+            }
+            return maximum
+        }
+        assertTrue(outsideWordInk() < 5)
+        at(4_000)
+        compose.waitUntil(5_000) { outsideWordInk() > 20 }
+        assertTrue("Only the sung word glows; the upcoming word stays dim", ink(9..15) < 130)
+        at(4_500)
+        assertTrue("The halo follows the vocal rather than the whole focused line", outsideWordInk() < 5)
+        assertTrue("Completed words keep their crisp reveal after their light fades", ink(0..7) > 230)
     }
 }

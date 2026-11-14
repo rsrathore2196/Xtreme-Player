@@ -3,6 +3,7 @@ package com.example
 import android.app.Application
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -47,6 +48,45 @@ class LyricsPreparationUiTest {
     @Test fun reopeningUsesTheSavedLyricsOffsetDuringTheEntrance() = checkReopening(offsetMs = 4_000)
     @Test fun lyricsArrivingDuringTheEntranceStartAtTheCurrentVocal() = checkReopening(delayedLyrics = true)
     @Test fun retainedLyricsRecenterAtTheNewVocalDuringTheEntrance() = checkReopening(retained = true)
+
+    @Test fun resizingRetainsTheCurrentVocalAndRecentersAfterTheViewportSettles() {
+        val lines = List(40) { index -> LyricLine(1_000 + index * 5_000L, "Opening lyric $index", 4_000) }
+        val lyrics = TrackLyrics("resizing", "Song", "Artist", true, lines)
+        var width by mutableStateOf(360.dp)
+        var height by mutableStateOf(700.dp)
+        var moving by mutableStateOf(true)
+        var playhead by mutableLongStateOf(61_500L)
+        compose.mainClock.autoAdvance = false
+        compose.setContent { MaterialTheme {
+            Box(Modifier.size(width, height)) {
+                SyncedLyricsView(lyrics, currentPositionMs = playhead, isPlaying = false, onSeekTo = {},
+                    currentPositionProvider = { playhead }, viewportAnimating = moving)
+            }
+        } }
+        compose.mainClock.advanceTimeBy(100)
+        assertIncomingLine(12)
+        repeat(6) { frame ->
+            compose.runOnIdle { width = (350 - frame * 15).dp; height = (650 - frame * 40).dp }
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+            compose.onNodeWithText("Opening lyric 12").assertIsDisplayed()
+        }
+        compose.runOnIdle { playhead = 101_500L }
+        compose.mainClock.advanceTimeBy(100)
+        assertIncomingLine(20)
+        compose.runOnIdle { moving = false }
+        compose.mainClock.advanceTimeBy(1_000)
+        assertIncomingLine(20)
+        compose.runOnIdle { playhead = 111_500L }
+        compose.waitUntil(3_000) {
+            compose.mainClock.advanceTimeBy(32)
+            compose.waitForIdle()
+            val line = compose.onAllNodesWithText("Opening lyric 22").fetchSemanticsNodes().firstOrNull()?.boundsInRoot
+            val viewport = compose.onNodeWithTag("synced_lyrics_view").fetchSemanticsNode().boundsInRoot
+            line != null && kotlin.math.abs(line.center.y - viewport.center.y) <= with(compose.density) { 3.dp.toPx() }
+        }
+        assertIncomingLine(22)
+    }
 
     private fun checkReopening(offsetMs: Int = 0, delayedLyrics: Boolean = false, retained: Boolean = false) {
         val lines = List(40) { index -> LyricLine(1_000 + index * 5_000L, "Opening lyric $index", 4_000) }

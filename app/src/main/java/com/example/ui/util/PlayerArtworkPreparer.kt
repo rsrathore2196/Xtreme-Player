@@ -36,6 +36,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** Presentation-only cover; playback/catalog identity and the native shelf image stay intact. */
 internal data class ResolvedPlayerCover(val identity: String, val url: String)
@@ -119,18 +121,17 @@ internal fun prepareCurrentPlayerArtwork(context: Context, tracks: Flow<MusicTra
                 if (!com.example.data.local.OtherSettingsPreferences.isDynamicGlassEnabled(context) ||
                     !com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(context).dynamicAlbumGlow) return@collectLatest
                 val key = playerPaletteKey(artworkTrack, true, Color.White, Color.Black, request.data.toString())
-                if (TrackPaletteCache.get(key)?.colorField == null) {
+                preparePlayerArtworkColors(key) {
                     // Network and decoding started at selection; optional color analysis
-                    // still yields during navigation and shares the existing CPU budget.
-                    BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+                    // shares the visible player's preparation and existing CPU budget.
                     val sample = loader.execute(playerPaletteRequest(result.request)) as? SuccessResult
-                        ?: return@collectLatest
-                    val bitmap = (sample.drawable as? BitmapDrawable)?.bitmap ?: return@collectLatest
+                        ?: return@preparePlayerArtworkColors null
+                    val bitmap = (sample.drawable as? BitmapDrawable)?.bitmap ?: return@preparePlayerArtworkColors null
                     val colors = withContext(AppDispatchers.CpuBounded) { extractPlayerArtworkColors(bitmap, true) }
-                        ?: return@collectLatest
-                    TrackPaletteCache.put(key, colors)
-                    TrackPaletteCache.put(playerPaletteKey(artworkTrack, true, Color.White, Color.Black,
-                        result.request.data.toString()), colors)
+                        ?: return@preparePlayerArtworkColors null
+                    val resolvedKey = playerPaletteKey(artworkTrack, true, Color.White, Color.Black, result.request.data.toString())
+                    if (resolvedKey != key) TrackPaletteCache.put(resolvedKey, colors)
+                    colors
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) { /* A failed prefetch never prevents normal on-demand image loading. */ }
@@ -154,6 +155,24 @@ internal fun playerAppearanceColors(source: AppThemeColors): AppThemeColors = so
 fun playerPaletteKey(track: MusicTrack, dark: Boolean, accent: Color, base: Color,
     artworkIdentity: String = track.coverUrl): String =
     "album-bg-colors-v10|${track.id}|${track.title}|${track.artist}|${track.album}|$artworkIdentity"
+
+private val playerPaletteLocks = Array(8) { Mutex() }
+
+/** Prefetch and the visible player share one decode/analysis, including after navigation waits. */
+internal suspend fun preparePlayerArtworkColors(
+    key: String, prepare: suspend () -> ExtractedTrackColors?
+): ExtractedTrackColors? {
+    fun prepared() = TrackPaletteCache.get(key)?.takeIf { it.colorField != null }
+    prepared()?.let { return it }
+    return playerPaletteLocks[(key.hashCode() and Int.MAX_VALUE) % playerPaletteLocks.size].withLock {
+        prepared()?.let { return@withLock it }
+        BackgroundWorkCoordinator.awaitNavigationIdle(requireForeground = true)
+        prepared() ?: prepare()?.also {
+            currentCoroutineContext().ensureActive()
+            TrackPaletteCache.put(key, it)
+        }
+    }
+}
 
 /** Show the native cover immediately; resolve a landscape shelf image to song art while visible. */
 @Composable

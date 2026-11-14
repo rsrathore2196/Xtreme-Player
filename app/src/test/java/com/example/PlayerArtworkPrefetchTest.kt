@@ -86,22 +86,23 @@ class PlayerArtworkPrefetchTest {
         val resolvedCover = java.util.concurrent.atomic.AtomicReference<ResolvedPlayerCover?>()
         val tracks = MutableStateFlow<MusicTrack?>(track)
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        val metrics = context.resources.displayMetrics
+        val pixels = minOf(metrics.widthPixels, metrics.heightPixels).coerceIn(1, 3000)
+        val source = mapTargetSizeToArtworkDimension(ImageConfig.PLAYER_SCREEN_SIZE, IntSize(pixels, pixels))
+        val key = playerPaletteKey(track.copy(coverUrl = originalCover), true, Color.White, Color.Black,
+            providerArtworkUrl(originalCover, source))
         try {
             prepareCurrentPlayerArtwork(context, tracks, MutableStateFlow(true), scope,
                 onCoverResolved = resolvedCover::set,
                 resolveCover = { if (videoThumbnail) originalCover else null }
             ) { loader }
-            val ready = withTimeoutOrNull(5000) { while (TrackPaletteCache.get(track.id) == null) delay(10); true }
+            val ready = withTimeoutOrNull(5000) { while (TrackPaletteCache.get(key)?.colorField == null) delay(10); true }
             assertTrue("Prefetch must finish: $events", ready == true)
-            val metrics = context.resources.displayMetrics
-            val pixels = minOf(metrics.widthPixels, metrics.heightPixels).coerceIn(1, 3000)
-            val source = mapTargetSizeToArtworkDimension(ImageConfig.PLAYER_SCREEN_SIZE, IntSize(pixels, pixels))
             val artworkTrack = playerCoverState(com.example.playback.PlayerUiState(currentTrack = track), resolvedCover.get()).currentTrack!!
             assertEquals(originalCover, artworkTrack.coverUrl)
             assertEquals(track.copy(coverUrl = originalCover), artworkTrack)
             assertFalse("Song-cover requests must not download video frames: $events",
                 events.any { it.startsWith("https://i.ytimg.com") && it.endsWith("cacheOnly=false") })
-            val key = playerPaletteKey(artworkTrack, true, Color.White, Color.Black, providerArtworkUrl(artworkTrack.coverUrl, source))
             assertNotNull("Opening can initialize the backdrop from its prepared palette", TrackPaletteCache.get(key))
             val request = buildOptimizedImageRequest(context, artworkTrack.coverUrl, ImageConfig.PLAYER_SCREEN_SIZE, artworkTrack,
                 decodeSize = IntSize(300, 300), currentTrack = true)

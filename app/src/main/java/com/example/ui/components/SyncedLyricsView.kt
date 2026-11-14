@@ -574,8 +574,8 @@ private fun KaraokeLineItem(
     var textLayoutResult by remember(line.text) { mutableStateOf<TextLayoutResult?>(null) }
     val latestPosition by rememberUpdatedState(currentPositionProvider)
     val density = LocalDensity.current
-    val broadRadius = with(density) { 3.dp.toPx() }
-    val coreRadius = with(density) { 1.dp.toPx() }
+    val broadRadius = with(density) { 6.dp.toPx() }
+    val coreRadius = with(density) { 1.5.dp.toPx() }
     // Upcoming/inactive rows draw plain text. Preparing their glyph bounds and
     // shaders during entrance/reflow cannot affect any visible reveal.
     val wordRuns = remember(textLayoutResult, measuredWords, needsRevealGeometry) {
@@ -594,11 +594,12 @@ private fun KaraokeLineItem(
     // Only active lines prepare halos. Keep the finished immutable masks through
     // the outgoing fade; provider-frame updates never restart this preparation.
     var glyphGlows by remember(line.text, measuredWords, density) { mutableStateOf<PreparedGlyphGlows?>(null) }
-    LaunchedEffect(textLayoutResult, isActive, broadRadius, coreRadius, viewportAnimating) {
-        val layout = textLayoutResult ?: return@LaunchedEffect
+    val glowLayout = if (viewportAnimating) null else textLayoutResult
+    LaunchedEffect(glowLayout, isActive, broadRadius, coreRadius) {
+        val layout = glowLayout ?: return@LaunchedEffect
         // Width changes can reshape the paragraph each frame in landscape.
         // Never allocate new halo bitmaps for intermediate transition geometry.
-        if (viewportAnimating || !isActive || glyphGlows?.matches(layout) == true) return@LaunchedEffect
+        if (!isActive || glyphGlows?.matches(layout) == true) return@LaunchedEffect
         val regions = if (revealUnits.isEmpty()) fallbackRegions else revealUnits.flatMap { it.regions }
         // Halo allocation/painting is optional while the player or another page
         // is moving; retain the existing lyric text and reveal during that interval.
@@ -628,7 +629,7 @@ private fun KaraokeLineItem(
             val liftHeight = 2.dp.toPx()
             val feather = 8.dp.toPx()
             val accent = accentColorState?.value ?: accentColor
-            val glowColor = lerp(activeTextColor, accent.takeIf { it.alpha > 0f } ?: activeTextColor, 0.25f)
+            val glowColor = lerp(activeTextColor, accent.takeIf { it.alpha > 0f } ?: activeTextColor, 0.45f)
             val revealPaint = if (needsRevealGeometry) RevealPaint(activeTextColor, glowColor, broadRadius,
                 glyphGlows?.takeIf { layout != null && it.matches(layout) }) else null
             onDrawWithContent {
@@ -753,7 +754,8 @@ private class RevealPaint(
     private val forwardBrush = ShaderBrush(forward)
     private val reverseBrush = ShaderBrush(reverse)
     private val matrix = android.graphics.Matrix()
-    val tint = ColorFilter.tint(glowColor)
+    val haloTint = ColorFilter.tint(glowColor)
+    val coreTint = ColorFilter.tint(color)
     val layerPaint = Paint()
 
     fun feather(edge: Float, width: Float, rtl: Boolean): Brush {
@@ -919,10 +921,12 @@ private fun DrawScope.drawReveal(
                     // Feather only this isolated glow; the crisp text's original
                     // reveal path, edge and timing remain exactly the same.
                     if (brush != null) drawContext.canvas.saveLayer(glowBounds, paint.layerPaint)
+                    // A bright core and wider tinted falloff use the same two cached
+                    // masks; the LED effect adds no blur or bitmap work per frame.
                     drawImage(glyphs.broad.image, topLeft = glyphs.broad.origin,
-                        alpha = glow.coerceIn(0f, 1f) * 0.24f, colorFilter = paint.tint)
+                        alpha = glow.coerceIn(0f, 1f) * 0.50f, colorFilter = paint.haloTint)
                     drawImage(glyphs.core.image, topLeft = glyphs.core.origin,
-                        alpha = glow.coerceIn(0f, 1f) * 0.48f, colorFilter = paint.tint)
+                        alpha = glow.coerceIn(0f, 1f) * 0.90f, colorFilter = paint.coreTint)
                     if (brush != null) {
                         drawRect(brush, topLeft = glowBounds.topLeft, size = glowBounds.size,
                             blendMode = BlendMode.DstIn)

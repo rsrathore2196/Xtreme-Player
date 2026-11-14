@@ -12,6 +12,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
 import com.example.performance.BackgroundWorkCoordinator
 import com.example.ui.components.rememberPlayerLyricsTransition
+import com.example.ui.components.rememberLyricsViewportActivity
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -26,6 +27,52 @@ class PlayerLyricsAdmissionUiTest {
     @get:Rule val compose = createComposeRule()
     private fun navigationJobs() = (BackgroundWorkCoordinator::class.java.getDeclaredField("navigationJobs")
         .apply { isAccessible = true }.get(null) as AtomicInteger).get()
+
+    @Test fun lyricsResizingKeepsWorkPausedThroughTheLastFrameWithoutRecomposingEveryFrame() {
+        val baseline = navigationJobs()
+        val expansion = mutableFloatStateOf(0f)
+        var expanded by mutableStateOf(false)
+        var active by mutableStateOf(true)
+        var mounted by mutableStateOf(true)
+        var compositions = 0
+        compose.setContent {
+            if (mounted) {
+                rememberLyricsViewportActivity(expansion, expanded, active)
+                SideEffect { compositions++ }
+                Box(Modifier.size(48.dp))
+            }
+        }
+        compose.runOnIdle { expanded = true }
+        compose.waitForIdle()
+        assertEquals(baseline + 1, navigationJobs())
+        val movingCompositions = compositions
+        for (fraction in listOf(0.25f, 0.75f, 0.9995f)) {
+            compose.runOnIdle { expansion.floatValue = fraction }
+            compose.waitForIdle()
+            assertEquals("Intermediate geometry must not restart the admission effect", movingCompositions, compositions)
+            assertEquals(baseline + 1, navigationJobs())
+        }
+        compose.runOnIdle { expansion.floatValue = 1f }
+        compose.waitForIdle()
+        assertEquals(baseline, navigationJobs())
+        compose.runOnIdle { expanded = false; expansion.floatValue = 0.0005f }
+        compose.waitForIdle()
+        assertEquals("Returning controls still need admission on the last frame", baseline + 1, navigationJobs())
+        compose.runOnIdle { expansion.floatValue = 0f }
+        compose.waitForIdle()
+        assertEquals(baseline, navigationJobs())
+        compose.runOnIdle { expanded = true }
+        compose.waitForIdle()
+        compose.runOnIdle { active = false }
+        compose.waitForIdle()
+        assertEquals("An inactive player releases its lease", baseline, navigationJobs())
+        compose.runOnIdle { active = true }
+        compose.waitForIdle()
+        assertEquals(baseline + 1, navigationJobs())
+        compose.runOnIdle { mounted = false }
+        compose.waitForIdle()
+        assertEquals("Disposal must not strand optional player work", baseline, navigationJobs())
+    }
 
     @Test fun lyricsEntranceReversalAndDisposalHoldAndReleaseTheNavigationLease() {
         val baseline = navigationJobs()
