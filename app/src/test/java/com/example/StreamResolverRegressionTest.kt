@@ -186,7 +186,10 @@ class StreamResolverRegressionTest {
     }
 
     @Test fun exhaustedProvidersTerminateWithinTheOverallBudgetWithoutCachingAFailure() = runTest {
+        val startedAt = testScheduler.currentTime
         val resolver = StreamResolver(ioDispatcher = StandardTestDispatcher(testScheduler),
+            cpuDispatcher = StandardTestDispatcher(testScheduler),
+            elapsedRealtime = { testScheduler.currentTime },
             resolveAddon = { _, _, _, _ -> awaitCancellation() },
             resolveYouTube = { _, _, _, _ -> awaitCancellation() },
             searchStandard = { _, _ -> awaitCancellation() }, searchLossless = { awaitCancellation() })
@@ -196,7 +199,7 @@ class StreamResolverRegressionTest {
                 sourcePolicy = PlaybackSourcePolicy(AudioQualityCeiling.MAX, sources = sources))
             fail("Expected a bounded unavailable result")
         } catch (_: TrackUnavailableException) { }
-        assertTrue(testScheduler.currentTime <= StreamResolver.PLAYBACK_RESOLUTION_TIMEOUT_MS)
+        assertTrue("Resolution took ${testScheduler.currentTime - startedAt}ms", testScheduler.currentTime - startedAt <= StreamResolver.PLAYBACK_RESOLUTION_TIMEOUT_MS)
         assertEquals(0, resolver.cacheSize)
     }
 }

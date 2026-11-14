@@ -10,7 +10,6 @@ internal object RecordingIdentity {
     private val codeSeparators = Regex("[-\\s]")
     private val artistSeparators = Regex("(?i),|;|•|\\s*&\\s*|\\s+(?:and|feat\\.?|ft\\.?|featuring|with|x)\\s+")
     private val featured = Regex("(?i)\\s*(?:\\(|\\[)?\\b(?:feat\\.?|ft\\.?|featuring)\\s+([^\\)\\]]+)(?:\\)|\\])?\\s*$")
-    private val versions = Regex("(?i)\\b(?:live|re[ -]?mix|rmx|remaster(?:ed)?|radio[ -]?edit|acoustic|unplugged|instrumental|karaoke|cover|slowed|reverb|sped[ -]?up|nightcore|extended|demo|mono|stereo|edit)\\b")
     private val albumEdition = Regex("(?i)\\s*(?:\\(|\\[)(?:deluxe|expanded|bonus|anniversary)[^\\)\\]]*(?:\\)|\\])\\s*$")
     private val unknown = setOf("", "unknown", "unknown artist", "various artists", "online artist", "youtube artist", "internet archive",
         "youtube", "youtube music", "jiosaavn", "saavn", "extended stream")
@@ -20,7 +19,7 @@ internal object RecordingIdentity {
         .takeIf { isrcPattern.matches(it) }
 
     fun title(track: MusicTrack): String = CatalogNames.normalize(
-        StreamResolver.extractCleanTitle(track.title, track.artist).replace(featured, ""))
+        RecordingVersions.normalize(StreamResolver.extractCleanTitle(track.title, track.artist).replace(featured, "")))
 
     fun artistNames(track: MusicTrack): List<String> {
         val credits = track.primaryArtists.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: track.artist.takeUnless {
@@ -41,15 +40,7 @@ internal object RecordingIdentity {
         return guestsA.isEmpty() || guestsB.isEmpty() || guestsA == guestsB
     }
 
-    private fun version(track: MusicTrack): Set<String> = versions.findAll(track.title).map {
-        when (val value = it.value.lowercase(Locale.ROOT)) {
-            "remastered", "remaster" -> "remaster"
-            "re-mix", "re mix", "rmx" -> "remix"
-            "radio-edit" -> "radio edit"
-            "sped-up" -> "sped up"
-            else -> value
-        }
-    }.toSet()
+    private fun version(track: MusicTrack): Set<String> = RecordingVersions.markers(track.title)
 
     private fun album(track: MusicTrack): String? = CatalogNames.normalize(track.album.replace(albumEdition, ""))
         .takeUnless { it in unknownAlbums }
@@ -77,7 +68,7 @@ internal object RecordingIdentity {
         if (requireDuration && !timed) return false
         if (timed && abs(a.durationMs - b.durationMs) > durationToleranceMs) return false
         val sameCode = codeA != null && codeA == codeB
-        if (!sameCode && (a.title.isBlank() || a.title != b.title)) return false
+        if ((!sameCode || a.versions.isNotEmpty()) && (a.title.isBlank() || a.title != b.title)) return false
         if (!sameCode && requireAlbum && !compatibleAlbums(a.album, b.album)) return false
         // Without duration or an ISRC, contradictory release metadata is not enough
         // evidence to collapse distinct songs that happen to share title and artist.
@@ -93,7 +84,7 @@ internal object RecordingIdentity {
         if (a.isrc != null && b.isrc != null && a.isrc != b.isrc) return null
         val sameCode = a.isrc != null && a.isrc == b.isrc
         val exactTitle = a.title.replace(" ", "") == b.title.replace(" ", "")
-        if (!exactTitle && !CatalogNames.spellingEquivalent(a.title, b.title)) return null
+        if (!exactTitle && (a.versions.isNotEmpty() || !CatalogNames.spellingEquivalent(a.title, b.title))) return null
         val artistsKnown = a.artists.isNotEmpty() && b.artists.isNotEmpty()
         val exactArtist = artistsKnown && (a.artists.first() == b.artists.first() || a.artists.toSet() == b.artists.toSet())
         val closeArtist = artistsKnown && CatalogNames.spellingEquivalent(a.artists.first(), b.artists.first())
@@ -151,7 +142,7 @@ internal object RecordingIdentity {
         if (a.isrc != null && b.isrc != null && a.isrc != b.isrc) return null
         val sameCode = a.isrc != null && a.isrc == b.isrc
         val exactTitle = a.title.replace(" ", "") == b.title.replace(" ", "")
-        if (!exactTitle && !CatalogNames.spellingEquivalent(a.title, b.title)) return null
+        if (!exactTitle && (a.versions.isNotEmpty() || !CatalogNames.spellingEquivalent(a.title, b.title))) return null
         val knownArtists = a.artists.isNotEmpty() && b.artists.isNotEmpty()
         val sameArtist = knownArtists && (a.artists.first() == b.artists.first() || a.artists.toSet() == b.artists.toSet())
         val closeArtist = knownArtists && CatalogNames.spellingEquivalent(a.artists.first(), b.artists.first())

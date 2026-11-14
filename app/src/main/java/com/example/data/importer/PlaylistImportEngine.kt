@@ -76,7 +76,6 @@ object PlaylistImportEngine {
     private val manualRetrySlots = Semaphore(2)
     private val matchedCatalog = android.util.LruCache<String, Pair<Long, MatchResult>>(256)
     private val artistSeparators = Regex("(?i)\\s*(?:,|&|•|\\s+/\\s+|;|\\+|(?<=\\S)\\s+(?:feat\\.?|ft\\.?|featuring|with|x)\\s+(?=\\S))\\s*")
-    private val recordingVersions = Regex("(?i)\\b(?:live|remix|remaster(?:ed)?|radio edit|acoustic|instrumental|karaoke|cover|slowed|reverb|extended|demo)\\b")
     private val latinName = Regex("[a-z0-9]+")
     private val repeatedLetters = Regex("([a-z])\\1+")
 
@@ -1264,9 +1263,9 @@ object PlaylistImportEngine {
             YouTubeMusicApiService.searchSongsPage(query, useInnerTubeX = true, forceRefresh = refresh).tracks
         }, findJio: suspend (String) -> List<MusicTrack> = { query -> OnlineMusicApiService.searchSongs(query, limit = 20) }
     ): MatchResult = withContext(AppDispatchers.Imports) {
-        val (cleanTitle, coreTitle, primaryArtist) = withContext(AppDispatchers.CpuBounded) {
+        val (coreTitle, primaryArtist) = withContext(AppDispatchers.CpuBounded) {
             val title = cleanTrackTitle(original.originalTitle)
-            Triple(title, normalizeForComparison(title), extractPrimaryArtist(cleanArtistName(original.originalArtist)))
+            normalizeForComparison(title) to extractPrimaryArtist(cleanArtistName(original.originalArtist))
         }
         if (coreTitle.isBlank() || !com.example.recommendation.HomeRecommendationPolicy.known(primaryArtist)) {
             return@withContext MatchResult(original, null, 0.0, MatchStatus.NOT_FOUND)
@@ -1301,8 +1300,8 @@ object PlaylistImportEngine {
             }) return@withContext matched(reference, 99.0)
         }
 
-        val queries = listOf("$cleanTitle $primaryArtist".trim(), cleanTitle,
-            "${normalizeForComparison(cleanTitle)} $primaryArtist".trim()).filter(String::isNotBlank)
+        val requestedTitle = CatalogNames.clean(original.originalTitle)
+        val queries = listOf("$requestedTitle $primaryArtist".trim(), requestedTitle).filter(String::isNotBlank)
             .distinctBy { it.lowercase(Locale.ROOT) }
         var youtubeResponded = false
         suspend fun search(label: String, fetch: suspend () -> List<MusicTrack>): List<MusicTrack> =
@@ -1413,7 +1412,7 @@ object PlaylistImportEngine {
         // 1. Originality check: If not explicitly requested as remix/alt, candidate must be original music
         // A real song in an official compilation/playlist is still the same recording.
         // Keep title/artist/content filtering, without treating the enclosing collection as audio.
-        if (!isExplicitAlternativeQuery && !com.example.recommendation.OriginalMusicFilter.isOriginalMusic(candidate.copy(album = ""))) {
+        if (!isExplicitAlternativeQuery && com.example.data.repository.RecordingVersions.markers(original.originalTitle).isEmpty() && !com.example.recommendation.OriginalMusicFilter.isOriginalMusic(candidate.copy(album = ""))) {
             Log.d(TAG, "Rejecting candidate '${candidate.title}' because it is not an original recording.")
             return false
         }
@@ -1423,8 +1422,10 @@ object PlaylistImportEngine {
         // Spelling variants still require the same artist, version and corroborating metadata.
         val exactTitle = sameImportName(origCoreTitle, candCoreTitle)
         if (origCoreTitle.isBlank() || !exactTitle && !importSpellingEquivalent(origCoreTitle, candCoreTitle)) return false
-        if (recordingVersions.findAll(original.originalTitle).map { it.value.lowercase(Locale.ROOT) }.toSet() !=
-            recordingVersions.findAll(candidate.title).map { it.value.lowercase(Locale.ROOT) }.toSet()) return false
+        val versions = com.example.data.repository.RecordingVersions.markers(original.originalTitle)
+        if (versions !=
+            com.example.data.repository.RecordingVersions.markers(candidate.fullTitle)) return false
+        if (versions.isNotEmpty() && !exactTitle) return false
 
         // 3. Primary Artist / Singer Cross-Verification
         val candCleanArtist = cleanArtistName(candidate.artist)
@@ -1508,6 +1509,12 @@ object PlaylistImportEngine {
     }
 
     private fun cleanTrackTitle(title: String): String {
+        // A mix/edit name may follow featured or soundtrack credits. Removing
+        // everything after those credits would make different edits look identical.
+        if (com.example.data.repository.RecordingVersions.markers(title).isNotEmpty()) {
+            return com.example.data.repository.RecordingVersions.normalize(
+                com.example.data.repository.StreamResolver.extractCleanTitle(title))
+        }
         val hasOriginalRemix = title.contains("remix", ignoreCase = true) || title.contains("mix", ignoreCase = true)
 
         var cleaned = title
@@ -1526,7 +1533,7 @@ object PlaylistImportEngine {
                 .replace(Regex("(?i)\\[(?:remix|club\\s*mix|extended\\s*mix)[^\\]]*\\]"), "")
         }
 
-        return cleaned
+        return com.example.data.repository.RecordingVersions.normalize(cleaned)
             .replace(Regex("[()\"'\\[\\]]"), "")
             .replace(Regex("\\s+"), " ")
             .trim()
@@ -1543,7 +1550,7 @@ object PlaylistImportEngine {
     private fun normalizeForComparison(text: String): String = CatalogNames.normalize(text)
 
     private fun splitTitleAndArtist(rawTitle: String, fallbackChannel: String): Pair<String, String> {
-        val parts = rawTitle.split(" - ", " – ", " — ")
+        val parts = rawTitle.split(" - ", " – ", " — ", limit = 2)
         return if (parts.size >= 2) {
             Pair(parts[1].trim(), parts[0].trim())
         } else {

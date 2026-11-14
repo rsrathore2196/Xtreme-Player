@@ -30,11 +30,17 @@ data class MusicTrack(
     val primaryArtists: List<String> = emptyList(),
     /** Playlist occurrence identity; catalog/song IDs and provider matching stay unchanged. */
     val playlistEntryId: Long = 0L,
-    /** Full provider metadata for artwork verification; title remains the display name. */
+    /** Original provider metadata, including recording/version labels. */
     val originalProviderTitle: String = ""
 ) {
     val streamUrl: String get() = audioUrl
     val coverArtUrl: String get() = coverUrl
+
+    /** Also restores complete titles from caches written by older app versions. */
+    @delegate:Transient
+    val fullTitle: String by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        com.example.data.repository.CatalogNames.clean(originalProviderTitle.ifBlank { title })
+    }
 
     fun formatDuration(): String {
         val totalSeconds = durationMs / 1000
@@ -48,7 +54,7 @@ data class MusicTrack(
      * (e.g. (From "..."), [Bonus Track], (Feat. ...), [Official Video], etc.)
      */
     @delegate:Transient
-    val cleanTitle: String by lazy(LazyThreadSafetyMode.PUBLICATION) { computeCleanTitle(title) }
+    val cleanTitle: String by lazy(LazyThreadSafetyMode.PUBLICATION) { computeCleanTitle(fullTitle) }
 
     companion object {
         private val bracketedMetadata = Regex("\\[.*?\\]")

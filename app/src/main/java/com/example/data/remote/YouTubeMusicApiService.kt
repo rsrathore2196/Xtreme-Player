@@ -1145,17 +1145,7 @@ object YouTubeMusicApiService {
         return null
     }
 
-    private fun cleanTitle(raw: String): String {
-        return raw.replace(Regex("&amp;"), "&")
-            .replace(Regex("&quot;"), "\"")
-            .replace(Regex("(?i)\\s*\\(official (?:music )?video\\)"), "")
-            .replace(Regex("(?i)\\s*\\[official (?:music )?video\\]"), "")
-            .replace(Regex("(?i)\\s*\\(audio\\)"), "")
-            .replace(Regex("(?i)\\s*\\[audio\\]"), "")
-            .replace(Regex("(?i)\\s*\\(lyric video\\)"), "")
-            .replace(Regex("(?i)\\s*\\[lyric video\\]"), "")
-            .trim()
-    }
+    private fun cleanTitle(raw: String): String = com.example.data.repository.CatalogNames.clean(raw)
 
     private fun extractContinuationToken(obj: Any?): String? {
         if (obj == null) return null

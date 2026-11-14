@@ -40,19 +40,33 @@ class CrossfadeControllerTest {
         var seekCount = 0
         var queueRebuilds = 0
         var bufferOnSeek = false
+        var decoderDelayMs = 0L
+        var bufferingLeftMs = 0L
+        var parameters = PlaybackParameters.DEFAULT
+        private var fractionalPosition = 0.0
         val playing get() = wanted && state == Player.STATE_READY && error == null
         fun event() {
             listeners.toList().forEach { it.onEvents(player, Player.Events(FlagSet.Builder().build())) }
         }
         fun advance(ms: Long) {
-            if (playing) position = (position + ms).coerceAtMost(duration)
+            if (bufferingLeftMs > 0) {
+                bufferingLeftMs -= ms
+                if (bufferingLeftMs <= 0) state = Player.STATE_READY
+                return
+            }
+            if (playing) {
+                val elapsed = ms * parameters.speed.toDouble() + fractionalPosition
+                fractionalPosition = elapsed - elapsed.toLong()
+                position = (position + elapsed.toLong()).coerceAtMost(duration)
+            }
             if (position == duration) state = Player.STATE_ENDED
         }
         fun pause() { wanted = false; event() }
         fun play() { wanted = true; event() }
         fun seek(index: Int, position: Long) {
             this.index = index; this.position = position; seekCount++
-            if (bufferOnSeek) state = Player.STATE_BUFFERING
+            if (bufferOnSeek || decoderDelayMs > 0) state = Player.STATE_BUFFERING
+            bufferingLeftMs = decoderDelayMs
             event()
         }
         val player: Player = Proxy.newProxyInstance(Player::class.java.classLoader, arrayOf(Player::class.java)) { proxy, method, args ->
@@ -73,7 +87,8 @@ class CrossfadeControllerTest {
                 "isCurrentMediaItemLive" -> live
                 "isCurrentMediaItemDynamic" -> false
                 "getRepeatMode" -> repeat
-                "getPlaybackParameters" -> PlaybackParameters.DEFAULT
+                "getPlaybackParameters" -> parameters
+                "setPlaybackParameters" -> { parameters = args!![0] as PlaybackParameters; null }
                 "getVolume" -> volume
                 "setVolume" -> { volume = args!![0] as Float; listeners.toList().forEach { it.onVolumeChanged(volume) }; event(); null }
                 "setRepeatMode" -> { repeat = args!![0] as Int; null }
@@ -87,10 +102,14 @@ class CrossfadeControllerTest {
                     index = args[1] as Int; position = args[2] as Long
                     null
                 }
-                "prepare" -> { state = Player.STATE_READY; null }
+                "prepare" -> {
+                    bufferingLeftMs = decoderDelayMs
+                    state = if (bufferingLeftMs > 0) Player.STATE_BUFFERING else Player.STATE_READY
+                    null
+                }
                 "play" -> { play(); null }
                 "pause" -> { pause(); null }
-                "seekTo" -> { if (args!!.size == 2) seek(args[0] as Int, args[1] as Long) else position = args[0] as Long; null }
+                "seekTo" -> { if (args!!.size == 2) seek(args[0] as Int, args[1] as Long) else seek(index, args[0] as Long); null }
                 "release" -> { releaseCount++; wanted = false; null }
                 "equals" -> proxy === args?.get(0)
                 "hashCode" -> System.identityHashCode(proxy)
@@ -104,9 +123,10 @@ class CrossfadeControllerTest {
         val primary = Audio(listOf(item("first"), item("second"), item("third")))
         val tails = mutableListOf<Audio>()
         var incomingBuffered = 5_000L
+        var decoderDelayMs = 0L
         var policy = "initial-policy"
         val controller = CrossfadeController(primary.player, scope,
-            createTail = { Audio(emptyList()).also { it.bufferedAhead = incomingBuffered; tails.add(it) }.player },
+            createTail = { Audio(emptyList()).also { it.bufferedAhead = incomingBuffered; it.decoderDelayMs = decoderDelayMs; tails.add(it) }.player },
             canMix = { mixAllowed }, now = { scope.testScheduler.currentTime }, sourcePolicy = { policy })
         fun advance(ms: Long) {
             repeat((ms / 20).toInt()) {
@@ -154,6 +174,47 @@ class CrossfadeControllerTest {
         }
     }
 
+    @Test fun decoderPreparesWhilePausedAtTheHandoffWithoutSeeksOrRateChanges() = runTest {
+        Harness(this).use { h ->
+            h.decoderDelayMs = 450L
+            h.start(); h.advance(1_000)
+            val tail = h.tails.single()
+            assertEquals(0f, tail.volume, 0f)
+            assertFalse(tail.playing)
+            assertEquals(PlaybackParameters.DEFAULT, tail.parameters)
+            assertEquals(57_000L, tail.position)
+            h.advance(4_500)
+            assertEquals(1, h.primary.index)
+            assertTrue(tail.volume > 0f && h.primary.volume > 0f)
+            assertEquals(PlaybackParameters.DEFAULT, tail.parameters)
+            assertEquals(0, tail.seekCount)
+        }
+    }
+
+    @Test fun aColdDecoderIsReadyBeforeTheScheduledHandoff() = runTest {
+        Harness(this).use { h ->
+            h.primary.position = 60_000L - CrossfadeController.WARM_MS
+            h.decoderDelayMs = 2_000L
+            h.start(); h.advance(CrossfadeController.WARM_MS - 1_500L)
+            assertEquals(1, h.primary.index)
+            val tail = h.tails.single()
+            assertEquals(0, tail.seekCount)
+            assertEquals(PlaybackParameters.DEFAULT, tail.parameters)
+            assertTrue(tail.volume > 0f && h.primary.volume > 0f)
+        }
+    }
+
+    @Test fun lazyResolutionOnThePrimaryKeepsBothQueueOccurrencesStable() = runTest {
+        Harness(this).use { h ->
+            h.start(); h.advance(2_000)
+            h.primary.items = h.primary.items.map { it.buildUpon().setUri("https://renewed.example/${it.mediaId}.m4a").build() }
+            h.primary.event(); h.advance(3_500)
+            assertEquals(1, h.tails.size)
+            assertEquals(1, h.primary.index)
+            assertTrue(h.primary.volume > 0f && h.tails.single().volume > 0f)
+        }
+    }
+
     @Test fun disabledByDefaultCreatesNoTailAndDoesNotChangePlayback() = runTest {
         Harness(this).use { h ->
             h.advance(5_000)
@@ -168,7 +229,8 @@ class CrossfadeControllerTest {
             h.start()
             assertEquals(1, h.tails.size)
             assertEquals(h.primary.items.take(2), h.tails.single().items)
-            assertEquals(53_000L, h.tails.single().position)
+            assertEquals(57_000L, h.tails.single().position)
+            assertFalse(h.tails.single().playing)
             h.advance(5_500)
             assertEquals(1, h.primary.index)
             assertEquals(1, h.primary.seekCount)

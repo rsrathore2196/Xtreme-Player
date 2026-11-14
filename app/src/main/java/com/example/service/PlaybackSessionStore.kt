@@ -171,7 +171,7 @@ internal object PlaybackSessionStore {
                     val entry = queue.getJSONObject(index)
                     val id = entry.getString("id")
                     val url = YouTubeAudioStreamService.playbackUri(id, entry.getString("uri"))
-                    val metadata = MediaMetadata.Builder().setTitle(entry.getString("title"))
+                    val metadata = MediaMetadata.Builder().setTitle(com.example.data.repository.CatalogNames.clean(entry.optString("originalProviderTitle").ifBlank { entry.getString("title") }))
                         .setArtist(entry.getString("artist")).setAlbumTitle(entry.optString("album"))
                         .setGenre(entry.optString("genre")).setArtworkUri(entry.optString("artwork")
                             .takeIf(String::isNotBlank)?.let(Uri::parse))

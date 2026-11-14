@@ -339,7 +339,7 @@ fun QueueBottomSheet(
                             Column(modifier = Modifier.weight(1f)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
-                                        text = track.cleanTitle,
+                                        text = track.fullTitle,
                                         color = if (isCurrentlyPlaying) {
                                             appColors.primaryAccent
                                         } else {

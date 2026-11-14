@@ -143,7 +143,7 @@ internal object RecommendationTrackCodec {
     fun decode(body: String, maxTracks: Int = 80): List<MusicTrack> = try {
         val rows = JSONArray(body)
         (0 until minOf(rows.length(), maxTracks)).mapNotNull { i -> rows.optJSONObject(i)?.let { t ->
-            MusicTrack(id = t.getString("id"), title = t.getString("title"), artist = t.getString("artist"),
+            MusicTrack(id = t.getString("id"), title = com.example.data.repository.CatalogNames.clean(t.optString("originalProviderTitle").ifBlank { t.getString("title") }), artist = t.getString("artist"),
                 originalProviderTitle = t.optString("originalProviderTitle"),
                 album = t.optString("album"), durationMs = t.optLong("duration"), coverUrl = t.optString("cover"),
                 audioUrl = t.optString("audio"), bitrateKbps = t.optInt("bitrate"), qualityBadge = t.optString("badge"),

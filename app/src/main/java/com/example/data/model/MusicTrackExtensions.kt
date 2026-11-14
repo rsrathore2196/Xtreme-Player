@@ -30,7 +30,7 @@ val MusicTrack.playbackSourceName: String
  */
 fun MusicTrack.toMediaItem(): MediaItem {
     val metadata = MediaMetadata.Builder()
-        .setTitle(this.title)
+        .setTitle(this.fullTitle)
         .setArtist(this.artist)
         .setAlbumTitle(this.album)
         .setGenre(this.genre)

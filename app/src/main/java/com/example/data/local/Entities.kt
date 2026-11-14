@@ -68,7 +68,7 @@ data class TrackEntity(
     companion object {
         fun fromMusicTrack(track: MusicTrack, lastPlayedAt: Long = 0L): TrackEntity = TrackEntity(
             id = track.id,
-            title = track.title,
+            title = track.fullTitle,
             artist = track.artist,
             album = track.album,
             durationMs = track.durationMs,

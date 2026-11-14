@@ -774,7 +774,7 @@ class PlaybackManager(
         val meta = item.mediaMetadata
         val extras = meta.extras
         val source = extras?.getString("media_source").orEmpty()
-        return MusicTrack(id = item.mediaId, title = meta.title?.toString().orEmpty(),
+        return MusicTrack(id = item.mediaId, title = com.example.data.repository.CatalogNames.clean(extras?.getString("originalProviderTitle").orEmpty().ifBlank { meta.title?.toString().orEmpty() }),
             artist = meta.artist?.toString().orEmpty(), album = meta.albumTitle?.toString().orEmpty(),
             durationMs = extras?.getLong("duration", 0L) ?: 0L,
             coverUrl = meta.artworkUri?.toString().orEmpty(),
@@ -2616,7 +2616,7 @@ class PlaybackManager(
                 com.example.data.remote.YouTubeAudioStreamService.playbackUri(id, effectiveUrl))).build())
             .setMediaMetadata(
                 MediaMetadata.Builder()
-                    .setTitle(title)
+                    .setTitle(fullTitle)
                     .setArtist(artist)
                     .setAlbumTitle(album)
                     .setArtworkUri(Uri.parse(coverUrl))

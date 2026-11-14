@@ -41,7 +41,7 @@ object OriginalMusicFilter {
     /** Search-only preference: Home and playlist policies retain their existing behavior. */
     fun searchPreferenceScore(track: MusicTrack, query: String): Int {
         val requested = searchVersionKinds(query)
-        val actual = searchVersionKinds(track.title)
+        val actual = searchVersionKinds(track.fullTitle)
         var score = when {
             // Explicit version intent outweighs an exact title match for the original.
             requested.isNotEmpty() && actual.containsAll(requested) -> 1_800
@@ -174,6 +174,7 @@ object OriginalMusicFilter {
      * (e.g. remix, acoustic, cover, sped up, live, etc.).
      */
     fun isExplicitAlternativeQuery(query: String): Boolean {
+        if (com.example.data.repository.RecordingVersions.markers(query).isNotEmpty()) return true
         val q = query.trim().lowercase(Locale.ROOT)
         if (q.isBlank()) return false
         val explicitAlternativeKeywords = listOf(

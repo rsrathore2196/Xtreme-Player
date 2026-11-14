@@ -160,17 +160,7 @@ object YouTubeHomeParser {
         return artists
     }
 
-    private fun cleanTitle(raw: String): String {
-        return raw.replace("&amp;", "&")
-            .replace("&quot;", "\"")
-            .replace(Regex("(?i)\\s*\\(official (?:music )?video\\)"), "")
-            .replace(Regex("(?i)\\s*\\[official (?:music )?video\\]"), "")
-            .replace(Regex("(?i)\\s*\\(audio\\)"), "")
-            .replace(Regex("(?i)\\s*\\[audio\\]"), "")
-            .replace(Regex("(?i)\\s*\\(lyric video\\)"), "")
-            .replace(Regex("(?i)\\s*\\[lyric video\\]"), "")
-            .trim()
-    }
+    private fun cleanTitle(raw: String): String = com.example.data.repository.CatalogNames.clean(raw)
 
     fun parseHomeFeed(rootJson: JSONObject, pageIdentity: String? = null,
         countryCode: String = "US", languageCode: String = "en"): ParsedHomeFeed {

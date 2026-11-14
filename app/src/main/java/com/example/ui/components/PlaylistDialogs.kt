@@ -269,7 +269,7 @@ fun AddToPlaylistDialog(
                             )
                         )
                         Text(
-                            text = "\"${track.cleanTitle}\" by ${track.artist}",
+                            text = "\"${track.fullTitle}\" by ${track.artist}",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = appColors.primaryAccent,
                                 fontWeight = FontWeight.Medium

@@ -32,7 +32,7 @@ class ProviderTitleMetadataTest {
         "https://i.ytimg.com/vi/${NativeFeedFixtures.id(1)}/hq720.jpg", "https://r.googlevideo.com/audio",
         source = "YouTube Music", originalProviderTitle = original, playlistEntryId = 42L)
 
-    @Test fun nativeRendererPathsKeepFullTitlesWithoutChangingExistingDisplayFormatting() = runBlocking {
+    @Test fun nativeRendererPathsKeepFullTitlesForBrowsingAndPlayback() = runBlocking {
         val responsive = YouTubeMusicApiService.parseAnyRenderer(NativeFeedFixtures.song(1, original))!!
         assertEquals(original, responsive.originalProviderTitle)
         val panel = JSONObject().put("playlistPanelVideoRenderer", JSONObject().put("videoId", NativeFeedFixtures.id(1))
@@ -40,13 +40,13 @@ class ProviderTitleMetadataTest {
                 .put(JSONObject().put("text", " (Official Music Video)")))))
         val parsed = YouTubeMusicApiService.parseAnyRenderer(panel)!!
         assertEquals(original, parsed.originalProviderTitle)
-        assertEquals("Singer - Song (Live Remix)", parsed.title)
+        assertEquals(original, parsed.title)
         val twoRow = JSONObject().put("musicTwoRowItemRenderer", JSONObject().put("title", NativeFeedFixtures.text(original))
             .put("navigationEndpoint", JSONObject().put("watchEndpoint", JSONObject().put("videoId", NativeFeedFixtures.id(1)))))
         val feed = YouTubeHomeParser.parseHomeFeed(JSONObject(NativeFeedFixtures.home(NativeFeedFixtures.collectionShelf("Trending", twoRow))))
         val track = feed.shelves.single().tracks.single()
         assertEquals(original, track.originalProviderTitle)
-        assertEquals("Singer - Song (Live Remix)", track.title)
+        assertEquals(original, track.title)
         assertTrue(track.primaryArtists.isEmpty())
         val cache = HomeCardCache(app)
         cache.saveHome(SavedHomeCards("IN|anonymous", serverShelves = feed.shelves, serverFetchSucceeded = true))

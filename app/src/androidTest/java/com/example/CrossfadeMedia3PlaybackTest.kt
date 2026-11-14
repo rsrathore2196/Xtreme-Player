@@ -2,12 +2,10 @@ package com.example
 
 import android.app.Application
 import android.content.Context
-import android.os.Looper
 import androidx.media3.common.*
 import androidx.media3.datasource.*
 import androidx.media3.exoplayer.*
 import androidx.media3.exoplayer.audio.AudioSink
-import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
 import androidx.media3.exoplayer.source.*
 import androidx.test.core.app.ApplicationProvider
 import com.example.playback.BitPerfectAudioSink
@@ -17,55 +15,17 @@ import kotlinx.coroutines.*
 import org.junit.*
 import org.junit.Assert.*
 import org.junit.runner.RunWith
-import org.robolectric.RobolectricTestRunner
-import org.robolectric.Shadows.shadowOf
-import org.robolectric.annotation.Config
-import org.robolectric.annotation.Implementation
-import org.robolectric.annotation.Implements
-import org.robolectric.annotation.RealObject
-import org.robolectric.shadow.api.Shadow
-import org.robolectric.shadows.*
+import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
-import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /** Real Media3 periods, WAV extraction, decoding and AudioTrack output; no network audio. */
-@RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33], application = Application::class,
-    shadows = [CrossfadeMedia3PlaybackTest.ClockedAudioTrack::class])
+@RunWith(AndroidJUnit4::class)
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class CrossfadeMedia3PlaybackTest {
-    /** The stock shadow treats every written frame as already played. Model the
-     * output clock so real Media3 buffering and overlapping decoders can run. */
-    @Implements(android.media.AudioTrack::class)
-    class ClockedAudioTrack : ShadowAudioTrack() {
-        @RealObject private lateinit var track: android.media.AudioTrack
-        private var played = 0L
-        private var startedAt = 0L
-        private var running = false
-
-        @Synchronized @Implementation override fun getPlaybackHeadPosition(): Int {
-            val available = super.getPlaybackHeadPosition().toLong()
-            val elapsedFrames = if (running)
-                (android.os.SystemClock.elapsedRealtime() - startedAt) * track.sampleRate / 1_000L
-                else 0L
-            return minOf(available, played + elapsedFrames).toInt()
-        }
-        @Synchronized @Implementation override fun play() {
-            if (!running) { startedAt = android.os.SystemClock.elapsedRealtime(); running = true }
-            super.play()
-        }
-        @Synchronized @Implementation fun pause() {
-            played = getPlaybackHeadPosition().toLong(); running = false
-            Shadow.directlyOn<Unit, android.media.AudioTrack>(track, android.media.AudioTrack::class.java, "pause")
-        }
-        @Synchronized @Implementation override fun flush() {
-            super.flush(); played = 0L; startedAt = android.os.SystemClock.elapsedRealtime()
-        }
-    }
     private val context get() = ApplicationProvider.getApplicationContext<Application>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val sources = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -75,18 +35,9 @@ class CrossfadeMedia3PlaybackTest {
     private val pcmOutputs = ConcurrentHashMap<String, AtomicInteger>()
     private val failures = CopyOnWriteArrayList<PlaybackException>()
 
-    @Before fun decoder() {
-        val capabilities = MediaCodecInfoBuilder.CodecCapabilitiesBuilder.newBuilder()
-            .setMediaFormat(android.media.MediaFormat.createAudioFormat(MimeTypes.AUDIO_RAW, 8_000, 1))
-            .setIsEncoder(false).build()
-        ShadowMediaCodecList.addCodec(MediaCodecInfoBuilder.newBuilder().setName("OMX.google.raw.decoder")
-            .setIsEncoder(false).setCapabilities(capabilities).build())
-        MediaCodecUtil.clearDecoderInfoCache()
-    }
-    @After fun cleanup() {
+    @After fun cleanup() = runBlocking(Dispatchers.Main) {
         players.filterNot { it.isReleased }.forEach { it.release() }
         scope.cancel(); sources.cancel()
-        ShadowMediaCodecList.reset(); MediaCodecUtil.clearDecoderInfoCache()
     }
 
     private fun item(id: String) = MediaItem.Builder().setMediaId(id).setUri("memory://unresolved/$id.wav")
@@ -142,23 +93,15 @@ class CrossfadeMedia3PlaybackTest {
     }
 
     private suspend fun until(timeoutMs: Long = 12_000, condition: () -> Boolean) {
-        // Media3's audio position tracker also samples System.nanoTime(). Advance
-        // Android's shadow clock at the same rate, rather than racing it 4x ahead.
-        val startedAt = System.nanoTime()
-        val clockStartedAt = android.os.SystemClock.elapsedRealtime()
         withTimeout(timeoutMs) {
             while (!condition()) {
-                val target = clockStartedAt + (System.nanoTime() - startedAt) / 1_000_000L
-                val advance = target - android.os.SystemClock.elapsedRealtime()
-                if (advance > 0) shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(advance))
-                else shadowOf(Looper.getMainLooper()).idle()
                 failures.firstOrNull()?.let { throw AssertionError("Actual Media3 decoding failed", it) }
-                delay(5)
+                delay(20)
             }
         }
     }
 
-    @Test fun nextPeriodResolvesAndBuffersBeforeTheCurrentRecordingIsNearItsEndAndSeekingOpensTheRightBytes() = runBlocking {
+    @Test fun nextPeriodResolvesAndBuffersBeforeTheCurrentRecordingIsNearItsEndAndSeekingOpensTheRightBytes() = runBlocking(Dispatchers.Main) {
         val player = player("primary", factory(mapOf("first" to 300, "second" to 60)))
         CrossfadeController.enableQueueReadAhead(player)
         player.setMediaItems(listOf(item("first"), item("second"))); player.prepare(); player.play()
@@ -173,14 +116,14 @@ class CrossfadeMedia3PlaybackTest {
         println("Read-ahead/seek evidence: position=${player.currentPosition}, resolved=$resolutions, opens=$opened, pcm=$pcmOutputs")
     }
 
-    @Test fun crossfadeRunsTwoRealDecodedPlayersWithBlendedGainsThenKeepsTheSessionPlayerOnTheNextTrack() = runBlocking {
+    @Test fun crossfadeRunsTwoRealDecodedPlayersWithBlendedGainsThenKeepsTheSessionPlayerOnTheNextTrack() = runBlocking(Dispatchers.Main) {
         val factory = factory(mapOf("first" to 60, "second" to 60))
         val primary = player("primary", factory)
         CrossfadeController.enableQueueReadAhead(primary)
         primary.volume = .8f
         val controller = CrossfadeController(primary, scope, createTail = { player("tail", factory, true) })
         try {
-            primary.setMediaItems(listOf(item("first"), item("second")), 0, 52_000L)
+            primary.setMediaItems(listOf(item("first"), item("second")), 0, 60_000L - CrossfadeController.WARM_MS)
             primary.prepare(); primary.play(); controller.setEnabled(true)
             var overlap = false
             var overlappingTail: ExoPlayer? = null
@@ -188,7 +131,7 @@ class CrossfadeMedia3PlaybackTest {
             val trace = mutableListOf<String>()
             var tracedAt = Long.MIN_VALUE
             try {
-                until(15_000) {
+                until(40_000) {
                     val tail = players.drop(1).lastOrNull { !it.isReleased }
                     if (tail != null && primary.currentMediaItemIndex == 1 && primary.isPlaying && tail.isPlaying &&
                         primary.volume in .01f.. .79f && tail.volume in .01f.. .79f) {
@@ -205,11 +148,15 @@ class CrossfadeMedia3PlaybackTest {
                     overlap && overlappingTail?.isReleased == true && primary.currentPosition >= 3_000L
                 }
             } catch (error: Exception) {
-                println("Crossfade state evidence: $trace")
+                trace.forEach { println("Crossfade state: $it") }
                 throw error
             }
             assertTrue("Both independently decoded sources must genuinely overlap", overlap)
-            assertTrue(envelope.size > 5)
+            // Device scheduling may skip polling samples; validate the actual
+            // simultaneous gains instead of assuming a fixed polling frame rate.
+            envelope.forEach { (incoming, outgoing) ->
+                assertEquals(.8f * .8f, incoming * incoming + outgoing * outgoing, .01f)
+            }
             assertTrue(pcmOutputs.getValue("primary").get() > 0)
             assertTrue(pcmOutputs.getValue("tail").get() > 0)
             assertEquals(1, primary.currentMediaItemIndex)
@@ -222,11 +169,20 @@ class CrossfadeMedia3PlaybackTest {
 
     private fun wav(seconds: Int, value: Int): ByteArray {
         val frames = seconds * 8_000
-        return ByteBuffer.allocate(44 + frames * 2).order(ByteOrder.LITTLE_ENDIAN).apply {
+        val bytes = ByteArray(44 + frames * 2)
+        ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).apply {
             put("RIFF".toByteArray()); putInt(36 + frames * 2); put("WAVEfmt ".toByteArray())
             putInt(16); putShort(1); putShort(1); putInt(8000); putInt(16000); putShort(2); putShort(16)
             put("data".toByteArray()); putInt(frames * 2)
-            repeat(frames) { index -> putShort((if (index % 16 < 8) value else -value).toShort()) }
-        }.array()
+            repeat(16) { index -> putShort((if (index < 8) value else -value).toShort()) }
+        }
+        // Duplicate the PCM period in blocks instead of spending test time generating millions of samples.
+        var filled = 32
+        while (filled < frames * 2) {
+            val count = minOf(filled, frames * 2 - filled)
+            System.arraycopy(bytes, 44, bytes, 44 + filled, count)
+            filled += count
+        }
+        return bytes
     }
 }

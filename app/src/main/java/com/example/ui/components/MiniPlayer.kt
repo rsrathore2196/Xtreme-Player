@@ -228,7 +228,7 @@ fun MiniPlayer(
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            text = track.cleanTitle,
+                            text = track.fullTitle,
                             style = MaterialTheme.typography.titleMedium.copy(
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.5.sp,

@@ -219,7 +219,7 @@ fun LyricsOffsetBottomSheet(
 
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = track.cleanTitle,
+                                text = track.fullTitle,
                                 color = appColors.textPrimary,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
@@ -476,7 +476,7 @@ fun LyricsOffsetBottomSheet(
                                 )
                             )
                             Text(
-                                text = if (applyToAll) "Offset affects all playback" else "Offset saved for \"${track.cleanTitle}\"",
+                                text = if (applyToAll) "Offset affects all playback" else "Offset saved for \"${track.fullTitle}\"",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = appColors.textSecondary
                                 )

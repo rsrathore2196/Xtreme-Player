@@ -36,7 +36,7 @@ internal class CrossfadeController(
 ) : AutoCloseable {
     companion object {
         internal const val FADE_MS = 3_000L
-        private const val WARM_MS = 8_000L
+        internal const val WARM_MS = 20_000L
         /** Media3 preloads only the next period, after current audio has its buffer.
          * Reusing that period avoids another queue replacement/resolution owner. */
         @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -44,19 +44,22 @@ internal class CrossfadeController(
             player.setPreloadConfiguration(ExoPlayer.PreloadConfiguration(FADE_MS * 1_000L))
         }
 
-        /** The buffer must hold the entire outgoing warm window PLUS the overlap.
-         * A 1s/8s hysteresis could stop with <3s of the next track, then never
-         * resume loading before the fade window passed. */
+        /** Hold the paused outgoing tail plus incoming overlap, with a margin
+         * for frame rounding. A paused buffer cannot drain to resume loading;
+         * too small a cap would leave the incoming readiness gate closed. */
         @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
         internal fun tailLoadControl(): DefaultLoadControl = DefaultLoadControl.Builder()
-            .setBufferDurationsMs((WARM_MS + FADE_MS).toInt(), (WARM_MS + 2 * FADE_MS).toInt(), 500, 500)
+            .setBufferDurationsMs((2 * FADE_MS + 1_000L).toInt(), (3 * FADE_MS + 1_000L).toInt(), 500, 500)
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
         internal fun gains(progress: Float): Pair<Float, Float> {
             val angle = progress.coerceIn(0f, 1f) * PI / 2.0
             return cos(angle).toFloat() to sin(angle).toFloat()
         }
-        private fun key(item: MediaItem?) = item?.let { "${it.mediaId}|${it.localConfiguration?.uri}" }
+        // Lazy resolution renews the transport URI without changing the queued recording.
+        private fun key(item: MediaItem?) = item?.let {
+            "${it.mediaId}|${it.mediaMetadata.extras?.getLong("playlist_entry_id", 0L) ?: 0L}"
+        }
     }
 
     @Volatile var enabled = false
@@ -68,8 +71,6 @@ internal class CrossfadeController(
     private var warmedPolicy: String? = null
     private var expectedNext: String? = null
     private var failedKey: String? = null
-    private var syncAttempts = 0
-    private var nextSyncAt = 0L
     private var baseVolume = player.volume
     private var commandedVolume = baseVolume
     private var changingItem = false
@@ -88,7 +89,11 @@ internal class CrossfadeController(
             update()
         }
         override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
-            if (!changingItem && reason != Player.DISCONTINUITY_REASON_AUTO_TRANSITION) cancelTransition()
+            // A lazily prepared incoming period may acknowledge our seek later.
+            // User seeks still cancel immediately through DISCONTINUITY_REASON_SEEK.
+            val completingHandoff = overlap && reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT &&
+                key(player.currentMediaItem) == expectedNext
+            if (!changingItem && !completingHandoff && reason != Player.DISCONTINUITY_REASON_AUTO_TRANSITION) cancelTransition()
         }
         override fun onVolumeChanged(volume: Float) {
             if (abs(volume - commandedVolume) > 0.001f) {
@@ -169,14 +174,9 @@ internal class CrossfadeController(
                     if (outgoing.playerError != null || key(outgoing.currentMediaItem) != outgoingKey) {
                         failedKey = current; releaseTail(); continue
                     }
-                    if (outgoing.isPlaying) {
-                        val drift = outgoing.currentPosition - player.currentPosition
-                        if (abs(drift) > 100L && remaining > FADE_MS + 300L && now() >= nextSyncAt && syncAttempts < 2) {
-                            syncAttempts++; nextSyncAt = now() + 500L
-                            outgoing.seekTo(player.currentPosition)
-                        } else if (remaining <= FADE_MS && abs(drift) <= 100L && incomingPrepared(outgoing, nextItem)) {
-                            beginOverlap(outgoing, next)
-                        }
+                    if (outgoing.playbackState == Player.STATE_READY &&
+                        player.currentPosition >= outgoing.currentPosition && incomingPrepared(outgoing, nextItem)) {
+                        beginOverlap(outgoing, next)
                     }
                     delay(50L)
                 }
@@ -193,17 +193,18 @@ internal class CrossfadeController(
         outgoingKey = current
         warmedPolicy = sourcePolicy()
         baseVolume = player.volume
-        syncAttempts = 0; nextSyncAt = 0L
         tail = createTail()
         tail?.also {
             it.volume = 0f
             it.repeatMode = Player.REPEAT_MODE_OFF
-            // Preparing both periods independently proves that the next source
-            // has usable buffered audio. The shared media cache also warms the
-            // session player's handoff without changing its queue or ownership.
-            it.setMediaItems(listOf(item, player.getMediaItemAt(next)), 0, player.currentPosition)
+            // Prepare the decoder and AudioTrack at the handoff position while
+            // paused. Chasing a moving playhead with repeated seeks (or speed
+            // changes) adds output latency and can miss the entire fade window.
+            // Preparing the next period also warms the shared source/cache path.
+            val handoff = maxOf(player.duration - FADE_MS, player.currentPosition)
+            it.pause()
+            it.setMediaItems(listOf(item, player.getMediaItemAt(next)), 0, handoff)
             it.prepare()
-            it.play()
         }
     }
 
@@ -222,8 +223,10 @@ internal class CrossfadeController(
         val nextKey = key(nextItem)
         fun targetStillValid() = next in 0 until player.mediaItemCount && player.nextMediaItemIndex == next &&
             key(player.getMediaItemAt(next)) == nextKey
-        // Transfer the same outgoing PCM gently before advancing the session player.
-        // The tail is already running in sync; neither source starts from the beginning.
+        // Its decoder is already primed at this position, with normal playback
+        // speed. Start the prepared tail as the primary reaches the handoff,
+        // then transfer gain before advancing the session player's original queue.
+        outgoing.play()
         for (step in 1..3) {
             currentCoroutineContext().ensureActive()
             if (tail !== outgoing || !player.isPlaying || !outgoing.isPlaying || key(player.currentMediaItem) != outgoingKey) {

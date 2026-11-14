@@ -144,7 +144,7 @@ fun TrackActionSheet(
 
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = track.cleanTitle,
+                            text = track.fullTitle,
                             color = appColors.textPrimary,
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
