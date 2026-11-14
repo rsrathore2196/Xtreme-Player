@@ -168,6 +168,7 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -333,6 +334,10 @@ fun ExpandedPlayerScreen(
     var showLyrics by remember(track.id) { mutableStateOf(false) }
     val lyricsArtworkDurationMs = if (showLyrics) LYRICS_ENTRANCE_MS else LYRICS_EXIT_MS
     val lyricsContentTransition = rememberPlayerLyricsTransition(showLyrics, isScreenVisible)
+    val lyricsVisibility = lyricsContentTransition.animateFloat(
+        transitionSpec = { tween(LYRICS_ENTRANCE_MS, easing = LyricsSharedEasing) },
+        label = "lyrics_visibility"
+    ) { if (it) 1f else 0f }
     val lyricsContentAnimating = lyricsContentTransition.currentState != showLyrics ||
         lyricsContentTransition.isRunning
     val lyricsTextController = rememberLyricsTextController(lyrics, showLyrics && isScreenVisible)
@@ -612,7 +617,12 @@ fun ExpandedPlayerScreen(
 
             val configuration = LocalConfiguration.current
             val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-            val isFullScreenArt = playerExperience.fullScreenAlbumArt && !showLyrics
+            val isFullScreenArt = playerExperience.fullScreenAlbumArt
+            var lyricsHeaderHeight by remember(isLandscape) { androidx.compose.runtime.mutableIntStateOf(0) }
+            val lyricsHeaderInset = with(androidx.compose.ui.platform.LocalDensity.current) {
+                if (lyricsHeaderHeight > 0) lyricsHeaderHeight.toDp() + if (isLandscape) 0.dp else 8.dp
+                else if (isLandscape) 60.dp else 76.dp
+            }
 
             if (isLandscape) {
                 // LANDSCAPE DEDICATED TWO-PANE LAYOUT
@@ -637,8 +647,8 @@ fun ExpandedPlayerScreen(
                                 .graphicsLayer { clip = false }
                         ) { isLyricsActive ->
                             if (isLyricsActive) {
-                                Column(Modifier.fillMaxSize()) {
-                                    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                Column(Modifier.fillMaxSize().padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp)) {
+                                    Row(Modifier.fillMaxWidth().onSizeChanged { lyricsHeaderHeight = it.height }.padding(vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                         AsyncImage(model = headerArtworkRequest, contentDescription = "Cover Art",
@@ -670,23 +680,7 @@ fun ExpandedPlayerScreen(
                                                     appColors.dynamicAlbumGlow && LocalDynamicGlassEnabled.current))
                                         }
                                     }
-                                PlayerSyncedLyrics(
-                                    lyrics = lyricsTextState.lyrics,
-                                    currentPositionMs = uiState.currentPositionMs,
-                                    playbackPositionFlow = playbackPositionFlow,
-                                    isPlaying = uiState.isPlaying,
-                                    currentPositionProvider = currentPositionProvider,
-                                    onSeekTo = onSeekTo,
-                                    dominantColor = animatedBottomEdgeColor,
-                                    accentColor = animatedAccentColor,
-                                    vibrantColor = animatedBottomEdgeColor,
-                                    onRetry = onRetryLyrics,
-                                    showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
-                                    showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
-                                    viewportAnimating = lyricsPresentationAnimating,
-                                    lyricsOffsetMs = lyricsOffsetMs,
-                                    modifier = Modifier.weight(1f).fillMaxWidth()
-                                )
+                                Spacer(Modifier.weight(1f))
                                 }
                             } else {
                                 Box(
@@ -805,6 +799,24 @@ fun ExpandedPlayerScreen(
                                 }
                             }
                         }
+                        PlayerSyncedLyrics(
+                            lyrics = lyricsTextState.lyrics,
+                            currentPositionMs = uiState.currentPositionMs,
+                            playbackPositionFlow = playbackPositionFlow,
+                            isPlaying = uiState.isPlaying,
+                            currentPositionProvider = currentPositionProvider,
+                            onSeekTo = onSeekTo,
+                            dominantColor = animatedBottomEdgeColor,
+                            accentColor = animatedAccentColor,
+                            vibrantColor = animatedBottomEdgeColor,
+                            onRetry = onRetryLyrics,
+                            showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
+                            showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
+                            viewportAnimating = lyricsPresentationAnimating,
+                            lyricsOffsetMs = lyricsOffsetMs,
+                            modifier = Modifier.fillMaxSize().padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp).padding(top = lyricsHeaderInset),
+                            visible = showLyrics, contentAnimating = lyricsContentAnimating, active = isScreenVisible
+                        )
                     }
 
                     // RIGHT PANE: Controls & Track Info
@@ -1028,8 +1040,8 @@ fun ExpandedPlayerScreen(
                                 qualityChipText = displayedQuality,
                                 onSeekTo = onSeekTo,
                                 isDark = isDark,
-                                isPlaying = uiState.isPlaying && !lyricsExpanded,
-                                active = !lyricsExpanded,
+                                isPlaying = uiState.isPlaying && !expandedLyricsVisible,
+                                active = !expandedLyricsVisible,
                                 dominantColor = animatedDominantColor
                             )
 
@@ -1209,6 +1221,7 @@ fun ExpandedPlayerScreen(
                                     com.example.performance.BackgroundWorkCoordinator.navigationInteraction()
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     if (!showLyrics) isFlipped = false
+                                    if (showLyrics) maximizeLyrics = false
                                     showLyrics = !showLyrics
                                 },
                                 interactionSource = lyricsInteractionSource,
@@ -1365,6 +1378,7 @@ fun ExpandedPlayerScreen(
             } else {
                 PortraitPlayerExpansion(
                     expansion = lyricsExpansion,
+                    lyricsVisibility = lyricsVisibility,
                     modifier = Modifier
                         .fillMaxSize()
                         .statusBarsPadding()
@@ -1494,10 +1508,11 @@ fun ExpandedPlayerScreen(
                     transitionSpec = { lyricsArtworkTransition() },
                     modifier = Modifier.fillMaxSize(),
                 ) { isLyricsActive ->
-                    Column(Modifier.fillMaxSize()) {
+                    Column(Modifier.fillMaxSize().lyricsBodyEndpoint(isLyricsActive)
+                        .padding(horizontal = if (isLyricsActive && isFullScreenArt) 24.dp else 0.dp)) {
                         if (isLyricsActive) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                                modifier = Modifier.fillMaxWidth().onSizeChanged { lyricsHeaderHeight = it.height }.padding(vertical = 8.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
@@ -1568,23 +1583,7 @@ fun ExpandedPlayerScreen(
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
-                            PlayerSyncedLyrics(
-                                lyrics = lyricsTextState.lyrics,
-                                currentPositionMs = uiState.currentPositionMs,
-                                playbackPositionFlow = playbackPositionFlow,
-                                isPlaying = uiState.isPlaying,
-                                currentPositionProvider = currentPositionProvider,
-                                onSeekTo = onSeekTo,
-                                dominantColor = animatedBottomEdgeColor,
-                                accentColor = animatedAccentColor,
-                                vibrantColor = animatedBottomEdgeColor,
-                                onRetry = onRetryLyrics,
-                                showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
-                                showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
-                                viewportAnimating = lyricsPresentationAnimating,
-                                lyricsOffsetMs = lyricsOffsetMs,
-                                modifier = Modifier.weight(1f).fillMaxWidth()
-                            )
+                            Spacer(Modifier.weight(1f))
 
                         } else {
                             Box(
@@ -1839,6 +1838,25 @@ fun ExpandedPlayerScreen(
                         }
                     }
                 }
+
+                PlayerSyncedLyrics(
+                    lyrics = lyricsTextState.lyrics,
+                    currentPositionMs = uiState.currentPositionMs,
+                    playbackPositionFlow = playbackPositionFlow,
+                    isPlaying = uiState.isPlaying,
+                    currentPositionProvider = currentPositionProvider,
+                    onSeekTo = onSeekTo,
+                    dominantColor = animatedBottomEdgeColor,
+                    accentColor = animatedAccentColor,
+                    vibrantColor = animatedBottomEdgeColor,
+                    onRetry = onRetryLyrics,
+                    showRomanization = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.ROMANIZE,
+                    showTranslation = lyricsTextState.active == com.example.data.remote.LyricsTextTransformer.Mode.TRANSLATE,
+                    viewportAnimating = lyricsPresentationAnimating,
+                    lyricsOffsetMs = lyricsOffsetMs,
+                    modifier = Modifier.fillMaxSize().padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp).padding(top = lyricsHeaderInset),
+                    visible = showLyrics, contentAnimating = lyricsContentAnimating, active = isScreenVisible
+                )
             }
 
             Column(
@@ -1849,11 +1867,8 @@ fun ExpandedPlayerScreen(
             ) {
             Spacer(modifier = Modifier.height(if (isLandscape) 4.dp else 14.dp))
 
-            AnimatedVisibility(
-                visible = showLyrics,
-                enter = fadeIn(tween(260, easing = LyricsSharedEasing)) + expandVertically(tween(LYRICS_ENTRANCE_MS, easing = LyricsSharedEasing)),
-                exit = fadeOut(tween(280, easing = LyricsSharedEasing)) + shrinkVertically(tween(LYRICS_EXIT_MS, easing = LyricsSharedEasing))
-            ) {
+            Box(Modifier.fillMaxWidth().height(50.dp).graphicsLayer { alpha = lyricsVisibility.value }) {
+                if (showLyrics || lyricsContentAnimating) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1887,11 +1902,14 @@ fun ExpandedPlayerScreen(
                         onClick = { maximizeLyrics = !maximizeLyrics }
                     )
                 }
+                }
+            }
             }
 
             // TIMELINE SCRUB BAR (Isolated recomposition)
             Column(Modifier.fillMaxWidth()
-                .collapsingPlayerControls(lyricsExpansion)
+                .playerMorphExpandedControls()
+                .padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp)
                 .graphicsLayer { alpha = 1f - lyricsExpansion.value }
                 .then(if (lyricsExpanded) Modifier.clearAndSetSemantics { } else Modifier)) {
             PlayerTimelineSection(
@@ -1901,22 +1919,20 @@ fun ExpandedPlayerScreen(
                 trackDurationProvider = trackDurationProvider,
                 qualityChipText = displayedQuality,
                 showQuality = !lyricsExpanded,
-                active = !lyricsExpanded,
+                active = !expandedLyricsVisible,
                 qualityFade = lyricsExpansion,
                 onSeekTo = onSeekTo,
                 isDark = isDark,
-                isPlaying = uiState.isPlaying && !lyricsExpanded,
+                isPlaying = uiState.isPlaying && !expandedLyricsVisible,
                 dominantColor = animatedDominantColor
             )
             }
 
-            }
             Column(
                 Modifier
                     .fillMaxWidth()
                     .playerMorphExpandedControls()
                     .padding(horizontal = if (isFullScreenArt) 24.dp else 0.dp)
-                    .collapsingPlayerControls(lyricsExpansion)
                     .graphicsLayer { alpha = 1f - lyricsExpansion.value }
                     .then(if (lyricsExpanded) Modifier.clearAndSetSemantics { } else Modifier)
             ) {
@@ -2098,6 +2114,7 @@ fun ExpandedPlayerScreen(
                         com.example.performance.BackgroundWorkCoordinator.navigationInteraction()
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         if (!showLyrics) isFlipped = false
+                        if (showLyrics) maximizeLyrics = false
                         showLyrics = !showLyrics
                     },
                     interactionSource = lyricsInteractionSource,
@@ -2285,51 +2302,6 @@ fun ExpandedPlayerScreen(
 
 }
 
-/** One clock and stable control measurements; only the body bounds/placements animate. */
-@Composable
-private fun PortraitPlayerExpansion(
-    expansion: State<Float>,
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit
-) {
-    val stableLyricsHeight = remember { androidx.compose.runtime.mutableIntStateOf(0) }
-    androidx.compose.runtime.CompositionLocalProvider(LocalStableLyricsHeight provides stableLyricsHeight) {
-    Layout(content = content, modifier = modifier) { measurables, constraints ->
-        val width = constraints.maxWidth
-        val height = constraints.maxHeight
-        val fraction = expansion.value.coerceIn(0f, 1f)
-        val childConstraints = Constraints(minWidth = width, maxWidth = width, maxHeight = height)
-        val header = measurables[0].measure(childConstraints)
-        stableLyricsHeight.intValue = (height - header.height).coerceAtLeast(0)
-        val footer = measurables[2].measure(childConstraints.copy(maxHeight = (height - header.height).coerceAtLeast(0)))
-        val controls = measurables[3].measure(childConstraints.copy(
-            maxHeight = (height - header.height - footer.height).coerceAtLeast(0)))
-        // Insets are applied outside this host. Keep an additional breathing room
-        // for time labels when the usual bottom action row is no longer visible.
-        val bottomGap = (12.dp.toPx() * fraction).roundToInt()
-        val visibleControls = controls.height
-        val footerY = (height - footer.height - visibleControls - bottomGap).coerceAtLeast(header.height)
-        val body = measurables[1].measure(Constraints.fixed(width, (footerY - header.height).coerceAtLeast(0)))
-        layout(width, height) {
-            header.placeRelative(0, 0)
-            body.placeRelative(0, header.height)
-            footer.placeRelative(0, footerY)
-            if (fraction < 1f) controls.placeRelative(0, footerY + footer.height + bottomGap)
-        }
-    }
-    }
-}
-
-/** Clip only the moving controls, leaving the existing artwork glow unclipped. */
-private fun Modifier.collapsingPlayerControls(expansion: State<Float>): Modifier =
-    clipToBounds().layout { measurable, constraints ->
-        val controls = measurable.measure(constraints)
-        val visibleHeight = (controls.height * (1f - expansion.value.coerceIn(0f, 1f))).roundToInt()
-        layout(controls.width, visibleHeight) {
-            if (visibleHeight > 0) controls.placeRelative(0, 0)
-        }
-    }
-
 /** Keep the original two-pane bounds at rest; read expansion only during measurement. */
 @Composable
 private fun LandscapeLyricsExpansion(
@@ -2453,8 +2425,19 @@ private fun PlayerSyncedLyrics(
     showTranslation: Boolean,
     viewportAnimating: Boolean,
     lyricsOffsetMs: Int = 0,
-    modifier: Modifier
+    modifier: Modifier,
+    visible: Boolean,
+    contentAnimating: Boolean,
+    active: Boolean
 ) {
+    val shown = visible && !contentAnimating
+    var prepared by remember(lyrics?.trackId) { mutableStateOf(false) }
+    val opacity = animateFloatAsState(if (shown) 1f else 0f, tween(180), label = "lyrics_panel_reveal")
+    val revealing = rememberLyricsViewportActivity(opacity, shown, active)
+    // Initial text layout lands after the artwork settles. Later visits reuse the
+    // same list, line measurements and glyph cache without hidden playback clocks.
+    if (!shown && !prepared) return
+    androidx.compose.runtime.SideEffect { prepared = true }
     val contentColor = rememberPlayerContentColor(dominantColor, vibrantColor,
         LocalAppColors.current.dynamicAlbumGlow && LocalDynamicGlassEnabled.current)
     SyncedLyricsView(
@@ -2469,9 +2452,16 @@ private fun PlayerSyncedLyrics(
         onRetry = onRetry,
         showRomanization = showRomanization,
         showTranslation = showTranslation,
-        modifier = modifier,
-        viewportAnimating = viewportAnimating,
-        lyricsOffsetMs = lyricsOffsetMs
+        modifier = modifier.layout { measurable, constraints ->
+            val child = measurable.measure(constraints)
+            val lookahead = isLookingAhead
+            layout(child.width, child.height) {
+                if (lookahead || shown && opacity.value > 0f) child.placeRelativeWithLayer(0, 0) { alpha = opacity.value }
+            }
+        },
+        viewportAnimating = viewportAnimating || revealing,
+        lyricsOffsetMs = lyricsOffsetMs,
+        active = active && visible
     )
 }
 
@@ -3032,11 +3022,11 @@ private fun PlayerTimelineSection(
     }
 }
 
-private const val LYRICS_ENTRANCE_MS = 460
-private const val LYRICS_EXIT_MS = 440
-private const val LYRICS_EXPANSION_MS = 380
+private const val LYRICS_ENTRANCE_MS = 420
+private const val LYRICS_EXIT_MS = 420
+private const val LYRICS_EXPANSION_MS = 420
 private val LyricsExpansionEasing: Easing = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
-private val LyricsSharedEasing: Easing = CubicBezierEasing(0.22f, 0.0f, 0.18f, 1.0f)
+private val LyricsSharedEasing: Easing = LyricsExpansionEasing
 
 /** Optional CPU work resumes at the actual endpoint, never during the final rendered frames. */
 @Composable
@@ -3067,33 +3057,8 @@ internal fun rememberPlayerLyricsTransition(lyricsVisible: Boolean, active: Bool
 
 /** Keep the content fade alive and smoothly synchronized for the entire shared artwork/header journey. */
 private fun AnimatedContentTransitionScope<Boolean>.lyricsArtworkTransition(): ContentTransform {
-    return if (targetState) {
-        fadeIn(
-            tween(
-                durationMillis = LYRICS_ENTRANCE_MS - 140,
-                delayMillis = 140,
-                easing = LyricsSharedEasing
-            )
-        ) togetherWith fadeOut(
-            tween(
-                durationMillis = 240,
-                easing = FastOutLinearInEasing
-            )
-        )
-    } else {
-        fadeIn(
-            tween(
-                durationMillis = LYRICS_EXIT_MS - 100,
-                delayMillis = 100,
-                easing = LyricsSharedEasing
-            )
-        ) togetherWith fadeOut(
-            tween(
-                durationMillis = 320,
-                easing = LyricsSharedEasing
-            )
-        )
-    }.using(null)
+    return (fadeIn(tween(LYRICS_ENTRANCE_MS, easing = LyricsSharedEasing)) togetherWith
+        fadeOut(tween(LYRICS_EXIT_MS, easing = LyricsSharedEasing))).using(null)
 }
 
 /** Kept next to the player menu so source selection never becomes a DSP setting. */

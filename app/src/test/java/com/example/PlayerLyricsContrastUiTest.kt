@@ -68,8 +68,9 @@ class PlayerLyricsContrastUiTest {
             CompositionLocalProvider(LocalAppColors provides DarkAppColors,
                 com.example.ui.util.LocalArtworkRequestsActive provides false,
                 LocalVisualEffectsActive provides false) {
+                // Marquees run in the visible player; a retained hidden scene suspends them.
                 ExpandedPlayerScreen(PlayerUiState(currentTrack = song), {}, {}, {}, {}, {}, {}, {}, {}, {},
-                    onAddToPlaylist = {}, isScreenVisible = false)
+                    onAddToPlaylist = {}, isScreenVisible = true)
             }
         } }
         fun pixels(): IntArray {

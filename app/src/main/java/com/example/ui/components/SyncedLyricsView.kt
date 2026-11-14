@@ -161,7 +161,8 @@ fun SyncedLyricsView(
     showRomanization: Boolean = true,
     showTranslation: Boolean = true,
     lyricsOffsetMs: Int = 0,
-    accentColorState: State<Color>? = null
+    accentColorState: State<Color>? = null,
+    active: Boolean = true
 ) {
     val appColors = LocalAppColors.current
     val context = LocalContext.current
@@ -181,8 +182,8 @@ fun SyncedLyricsView(
     // One display-frame clock feeds both centering and the draw phase. Never tween the playhead:
     // easing a timestamp introduces vocal lag and can keep highlighting after a pause or seek.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(isSynced, isPlaying, lyrics?.trackId, lifecycle) {
-        if (!isSynced) return@LaunchedEffect
+    LaunchedEffect(isSynced, isPlaying, lyrics?.trackId, lifecycle, active) {
+        if (!isSynced || !active) return@LaunchedEffect
         lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             currentPlayheadMs = latestPositionProvider()
             if (isPlaying) while (isActive) {
@@ -190,11 +191,11 @@ fun SyncedLyricsView(
             }
         }
     }
-    LaunchedEffect(currentPositionMs, isPlaying, lyrics?.trackId) {
-        currentPlayheadMs = latestPositionProvider()
+    LaunchedEffect(currentPositionMs, isPlaying, lyrics?.trackId, active) {
+        if (active) currentPlayheadMs = latestPositionProvider()
     }
-    LaunchedEffect(playbackPositionFlow, isPlaying, lyrics?.trackId, lifecycle) {
-        if (!isPlaying) lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+    LaunchedEffect(playbackPositionFlow, isPlaying, lyrics?.trackId, lifecycle, active) {
+        if (!isPlaying && active) lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             playbackPositionFlow?.collect { currentPlayheadMs = latestPositionProvider() }
         }
     }
@@ -238,8 +239,8 @@ fun SyncedLyricsView(
     }
 
     // Width changes during expansion need measurement, not a composition/scroll restart each frame.
-    val viewportWidth by produceState(0, listState, viewportAnimating) {
-        if (!viewportAnimating) snapshotFlow { listState.layoutInfo.viewportSize.width }.collect { value = it }
+    val viewportWidth by produceState(0, listState, viewportAnimating, active) {
+        if (!viewportAnimating && active) snapshotFlow { listState.layoutInfo.viewportSize.width }.collect { value = it }
     }
     val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
@@ -251,7 +252,7 @@ fun SyncedLyricsView(
         showRomanization, showTranslation) { mutableMapOf<Int, Int>() }
     var hasInitialScrolled by remember(lyrics?.trackId) { mutableStateOf(false) }
     var centeredLineIndex by remember(lyrics?.trackId) { mutableIntStateOf(-1) }
-    LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportWidth, rowHeights, viewportAnimating) {
+    LaunchedEffect(lyrics?.trackId, lines, activeLineIndex, isSynced, followPlayback, isDragged, viewportWidth, rowHeights, viewportAnimating, active) {
         // Center the incoming vocal before revealing it, even if a quick reopen
         // retains this view. Later resizes wait for stable bounds instead of restarting a scroll.
         val targetIndex = activeLineIndex.coerceAtLeast(0)
@@ -316,7 +317,7 @@ fun SyncedLyricsView(
             .clip(RoundedCornerShape(24.dp))
             .testTag("synced_lyrics_view")
             // Translate/clip cached list geometry instead of measuring it at every animation size.
-            .lyricsViewportWindow(centeredPadding, stableHeight)
+            .lyricsViewportWindow(centeredPadding, stableHeight, LocalLyricsBodyGeometry.current)
     ) {
         if (lyrics == null) {
             Box(
