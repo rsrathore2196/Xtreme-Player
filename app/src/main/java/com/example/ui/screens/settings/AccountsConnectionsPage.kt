@@ -81,7 +81,7 @@ fun AccountsConnectionsPage(modifier: Modifier = Modifier) {
                 }
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                ConnectionActionButton(if (state.youtube.isEmpty()) "Connect" else "Add account", { signIn("youtube") },
+                if (state.youtube.isEmpty()) ConnectionActionButton("Connect", { signIn("youtube") },
                     Modifier.testTag("connect_youtube"), enabled = ready, primary = true)
                 if (state.activeYouTube != null) {
                     ConnectionActionButton("Choose profile", { signIn("youtube", manage = true) })

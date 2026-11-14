@@ -45,6 +45,16 @@ class ConnectionAppearanceLoginTest {
         }
     }
 
+    @Test fun connectedYouTubeHidesConnectAndRestoresItAfterRemoval() {
+        runBlocking { store.change { it.copy(youtube = listOf(YouTubeConnection("account", "Listener", "fixture")), selectedYouTube = "account") } }
+        compose.setContent { MaterialTheme { CompositionLocalProvider(LocalAppColors provides DarkAppColors) { AccountsConnectionsPage() } } }
+        compose.onNodeWithTag("connect_youtube").assertDoesNotExist()
+        compose.onNodeWithText("Add account").assertDoesNotExist()
+        compose.onNodeWithText("Library").assertIsDisplayed()
+        runBlocking { store.change { it.copy(youtube = emptyList(), selectedYouTube = "") } }
+        compose.onNodeWithTag("connect_youtube").assertIsDisplayed()
+    }
+
     @Test fun directLoginShowsOnlyAccountFieldsAndPersistsTheSessionWithoutThePassword() {
         var visible by mutableStateOf(true)
         val initial = LastFmConnection(thresholdPercent = 75, nowPlaying = false)

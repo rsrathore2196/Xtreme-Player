@@ -43,22 +43,69 @@ class LyricsExpansionMotionTest {
         compose.mainClock.advanceTimeBy(700)
         compose.onNodeWithTag("player_timeline_section", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithTag("player_lyrics_expand_button").performClick()
-        compose.mainClock.advanceTimeBy(320)
+        compose.mainClock.advanceTimeBy(440)
         compose.onNodeWithContentDescription("Minimize lyrics").assertIsDisplayed()
         compose.onNodeWithTag("player_timeline_section", useUnmergedTree = true).assertIsNotDisplayed()
         compose.onNodeWithTag("expanded_player_shuffle").assertIsNotDisplayed()
         compose.onNodeWithTag("lyrics_provider_pill").assertIsDisplayed()
         compose.onNodeWithTag("player_lyrics_expand_button").performClick()
-        compose.mainClock.advanceTimeBy(320)
+        compose.mainClock.advanceTimeBy(440)
         compose.onNodeWithTag("player_timeline_section", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithTag("expanded_player_shuffle").assertIsDisplayed()
         // Reverse an in-flight expansion; it must settle into the requested state.
         compose.onNodeWithTag("player_lyrics_expand_button").performClick()
         compose.mainClock.advanceTimeBy(90)
         compose.onNodeWithTag("player_lyrics_expand_button").performClick()
-        compose.mainClock.advanceTimeBy(320)
+        compose.mainClock.advanceTimeBy(440)
         compose.onNodeWithTag("player_timeline_section", useUnmergedTree = true).assertIsDisplayed()
         compose.onNodeWithContentDescription("Maximize lyrics").assertIsDisplayed()
+    }
+
+    @Test fun landscapeArtworkFillsItsPaneOnlyWhenFullscreenIsEnabled() {
+        val context = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+        org.junit.Assume.assumeTrue(context.resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_LANDSCAPE)
+        val original = com.example.data.local.OtherSettingsPreferences.playerExperienceSettings(context).fullScreenAlbumArt
+        try {
+            com.example.data.local.OtherSettingsPreferences.setFullScreenAlbumArt(context, true)
+            val song = MusicTrack("landscape-cover", "Title", "Artist", "Album", 180_000, "", "")
+            compose.mainClock.autoAdvance = false
+            compose.setContent { MaterialTheme {
+                CompositionLocalProvider(LocalAppColors provides DarkAppColors.copy(dynamicGlassEnabled = false,
+                    dynamicAlbumGlow = false), LocalDynamicGlassEnabled provides false) {
+                    ExpandedPlayerScreen(PlayerUiState(currentTrack = song), onMinimize = {}, onPlayPause = {},
+                        onSeekTo = {}, onSkipNext = {}, onSkipPrevious = {}, onToggleShuffle = {}, onToggleRepeat = {},
+                        onToggleFavorite = {}, onOpenQueue = {}, onAddToPlaylist = {}, isScreenVisible = false)
+                }
+            } }
+            compose.mainClock.advanceTimeBy(600)
+            fun artwork() = compose.onNodeWithTag("flip_album_art_card").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val pane = compose.onNodeWithTag("landscape_artwork_pane", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            assertEquals(pane.width, artwork().width, 1f)
+            assertEquals(pane.height, artwork().height, 1f)
+            compose.onNodeWithTag("expanded_player_play_pause").assertIsDisplayed()
+            compose.onNodeWithTag("player_queue_button").assertIsDisplayed()
+            compose.onNodeWithTag("flip_album_art_card").performClick()
+            compose.mainClock.advanceTimeBy(400)
+            compose.onNodeWithText("TRACK CREDITS & DETAILS").assertIsDisplayed()
+            compose.runOnIdle { com.example.data.local.OtherSettingsPreferences.setFullScreenAlbumArt(context, false) }
+            // Preferences arrive from IO independently of the manually advanced animation clock.
+            compose.waitUntil(15_000) {
+                compose.mainClock.advanceTimeByFrame()
+                artwork().height < pane.height
+            }
+            compose.mainClock.advanceTimeBy(400)
+            val standard = artwork()
+            assertEquals(standard.width, standard.height, 1f)
+            assertTrue(standard.height < pane.height)
+            compose.runOnIdle { com.example.data.local.OtherSettingsPreferences.setFullScreenAlbumArt(context, true) }
+            compose.waitUntil(15_000) {
+                compose.mainClock.advanceTimeByFrame()
+                kotlin.math.abs(artwork().height - pane.height) < 1f
+            }
+            compose.mainClock.advanceTimeBy(400)
+            assertEquals(pane.width, artwork().width, 1f)
+            assertEquals(pane.height, artwork().height, 1f)
+        } finally { com.example.data.local.OtherSettingsPreferences.setFullScreenAlbumArt(context, original) }
     }
 
     @Test fun heightChangesKeepTheActiveLineCenteredWithoutAFollowUpScrollAnimation() {

@@ -44,6 +44,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.LaunchedEffect
@@ -237,7 +238,10 @@ fun SyncedLyricsView(
         }
     }
 
-    val viewportWidth by remember(listState) { derivedStateOf { listState.layoutInfo.viewportSize.width } }
+    // Width changes during expansion need measurement, not a composition/scroll restart each frame.
+    val viewportWidth by produceState(0, listState, viewportAnimating) {
+        if (!viewportAnimating) snapshotFlow { listState.layoutInfo.viewportSize.width }.collect { value = it }
+    }
     val density = LocalDensity.current
     val textMeasurer = rememberTextMeasurer()
     val lyricStyle = LocalTextStyle.current.copy(fontSize = lyricsTextSize.sp, lineHeight = (40 * lyricsTextScale).sp,
@@ -255,7 +259,7 @@ fun SyncedLyricsView(
         if (viewportAnimating && hasInitialScrolled && centeredLineIndex == targetIndex) return@LaunchedEffect
         if (!isSynced || lines.isEmpty() || !followPlayback || isDragged) return@LaunchedEffect
         // Before the first vocal, show the first line without marking it active.
-        val animateFollow = hasInitialScrolled && !viewportAnimating
+        val animateFollow = hasInitialScrolled && !viewportAnimating && centeredLineIndex != targetIndex
         snapshotFlow { listState.layoutInfo }.first {
             it.viewportSize.height > 0 && it.totalItemsCount == lines.size
         }

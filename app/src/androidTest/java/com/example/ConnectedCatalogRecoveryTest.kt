@@ -100,13 +100,53 @@ class ConnectedCatalogRecoveryTest {
         assertNull(store.state.value.spotify)
     }
 
+    @Test fun expiredCompanionTokensAndGraphqlAuthenticationErrorsRefreshAutomatically() = withSession { store ->
+        for (failure in listOf(403, 200)) {
+            var requests = 0
+            var refreshes = 0
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                requests++
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).message("fixture")
+                    .code(if (requests == 1) failure else 200)
+                    .body((if (requests == 1) """{"errors":[{"extensions":{"code":"UNAUTHENTICATED"}}]}"""
+                        else """{"data":{"me":{"libraryV3":{"items":[],"totalCount":0}}}}""").toResponseBody()).build()
+            }.build()
+            val client = ConnectedLibraries(context, httpClient = http, refreshSession = {
+                refreshes++; it.copy(bearer = "renewed-$failure", clientToken = "renewed-client")
+            })
+            assertEquals(listOf("liked"), client.collections("spotify").map { it.id })
+            assertEquals(2, requests)
+            assertEquals(1, refreshes)
+            assertEquals("renewed-client", store.state.value.spotify?.clientToken)
+        }
+    }
+
+    @Test fun expiredOrIncompleteSavedSessionsRefreshBeforeRequestingTheLibrary() = withSession { store ->
+        for (missingClient in listOf(false, true)) {
+            store.change { it.copy(spotify = it.spotify!!.copy(expiresAt = if (missingClient) System.currentTimeMillis() + 600_000 else 0,
+                clientToken = if (missingClient) "" else "old-client")) }
+            var refreshes = 0
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                assertEquals("Bearer fresh", chain.request().header("Authorization"))
+                assertEquals("fresh-client", chain.request().header("Client-Token"))
+                Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).message("fixture").code(200)
+                    .body("""{"data":{"me":{"libraryV3":{"items":[],"totalCount":0}}}}""".toResponseBody()).build()
+            }.build()
+            val client = ConnectedLibraries(context, httpClient = http, refreshSession = {
+                refreshes++; it.copy(bearer = "fresh", clientToken = "fresh-client", expiresAt = System.currentTimeMillis() + 600_000)
+            })
+            assertEquals(listOf("liked"), client.collections("spotify").map { it.id })
+            assertEquals(1, refreshes)
+        }
+    }
+
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     private fun withSession(block: suspend (ConnectionStore) -> Unit) = runBlocking(Dispatchers.IO) {
         val store = ConnectionStore.get(context)
         store.load()
         val original = store.state.value
         try {
-            store.change { it.copy(spotify = SpotifyConnection("fixture-cookie", "old-token", System.currentTimeMillis() + 600_000)) }
+            store.change { it.copy(spotify = SpotifyConnection("fixture-cookie", "old-token", System.currentTimeMillis() + 600_000, clientToken = "client-token")) }
             block(store)
         } finally { store.change { original } }
     }

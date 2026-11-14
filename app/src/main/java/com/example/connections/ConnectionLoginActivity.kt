@@ -167,7 +167,7 @@ private open class SpotifySessionClient(private val onSession: (SpotifyConnectio
         if (url.scheme != "https" || !firstPartyActive) return null
         if (url.host == "api-partner.spotify.com") {
             val authorization = request.requestHeaders.entries.firstOrNull { it.key.equals("authorization", true) }?.value.orEmpty()
-            if (bearer.isBlank() && authorization.startsWith("Bearer ")) {
+            if (authorization.startsWith("Bearer ") && bearer != authorization.removePrefix("Bearer ")) {
                 bearer = authorization.removePrefix("Bearer "); expiry = System.currentTimeMillis() + 15 * 60_000L
             }
             val token = request.requestHeaders.entries.firstOrNull { it.key.equals("client-token", true) }?.value
@@ -195,7 +195,7 @@ private open class SpotifySessionClient(private val onSession: (SpotifyConnectio
         }.getOrNull()
     }
     private fun publish() {
-        if (bearer.isBlank()) return
+        if (bearer.isBlank() || clientToken.isBlank()) return
         val cookie = ConnectionStore.cookieValue(ConnectionBrowserProfile.cookies().getCookie("https://open.spotify.com").orEmpty(), "sp_dc")
         if (cookie.isNotBlank()) onSession(SpotifyConnection(cookie, bearer, expiry, clientToken = clientToken))
     }
@@ -208,16 +208,31 @@ internal suspend fun refreshSpotifySession(context: Context, saved: SpotifyConne
     val result = CompletableDeferred<Unit>()
     var latest: SpotifyConnection? = null
     val cookies = ConnectionBrowserProfile.cookies()
-    cookies.setCookie("https://open.spotify.com", "sp_dc=${saved.cookie}; Domain=.spotify.com; Path=/; Secure; HttpOnly")
-    cookies.flush()
+    val cookieReady = CompletableDeferred<Boolean>()
+    cookies.setCookie("https://open.spotify.com", "sp_dc=${saved.cookie}; Domain=.spotify.com; Path=/; Secure; HttpOnly") {
+        cookieReady.complete(it)
+    }
+    check(withTimeout(10_000) { cookieReady.await() }) { "Spotify session cookie could not be restored" }
     val view = sessionWebView(context)
     try {
-        view.webViewClient = object : SpotifySessionClient({ session -> view.post { latest = session; result.complete(Unit) } }) {
+        view.webViewClient = object : SpotifySessionClient({ session -> view.post {
+            // Ignore the cached pair that triggered recovery; let the page finish renewing it.
+            if (session.bearer != saved.bearer || session.clientToken != saved.clientToken) {
+                latest = session
+                result.complete(Unit)
+            }
+        } }) {
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = !ConnectionHosts.allowed(request.url.toString(), "spotify")
         }
+        // A detached view still needs a viewport for the web player to initialize its library requests.
+        val viewportWidth = (360 * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
+        val viewportHeight = (640 * context.resources.displayMetrics.density).toInt().coerceAtLeast(1)
+        view.measure(android.view.View.MeasureSpec.makeMeasureSpec(viewportWidth, android.view.View.MeasureSpec.EXACTLY),
+            android.view.View.MeasureSpec.makeMeasureSpec(viewportHeight, android.view.View.MeasureSpec.EXACTLY))
+        view.layout(0, 0, viewportWidth, viewportHeight)
         // The web player performs its own challenge and token refresh with the stored session.
         view.loadUrl("https://open.spotify.com/?connection_refresh=${System.currentTimeMillis()}")
-        withTimeout(45_000) { result.await(); delay(1500); checkNotNull(latest) }
+        withTimeout(45_000) { result.await(); checkNotNull(latest) }
     } finally { view.stopLoading(); view.destroy() }
 }
 

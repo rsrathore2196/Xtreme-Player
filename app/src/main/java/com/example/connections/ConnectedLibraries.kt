@@ -192,14 +192,25 @@ internal class ConnectedLibraries(
                 .apply { if (session.clientToken.isNotBlank()) header("Client-Token", session.clientToken) }
                 .post(body).build()
             val result = httpClient.newCall(request).execute().use { response ->
-                if (response.code == 401 && attempt == 0) {
+                if (response.code in setOf(401, 403) && attempt == 0) {
                     rejectedBearer = session.bearer
                     return@use null
                 }
                 if (!response.isSuccessful) throw IOException("Spotify connection needs attention. Reconnect and try again.")
                 val root = JSONObject(response.body?.string() ?: throw IOException("Empty Spotify response"))
-                if (root.optJSONArray("errors")?.length()?.let { it > 0 } == true)
-                    throw IOException("Spotify library is unavailable. Reconnect and try again.")
+                val errors = root.optJSONArray("errors")
+                if (errors != null && errors.length() > 0) {
+                    val authenticationExpired = (0 until errors.length()).any { index ->
+                        val error = errors.optJSONObject(index)
+                        error?.optJSONObject("extensions")?.optString("code") in setOf("UNAUTHENTICATED", "UNAUTHORIZED") ||
+                            error?.optString("message")?.lowercase() in setOf("unauthorized", "unauthenticated", "token expired")
+                    }
+                    if (authenticationExpired && attempt == 0) {
+                        rejectedBearer = session.bearer
+                        return@use null
+                    }
+                    throw IOException("Spotify library is unavailable. Please try again.")
+                }
                 root
             }
             if (result != null) return result
@@ -208,9 +219,11 @@ internal class ConnectedLibraries(
     }
     private suspend fun spotifyTokens(rejectedBearer: String? = null): SpotifyConnection = tokenLock.withLock {
         val saved = connections.state.value.spotify ?: throw IOException("Connect Spotify first")
-        if ((rejectedBearer == null || saved.bearer != rejectedBearer) && saved.bearer.isNotBlank() &&
+        if ((rejectedBearer == null || saved.bearer != rejectedBearer) && saved.bearer.isNotBlank() && saved.clientToken.isNotBlank() &&
             saved.expiresAt > System.currentTimeMillis() + 60_000L) return@withLock saved
         val refreshed = refreshSession(saved)
+        if (refreshed.bearer.isBlank() || refreshed.clientToken.isBlank() || refreshed.expiresAt <= System.currentTimeMillis())
+            throw IOException("Spotify session refresh did not finish. Please retry.")
         currentCoroutineContext().ensureActive()
         connections.change { if (it.spotify?.cookie == saved.cookie) it.copy(spotify = refreshed) else it }
         connections.state.value.spotify?.takeIf { it.cookie == refreshed.cookie } ?: throw IOException("Spotify account changed")

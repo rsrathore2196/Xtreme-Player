@@ -621,7 +621,7 @@ fun ExpandedPlayerScreen(
 
             val configuration = LocalConfiguration.current
             val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
-            val isFullScreenArt = playerExperience.fullScreenAlbumArt && !showLyrics && !isLandscape
+            val isFullScreenArt = playerExperience.fullScreenAlbumArt && !showLyrics
 
             if (isLandscape) {
                 // LANDSCAPE DEDICATED TWO-PANE LAYOUT
@@ -631,11 +631,12 @@ fun ExpandedPlayerScreen(
                         .fillMaxSize()
                         .statusBarsPadding()
                         .navigationBarsPadding()
-                        .padding(horizontal = 24.dp, vertical = 6.dp)
+                        .padding(start = if (isFullScreenArt) 0.dp else 24.dp, end = 24.dp,
+                            top = if (isFullScreenArt) 0.dp else 6.dp, bottom = if (isFullScreenArt) 0.dp else 6.dp)
                 ) {
-                    // LEFT PANE: Album Art / Lyrics (Proper Square Shape Guarantee)
+                    // LEFT PANE: Full-screen or square artwork, and lyrics.
                     SharedTransitionLayout(
-                        modifier = Modifier.fillMaxHeight().playerMorphExpandedControls()
+                        modifier = Modifier.fillMaxHeight().playerMorphExpandedControls().testTag("landscape_artwork_pane")
                     ) {
                         lyricsContentTransition.AnimatedContent(
                             transitionSpec = { lyricsArtworkTransition() },
@@ -701,24 +702,24 @@ fun ExpandedPlayerScreen(
                                     modifier = Modifier.fillMaxSize(),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    // 3D Flippable Album Art Card - Strictly Guaranteed Square
+                                    // Preserve the square card when full-screen artwork is disabled.
                                     Box(
                                         modifier = Modifier
-                                            .fillMaxHeight(0.92f)
-                                            .aspectRatio(1f)
+                                            .then(if (isFullScreenArt) Modifier.fillMaxSize()
+                                                else Modifier.fillMaxHeight(0.92f).aspectRatio(1f))
                                             .sharedElement(rememberSharedContentState("lyrics_artwork_${track.id}"),
                                                 animatedVisibilityScope = this@AnimatedContent,
                                                 boundsTransform = { _, _ -> tween(lyricsArtworkDurationMs, easing = LyricsSharedEasing) })
                                             .playerMorphElement(PlayerMorphSide.EXPANDED, PlayerMorphPart.ARTWORK, track.id,
-                                                22.dp, active = isLyricsActive == showLyrics,
-                                                presentation = if (showArtworkFront) 0 else 2,
+                                                if (isFullScreenArt) 0.dp else 22.dp, active = isLyricsActive == showLyrics,
+                                                presentation = if (!showArtworkFront) 2 else if (isFullScreenArt) 1 else 0,
                                                 ready = !showArtworkFront || morphArtworkReady)
                                             .graphicsLayer {
                                                 rotationY = flipRotation
                                                 cameraDistance = 14f * density
                                             }
-                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp), appColors.dynamicAlbumGlow, showArtworkFront)
-                                            .clip(RoundedCornerShape(22.dp))
+                                            .animatedArtworkShadow(animatedAccentColor, RoundedCornerShape(22.dp), appColors.dynamicAlbumGlow && !isFullScreenArt, showArtworkFront)
+                                            .clip(RoundedCornerShape(if (isFullScreenArt) 0.dp else 22.dp))
                                             .clickable {
                                                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                                 isFlipped = !isFlipped
@@ -731,7 +732,9 @@ fun ExpandedPlayerScreen(
                                                 request = highResImageRequest,
                                                 onBoundsChanged = { artworkBlendBounds.value = it },
                                                 onReady = { morphArtworkReady = true },
-                                                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(22.dp))
+                                                fullScreen = isFullScreenArt,
+                                                fadeRightEdge = isFullScreenArt,
+                                                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(if (isFullScreenArt) 0.dp else 22.dp))
                                             )
                                         } else {
                                             // BACK SIDE: Song credits
@@ -817,6 +820,7 @@ fun ExpandedPlayerScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxHeight()
+                            .padding(vertical = if (isFullScreenArt) 6.dp else 0.dp)
                             .playerMorphExpandedControls()
                             .graphicsLayer {
                                 alpha = 1f - lyricsExpansion.value
@@ -2507,16 +2511,16 @@ private fun Modifier.animatedFillMaxWidth(fraction: State<Float>): Modifier = la
 /** The player fills its artwork bounds, including while a square song cover is resolving. */
 @Composable
 internal fun PlayerCoverArtwork(request: ImageRequest, modifier: Modifier = Modifier,
-    fullScreen: Boolean = false, onReady: () -> Unit = {},
+    fullScreen: Boolean = false, fadeRightEdge: Boolean = false, onReady: () -> Unit = {},
     onBoundsChanged: (Rect) -> Unit = {}) {
     AsyncImage(model = request, contentDescription = "Cover Art - Tap to flip",
         contentScale = ContentScale.Crop,
         onSuccess = { onReady() },
         modifier = modifier.onGloballyPositioned { onBoundsChanged(it.boundsInRoot()) }
-            .playerArtworkEdgeBlend(fullScreen))
+            .playerArtworkEdgeBlend(fullScreen, fadeRightEdge = fadeRightEdge))
 }
 
-internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean, imageAspectRatio: Float? = null): Modifier = if (!enabled) this else
+internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean, imageAspectRatio: Float? = null, fadeRightEdge: Boolean = false): Modifier = if (!enabled) this else
     graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
         .drawWithCache {
             // Alpha only: preserve the center's original pixels, without a black,
@@ -2543,9 +2547,12 @@ internal fun Modifier.playerArtworkEdgeBlend(enabled: Boolean, imageAspectRatio:
             val imageHeight = imageAspectRatio?.let { minOf(size.height, size.width / it) } ?: size.height
             val top = (size.height - imageHeight) / 2f
             val edges = Brush.verticalGradient(*stops.toTypedArray(), startY = top, endY = top + imageHeight)
+            val rightEdge = if (fadeRightEdge) Brush.horizontalGradient(
+                0f to Color.White, 0.78f to Color.White, 1f to Color.Transparent) else null
             onDrawWithContent {
                 drawContent()
                 drawRect(edges, blendMode = BlendMode.DstIn)
+                rightEdge?.let { drawRect(it, blendMode = BlendMode.DstIn) }
             }
         }
 
@@ -3032,8 +3039,8 @@ private fun PlayerTimelineSection(
 
 private const val LYRICS_ENTRANCE_MS = 460
 private const val LYRICS_EXIT_MS = 440
-private const val LYRICS_EXPANSION_MS = 280
-private val LyricsExpansionEasing: Easing = CubicBezierEasing(0.2f, 0f, 0f, 1f)
+private const val LYRICS_EXPANSION_MS = 380
+private val LyricsExpansionEasing: Easing = CubicBezierEasing(0.4f, 0f, 0.2f, 1f)
 private val LyricsSharedEasing: Easing = CubicBezierEasing(0.22f, 0.0f, 0.18f, 1.0f)
 
 /** One transition owns foreground admission until its existing content/shared bounds settle. */

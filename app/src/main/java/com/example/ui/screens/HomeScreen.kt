@@ -453,7 +453,7 @@ fun HomeScreenContent(
                         seed = currentTrack ?: seed, currentPlayingId = currentPlayingId, isPlaying = isPlaying,
                         isLoading = isRadioLoading, isRadioSession = isRadioSession,
                         recentTracks = if (hasRecent) (history?.tracks ?: pillsCardTracks)
-                            .take(com.example.ui.viewmodel.RECENTLY_PLAYED_CARD_LIMIT) else emptyList(),
+                            .take(6) else emptyList(),
                         onPlayRadio = { onPlayInfiniteRadio?.invoke(it) }, onTrackClick = onTrackClick)
                 } else {
                 InfiniteRadioHeroCard(

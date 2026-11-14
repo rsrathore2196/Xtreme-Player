@@ -77,7 +77,7 @@ class LandscapeScreensUiTest {
     }
 
     @Test @Config(qualifiers = "w740dp-h360dp-land")
-    fun landscapePutsFourActualRecentsBesideOneThirdHeroWithoutOverlap() {
+    fun landscapePutsSixActualRecentsBesideOneThirdHeroWithoutOverlap() {
         showHome()
         val hero = rect("infinite_radio_hero_card")
         val grid = rect("landscape_recent_grid")
@@ -85,17 +85,17 @@ class LandscapeScreensUiTest {
         assertEquals(px((widthDp - 56f) / 3f), hero.width, 1f)
         assertTrue(hero.right + px(15f) <= grid.left)
         assertEquals(hero.top, grid.top, 1f)
-        for (index in 0..3) {
+        for (index in 0..5) {
             val cell = rect("habit_pill_recent-${index + 1}")
             assertTrue(cell.left >= grid.left && cell.right <= grid.right + 1f)
             assertTrue(cell.top >= grid.top && cell.bottom <= grid.bottom + 1f)
             if (index % 3 > 0) assertTrue(rect("habit_pill_recent-$index").right < cell.left)
         }
         compose.onAllNodesWithText("Recently Played").assertCountEquals(1)
-        compose.onNodeWithTag("habit_pill_recent-5").assertDoesNotExist()
+        compose.onNodeWithTag("habit_pill_recent-7").assertDoesNotExist()
         compose.onNodeWithTag("habit_pill_recent-4").performClick()
         assertEquals(tracks[3], played)
-        assertEquals(tracks.take(4), queue)
+        assertEquals(tracks.take(6), queue)
         capture("home-landscape")
     }
 
@@ -120,15 +120,15 @@ class LandscapeScreensUiTest {
         assertEquals(px(240f), hero.height, 1f)
         assertTrue(hero.right < recents.left)
         assertEquals(px(widthDp - 20f), recents.right, 1f)
-        compose.onNodeWithTag("habit_pill_recent-4").assertIsDisplayed()
-        compose.onNodeWithTag("habit_pill_recent-5").assertDoesNotExist()
+        compose.onNodeWithTag("habit_pill_recent-6").assertIsDisplayed()
+        compose.onNodeWithTag("habit_pill_recent-7").assertDoesNotExist()
     }
 
     @Test @Config(qualifiers = "w600dp-h360dp-land")
-    fun narrowLandscapeUsesFourReadableRecentsBesideHero() {
+    fun narrowLandscapeUsesSixReadableRecentsBesideHero() {
         showHome()
-        compose.onNodeWithTag("habit_pill_recent-4").assertIsDisplayed()
-        compose.onNodeWithTag("habit_pill_recent-5").assertDoesNotExist()
+        compose.onNodeWithTag("habit_pill_recent-6").assertIsDisplayed()
+        compose.onNodeWithTag("habit_pill_recent-7").assertDoesNotExist()
         assertTrue(rect("habit_pill_recent-2").width >= px(120f))
         assertTrue(rect("habit_pill_recent-2").left > rect("habit_pill_recent-1").right)
         assertTrue(rect("habit_pill_recent-3").top > rect("habit_pill_recent-1").bottom)
