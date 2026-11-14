@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -85,6 +86,7 @@ private class WaveformDrawCache(private val colors: List<Color>) {
             val value = (sine[index] * phaseCosine + cosine[index] * phaseSine).toFloat()
             path.lineTo(index * 3f, centerY + value * amplitude * damping[index])
         }
+        path.lineTo(activeWidth, centerY)
         return path
     }
 }
@@ -157,6 +159,8 @@ fun WavyScrubberBar(
 
     val drawCache = remember(resolvedActiveColor) { WaveformDrawCache(listOf(resolvedActiveColor, resolvedActiveColor)) }
     val density = LocalDensity.current
+    // Reserve room for the expanded thumb, its rim and ambient ring at both endpoints.
+    val edgeInset = with(density) { 16.dp.toPx() }
     val trackStrokeWidth = with(density) { 4.dp.toPx() }
     val waveLengthPx = with(density) { 22.dp.toPx() }
     val startFadePx = with(density) { 24.dp.toPx() }
@@ -169,12 +173,12 @@ fun WavyScrubberBar(
         modifier = modifier
             .fillMaxWidth()
             .height(36.dp)
-            .pointerInput(Unit) {
+            .pointerInput(edgeInset) {
                 detectTapGestures(
                     onPress = { offset ->
                         isDragging = true
                         seekStarted()
-                        val fraction = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        val fraction = scrubberFractionAt(offset.x, size.width.toFloat(), edgeInset)
                         dragFraction = fraction
                         seekProgress(fraction)
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -187,12 +191,12 @@ fun WavyScrubberBar(
                     }
                 )
             }
-            .pointerInput(Unit) {
+            .pointerInput(edgeInset) {
                 detectDragGestures(
                     onDragStart = { offset ->
                         isDragging = true
                         seekStarted()
-                        val fraction = (offset.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        val fraction = scrubberFractionAt(offset.x, size.width.toFloat(), edgeInset)
                         dragFraction = fraction
                         seekProgress(fraction)
                         haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -206,7 +210,7 @@ fun WavyScrubberBar(
                     },
                     onDrag = { change, _ ->
                         change.consume()
-                        val fraction = (change.position.x / size.width.toFloat()).coerceIn(0f, 1f)
+                        val fraction = scrubberFractionAt(change.position.x, size.width.toFloat(), edgeInset)
                         dragFraction = fraction
                         seekProgress(fraction)
                     }
@@ -219,17 +223,20 @@ fun WavyScrubberBar(
             val height = size.height
             val centerY = height / 2f
             val thumbRadius = 7.dp.toPx() * thumbScale
-            val activeWidth = (width * currentFraction).coerceIn(0f, width)
+            val trackStart = edgeInset.coerceAtMost(width / 2f)
+            val trackWidth = (width - 2f * trackStart).coerceAtLeast(0f)
+            val activeWidth = trackWidth * currentFraction
+            val thumbX = trackStart + activeWidth
 
             val waveAmplitudePx = animatedAmplitude.dp.toPx()
 
             // 1. Draw inactive / remaining track (flat background line)
-            if (activeWidth < width) {
-                val inactiveStart = (activeWidth + (if (animatedAmplitude > 0.5f) 0f else thumbRadius)).coerceAtMost(width)
+            if (activeWidth < trackWidth) {
+                val inactiveStart = (thumbX + (if (animatedAmplitude > 0.5f) 0f else thumbRadius)).coerceAtMost(trackStart + trackWidth)
                 drawLine(
                     color = resolvedInactiveColor,
                     start = Offset(inactiveStart, centerY),
-                    end = Offset(width, centerY),
+                    end = Offset(trackStart + trackWidth, centerY),
                     strokeWidth = trackStrokeWidth,
                     cap = StrokeCap.Round
                 )
@@ -243,62 +250,69 @@ fun WavyScrubberBar(
                     val wavePath = drawCache.path(activeWidth, wavePhase, centerY, waveAmplitudePx,
                         waveLengthPx, startFadePx, endFadePx)
 
-                    drawPath(
+                    translate(left = trackStart) { drawPath(
                         path = wavePath,
                         brush = activeBrush,
                         style = waveStroke
-                    )
+                    ) }
                 } else {
                     // Draw smooth flat line
                     drawLine(
                         brush = activeBrush,
-                        start = Offset(0f, centerY),
-                        end = Offset(activeWidth, centerY),
+                        start = Offset(trackStart, centerY),
+                        end = Offset(thumbX, centerY),
                         strokeWidth = trackStrokeWidth,
                         cap = StrokeCap.Round
                     )
                 }
-
-                // 3. Draw Scrubber Thumb with specular liquid glass glow
-                val isDarkBar = (0.299 * resolvedActiveColor.red + 0.587 * resolvedActiveColor.green + 0.114 * resolvedActiveColor.blue) > 0.50f
-
-                // Outer ambient glow ring
-                val glowColor = if (isDarkBar) {
-                    Color.White.copy(alpha = if (isDragging) 0.35f else 0.18f)
-                } else {
-                    Color.Black.copy(alpha = if (isDragging) 0.25f else 0.12f)
-                }
-                if (glassEnabled) drawCircle(
-                    color = glowColor,
-                    radius = thumbRadius + 5.dp.toPx(),
-                    center = Offset(activeWidth, centerY)
-                )
-
-                // Main thumb circle
-                val thumbCircleColor = if (isDarkBar) Color.White else Color(0xFF0F172A)
-                drawCircle(
-                    color = thumbCircleColor,
-                    radius = thumbRadius,
-                    center = Offset(activeWidth, centerY)
-                )
-
-                // Contrasting core dot
-                val coreDotColor = if (isDarkBar) Color(0xFF18181B) else Color.White
-                drawCircle(
-                    color = coreDotColor,
-                    radius = thumbRadius * 0.50f,
-                    center = Offset(activeWidth, centerY)
-                )
-
-                // Specular rim reflection
-                val rimColor = if (isDarkBar) Color.White.copy(alpha = 0.50f) else Color.Black.copy(alpha = 0.35f)
-                if (glassEnabled) drawCircle(
-                    color = rimColor,
-                    radius = thumbRadius,
-                    center = Offset(activeWidth, centerY),
-                    style = rimStroke
-                )
             }
+
+            // 3. Draw Scrubber Thumb with specular liquid glass glow
+            val isDarkBar = (0.299 * resolvedActiveColor.red + 0.587 * resolvedActiveColor.green + 0.114 * resolvedActiveColor.blue) > 0.50f
+
+            // Outer ambient glow ring
+            val glowColor = if (isDarkBar) {
+                Color.White.copy(alpha = if (isDragging) 0.35f else 0.18f)
+            } else {
+                Color.Black.copy(alpha = if (isDragging) 0.25f else 0.12f)
+            }
+            if (glassEnabled) drawCircle(
+                color = glowColor,
+                radius = thumbRadius + 5.dp.toPx(),
+                center = Offset(thumbX, centerY)
+            )
+
+            // Main thumb circle
+            val thumbCircleColor = if (isDarkBar) Color.White else Color(0xFF0F172A)
+            drawCircle(
+                color = thumbCircleColor,
+                radius = thumbRadius,
+                center = Offset(thumbX, centerY)
+            )
+
+            // Contrasting core dot
+            val coreDotColor = if (isDarkBar) Color(0xFF18181B) else Color.White
+            drawCircle(
+                color = coreDotColor,
+                radius = thumbRadius * 0.50f,
+                center = Offset(thumbX, centerY)
+            )
+
+            // Specular rim reflection
+            val rimColor = if (isDarkBar) Color.White.copy(alpha = 0.50f) else Color.Black.copy(alpha = 0.35f)
+            if (glassEnabled) drawCircle(
+                color = rimColor,
+                radius = thumbRadius,
+                center = Offset(thumbX, centerY),
+                style = rimStroke
+            )
         }
     }
+}
+
+/** Seeking and painting share the same inset track, including touches beyond its endpoints. */
+internal fun scrubberFractionAt(x: Float, width: Float, inset: Float): Float {
+    val start = inset.coerceAtMost(width / 2f)
+    val span = width - 2f * start
+    return if (span > 0f) ((x - start) / span).coerceIn(0f, 1f) else 0f
 }

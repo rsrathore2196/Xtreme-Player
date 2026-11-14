@@ -20,6 +20,7 @@ import com.example.ui.theme.LocalAppColors
 import com.github.takahirom.roborazzi.*
 import org.junit.Assert.*
 import org.junit.Rule
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -35,6 +36,12 @@ import kotlin.math.floor
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class TimedLyricsHighlightUiTest {
     @get:Rule val compose = createComposeRule()
+    @Before fun resetWorkAdmissionForTheNewHostClock() {
+        // Robolectric resets uptime between cases while process coordinators can
+        // survive. A previous screen's deadline must not stall this fixture's masks.
+        com.example.performance.BackgroundWorkCoordinator.resetForTesting()
+        com.example.performance.BackgroundWorkCoordinator.firstFrameRendered()
+    }
     private val position = mutableLongStateOf(1_100L)
     private var text = "sunlight waiting"
     private var light = false
@@ -200,7 +207,13 @@ class TimedLyricsHighlightUiTest {
         }
         assertTrue(outsideWordInk() < 5)
         at(4_000)
-        compose.waitUntil(5_000) { outsideWordInk() > 20 }
+        compose.waitUntil(5_000) {
+            // Mask preparation yields to navigation. Keep the host's frame clock
+            // moving while waiting, just as it does on a device.
+            compose.mainClock.advanceTimeByFrame()
+            compose.waitForIdle()
+            outsideWordInk() > 20
+        }
         assertTrue("Only the sung word glows; the upcoming word stays dim", ink(9..15) < 130)
         at(4_500)
         assertTrue("The halo follows the vocal rather than the whole focused line", outsideWordInk() < 5)

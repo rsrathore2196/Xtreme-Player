@@ -73,6 +73,7 @@ internal class CrossfadeController(
     private var baseVolume = player.volume
     private var commandedVolume = baseVolume
     private var changingItem = false
+    private var cancelling = false
     private var overlap = false
     private var fadeStarted = 0L
     private var fadeDuration = FADE_MS
@@ -100,7 +101,12 @@ internal class CrossfadeController(
     init { player.addListener(listener) }
 
     fun setEnabled(value: Boolean) {
-        if (enabled == value) return
+        if (enabled == value) {
+            // Audio-setting changes cancel the old tail before reapplying the
+            // preference. Restart admission even when crossfade remains enabled.
+            if (value) update()
+            return
+        }
         enabled = value
         if (!value) cancelTransition()
         update()
@@ -108,10 +114,14 @@ internal class CrossfadeController(
 
     /** Also used before an explicit output-route change. Never seeks or resets the queue. */
     fun cancelTransition() {
-        ++generation
-        watch?.cancel(); watch = null
-        releaseTail()
-        setVolume(baseVolume)
+        if (cancelling) return
+        cancelling = true
+        try {
+            ++generation
+            watch?.cancel(); watch = null
+            releaseTail()
+            setVolume(baseVolume)
+        } finally { cancelling = false }
     }
 
     fun outputRouteChanging() {
@@ -124,6 +134,9 @@ internal class CrossfadeController(
     }
 
     private fun update() {
+        // Restoring gain emits Player events synchronously. The old configuration
+        // must stay cancelled until the caller has applied all new audio settings.
+        if (cancelling) return
         val state = player.playbackState
         val running = enabled && player.playWhenReady && player.playbackSuppressionReason == Player.PLAYBACK_SUPPRESSION_REASON_NONE &&
             (state == Player.STATE_READY || state == Player.STATE_BUFFERING) && player.playerError == null

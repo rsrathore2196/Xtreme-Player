@@ -822,6 +822,7 @@ class PlaybackManager(
     private var queueSyncEpoch = 0L
 
     private suspend fun synchronizeControllerQueue(player: MediaController): Boolean {
+        if (pendingSelectionId != null) return false
         val revision = queueRevision
         val generation = selectionGeneration
         // Media3 getters are confined to its application looper. Only capture the
@@ -836,14 +837,14 @@ class PlaybackManager(
                 currentCoroutineContext().ensureActive()
                 timeline.getWindow(index, window).mediaItem
             }
-            val known = previous.associateBy { it.id }
+            val known = previous.associateBy { it.queueIdentity }
             val revised = items.map { item ->
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                known[item.mediaId] ?: controllerTrack(item)
+                known[item.queueIdentity]?.takeIf { it.id == item.mediaId } ?: controllerTrack(item)
             }.toMutableStateList()
             revised.takeUnless { it == previous }
         }
-        if (controller !== player || generation != selectionGeneration || revision != queueRevision) return false
+        if (pendingSelectionId != null || controller !== player || generation != selectionGeneration || revision != queueRevision) return false
         if (timeline !== player.currentTimeline) {
             requestQueueSynchronization(player)
             return false
@@ -870,8 +871,8 @@ class PlaybackManager(
             return
         }
 
-        synchronizeControllerQueue(player)
-        player.currentMediaItem?.let { item ->
+        if (pendingSelectionId == null) synchronizeControllerQueue(player)
+        player.currentMediaItem?.takeIf { pendingSelectionId == null }?.let { item ->
             isCurrentSessionExplicitPlaylist = item.mediaMetadata.extras?.getBoolean("queue_collection") == true
             val track = activeQueue.getOrNull(player.currentMediaItemIndex) ?: controllerTrack(item)
             recoveryGuard.select(track.id)
@@ -894,7 +895,7 @@ class PlaybackManager(
             }
             override fun onEvents(player: Player, events: Player.Events) {
                 val controller = this@PlaybackManager.controller ?: return
-                if (pendingSelectionId != null && controller.currentMediaItem?.mediaId != pendingSelectionId) return
+                if (!pendingSelectionMatches(controller.currentMediaItem)) return
                 if (events.contains(Player.EVENT_TIMELINE_CHANGED) || events.contains(Player.EVENT_MEDIA_METADATA_CHANGED))
                     adoptPreparedQueueSource(controller)
                 rememberLosslessPosition(controller)
@@ -906,7 +907,7 @@ class PlaybackManager(
                 listeningPlayRestart = false
             }
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                if (pendingSelectionId != null && player.currentMediaItem?.mediaId != pendingSelectionId) {
+                if (!pendingSelectionMatches(player.currentMediaItem)) {
                     if (isPlaying) player.pause()
                     return
                 }
@@ -944,7 +945,7 @@ class PlaybackManager(
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (pendingSelectionId != null && player.currentMediaItem?.mediaId != pendingSelectionId) return
+                if (!pendingSelectionMatches(player.currentMediaItem)) return
                 val isLoading = playbackState == Player.STATE_BUFFERING
                 if (playbackState == Player.STATE_READY) confirmLosslessActivation(player)
                 val duration = if (player.duration > 0) player.duration else _uiState.value.durationMs
@@ -968,7 +969,8 @@ class PlaybackManager(
                 if (playbackState == Player.STATE_ENDED) {
                     val endedId = player.currentMediaItem?.mediaId
                     val endedGeneration = selectionGeneration
-                    if (pendingSelectionId != null || endedId != _uiState.value.currentTrack?.id) return
+                    if (!completedQueueSelection(_uiState.value.currentTrack, player.currentMediaItem,
+                            player.playbackState, pendingSelectionId != null)) return
                     val completedTrack = _uiState.value.currentTrack
                     if (completedTrack != null) {
                         val elapsed = (System.currentTimeMillis() - currentTrackStartTimeMs).coerceAtLeast(0L)
@@ -989,8 +991,9 @@ class PlaybackManager(
 
                     Log.i(TAG, "Song completed playback. Autoplay enabled: ${_uiState.value.isAutoplayEnabled}")
                     scope.launch(Dispatchers.Main) {
-                        if (selectionGeneration != endedGeneration || pendingSelectionId != null ||
-                            player.currentMediaItem?.mediaId != endedId) return@launch
+                        if (selectionGeneration != endedGeneration || player.currentMediaItem?.mediaId != endedId ||
+                            !completedQueueSelection(_uiState.value.currentTrack, player.currentMediaItem,
+                                player.playbackState, pendingSelectionId != null)) return@launch
                         if (autoplaySuppressedBySleepTimer) return@launch
                         if (_uiState.value.repeatMode == RepeatMode.ONE) {
                             player.seekTo(0)
@@ -1012,11 +1015,12 @@ class PlaybackManager(
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 if (mediaItem != null) {
                     val trackId = mediaItem.mediaId
-                    if (player.currentMediaItem?.mediaId != trackId) return
-                    if (pendingSelectionId != null && pendingSelectionId != trackId) return
+                    val nativeItem = player.currentMediaItem
+                    if (nativeItem?.mediaId != trackId || nativeItem.playlistOccurrenceId != mediaItem.playlistOccurrenceId) return
+                    if (!pendingSelectionMatches(mediaItem)) return
                     if (pendingSelectionId == trackId) pendingSelectionId = null
                     val oldTrack = _uiState.value.currentTrack
-                    val sameOccurrence = oldTrack?.playlistEntryId == (mediaItem.mediaMetadata.extras?.getLong("playlist_entry_id", 0L) ?: 0L)
+                    val sameOccurrence = matchesQueueSelection(oldTrack, mediaItem)
                     if (!sameOccurrence) selectionGeneration++
                     if (oldTrack?.id != trackId || !sameOccurrence || reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
                         recoveryJob?.cancel()
@@ -1718,6 +1722,9 @@ class PlaybackManager(
     private fun ownsSelection(trackId: String, generation: Long): Boolean =
         selectionGeneration == generation && _uiState.value.currentTrack?.id == trackId
 
+    private fun pendingSelectionMatches(item: MediaItem?): Boolean =
+        pendingSelectionId == null || item?.mediaId == pendingSelectionId && matchesQueueSelection(_uiState.value.currentTrack, item)
+
     private suspend fun awaitController(): MediaController {
         ensureMediaControllerConnected()
         return withTimeoutOrNull(8_000L) { controllerReady.await() }
@@ -1938,7 +1945,7 @@ class PlaybackManager(
                 }
             }
 
-            if (pendingSelectionId == track.id && player.currentMediaItem?.mediaId == track.id) pendingSelectionId = null
+            if (pendingSelectionId == track.id && matchesQueueSelection(track, player.currentMediaItem)) pendingSelectionId = null
             publishQueueState()
             refreshAutoplayRecommendation(track)
             Log.i(TAG, "Playing track: ${track.title}")

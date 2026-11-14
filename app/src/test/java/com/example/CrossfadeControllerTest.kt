@@ -119,6 +119,41 @@ class CrossfadeControllerTest {
         override fun close() { controller.close(); scope.runCurrent() }
     }
 
+    @Test fun reapplyingEnabledAfterAnAudioSettingChangeRestartsTheCrossfadeWatcher() = runTest {
+        Harness(this).use { rig ->
+            rig.start()
+            assertEquals(1, rig.tails.size)
+            val previousTail = rig.tails.single()
+            rig.controller.cancelTransition()
+            assertEquals(1, previousTail.releaseCount)
+            // MusicService reapplies the unchanged crossfade preference after
+            // changing precision, spatial processing or silence skipping.
+            rig.controller.setEnabled(true)
+            runCurrent()
+            assertEquals("Enabled crossfade must resume after the settings update", 2, rig.tails.size)
+            rig.advance(5_200)
+            assertEquals(1, rig.primary.index)
+            assertEquals(0, rig.primary.queueRebuilds)
+        }
+    }
+
+    @Test fun cancellingTheGainHandoffCannotWarmANewTailBeforeTheNewAudioSettingsAreApplied() = runTest {
+        Harness(this).use { rig ->
+            rig.start()
+            rig.advance(4_000)
+            assertEquals(0, rig.primary.index)
+            assertTrue(rig.primary.volume in .01f.. .79f)
+            rig.controller.cancelTransition()
+            runCurrent()
+            assertEquals("Restoring gain during cancellation must not restart the old audio configuration", 1, rig.tails.size)
+            rig.incomingBuffered = 0L
+            rig.controller.setEnabled(true)
+            runCurrent()
+            assertEquals(2, rig.tails.size)
+            assertEquals(0L, rig.tails.last().bufferedAhead)
+        }
+    }
+
     @Test fun disabledByDefaultCreatesNoTailAndDoesNotChangePlayback() = runTest {
         Harness(this).use { h ->
             h.advance(5_000)

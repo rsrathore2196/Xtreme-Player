@@ -2292,12 +2292,15 @@ private fun PortraitPlayerExpansion(
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit
 ) {
+    val stableLyricsHeight = remember { androidx.compose.runtime.mutableIntStateOf(0) }
+    androidx.compose.runtime.CompositionLocalProvider(LocalStableLyricsHeight provides stableLyricsHeight) {
     Layout(content = content, modifier = modifier) { measurables, constraints ->
         val width = constraints.maxWidth
         val height = constraints.maxHeight
         val fraction = expansion.value.coerceIn(0f, 1f)
         val childConstraints = Constraints(minWidth = width, maxWidth = width, maxHeight = height)
         val header = measurables[0].measure(childConstraints)
+        stableLyricsHeight.intValue = (height - header.height).coerceAtLeast(0)
         val footer = measurables[2].measure(childConstraints.copy(maxHeight = (height - header.height).coerceAtLeast(0)))
         val controls = measurables[3].measure(childConstraints.copy(
             maxHeight = (height - header.height - footer.height).coerceAtLeast(0)))
@@ -2313,6 +2316,7 @@ private fun PortraitPlayerExpansion(
             footer.placeRelative(0, footerY)
             if (fraction < 1f) controls.placeRelative(0, footerY + footer.height + bottomGap)
         }
+    }
     }
 }
 

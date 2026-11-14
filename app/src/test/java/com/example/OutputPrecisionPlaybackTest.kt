@@ -189,6 +189,37 @@ class OutputPrecisionPlaybackTest {
         } finally { sink.release() }
     }
 
+    @Test fun enablingMixingDrainsAnExistingDirectTrackBeforeContinuingOnTheSharedSink() {
+        val shared = Probe()
+        val sink = BitPerfectAudioSink(app, shared.sink)
+        val nativeTrack = AudioTrack.Builder()
+            .setAudioFormat(android.media.AudioFormat.Builder().setSampleRate(48000)
+                .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_STEREO)
+                .setEncoding(C.ENCODING_PCM_16BIT).build())
+            .setBufferSizeInBytes(4096).setTransferMode(AudioTrack.MODE_STREAM).build()
+        var cleared = false
+        try {
+            sink.configure(format(C.ENCODING_PCM_16BIT), 0, null)
+            val lease = BitPerfectAudioSink::class.java.declaredClasses.single { it.simpleName == "DirectLease" }
+                .declaredConstructors.single { it.parameterCount == 5 }.apply { isAccessible = true }
+                .newInstance(nativeTrack, 4096, C.ENCODING_PCM_16BIT, { cleared = true }, { true })
+            org.robolectric.util.ReflectionHelpers.setField(sink, "native", lease)
+            org.robolectric.util.ReflectionHelpers.setField(sink, "bytesWritten", 16L)
+            val next = shorts(1000, -1000)
+            assertFalse("Accepted native PCM must drain before leaving direct mode", sink.handleBuffer(next, 84, 1))
+            assertEquals(0, next.position())
+            assertFalse(cleared)
+            val accepted = ByteBuffer.allocateDirect(16)
+            nativeTrack.write(accepted, 16, AudioTrack.WRITE_NON_BLOCKING)
+            assertTrue(sink.handleBuffer(next, 84, 1))
+            assertTrue("Crossfade requires releasing the exclusive native output", cleared)
+            assertEquals(4, shared.data.size)
+            val output = ByteBuffer.wrap(shared.data.toByteArray()).order(ByteOrder.LITTLE_ENDIAN)
+            assertEquals(1000.toShort(), output.short)
+            assertEquals((-1000).toShort(), output.short)
+        } finally { sink.release() }
+    }
+
     @Test fun actualMedia3AudioTrackReceivesSelectedEncodingForPcm16DecoderInput() {
         for ((mode, supported, skip, expected) in listOf(
             listOf(OutputPrecision.PCM_16, true, false, C.ENCODING_PCM_16BIT),

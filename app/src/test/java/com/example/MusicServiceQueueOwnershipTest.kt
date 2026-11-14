@@ -84,6 +84,12 @@ class MusicServiceQueueOwnershipTest {
         monitor = NetworkQualityMonitor.getInstance(app)
         withTimeout(3_000) {
             while (PlaybackSourcesPreferences.load(app) != PlaybackSource.builtIns) delay(5)
+            // Finish the monitor's initial preference readers before a following
+            // case can replace Robolectric's application/shared-preference clock.
+            while (!monitor.sourcePolicy.value.ready || monitor.sourcePolicy.value.key != monitor.sourcePolicySnapshot().key) {
+                shadowOf(Looper.getMainLooper()).idle()
+                delay(5)
+            }
         }
         assertTrue(monitor.sourcePolicySnapshot().allowsArchive)
         lookupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -118,7 +124,7 @@ class MusicServiceQueueOwnershipTest {
         if (::resolver.isInitialized) resolver.clear()
         if (::lookupScope.isInitialized) lookupScope.coroutineContext[Job]?.cancelAndJoin()
         if (::repository.isInitialized) ReflectionHelpers.getField<CoroutineScope>(repository, "initialCatalogScope").coroutineContext[Job]?.cancelAndJoin()
-        if (::service.isInitialized) ReflectionHelpers.getField<CoroutineScope>(service, "serviceScope").cancel()
+        if (::service.isInitialized) ReflectionHelpers.getField<CoroutineScope>(service, "serviceScope").coroutineContext[Job]?.cancelAndJoin()
         if (::monitor.isInitialized) ReflectionHelpers.getField<CoroutineScope>(monitor, "scope").coroutineContext[Job]?.cancelAndJoin()
         ReflectionHelpers.setStaticField(NetworkQualityMonitor::class.java, "instance", null)
         StreamResolver.clearVerifiedLosslessCache()
@@ -226,7 +232,10 @@ class MusicServiceQueueOwnershipTest {
         assertEquals(1, requests.get())
     }
 
-    @Test fun threeTracksAutomaticallyAdvanceThroughTheRealServiceResolverAndMedia3PcmOutput() = runBlocking {
+    @Test fun threeTracksAutomaticallyAdvanceThroughTheRealServiceResolverAndMedia3PcmOutput() = playRealQueue(0)
+    @Test fun customPlaylistStartsAtTheSelectedEntryAndPlaysItBeforeAdvancing() = playRealQueue(1)
+
+    private fun playRealQueue(startIndex: Int) = runBlocking {
         AudioQualityPreferences.setWifiQualityCeiling(app, AudioQualityCeiling.HIGH)
         assertFalse(monitor.sourcePolicySnapshot().allowsArchive)
         val capabilities = org.robolectric.shadows.MediaCodecInfoBuilder.CodecCapabilitiesBuilder.newBuilder()
@@ -291,28 +300,30 @@ class MusicServiceQueueOwnershipTest {
         org.robolectric.shadows.ShadowAudioTrack.addAudioDataListener(audioListener)
         try {
             val tracks = (1..3).map { selected.copy(id = "online_queue_$it", title = "Song $it", durationMs = 600,
+                playlistEntryId = if (startIndex > 0) 100L + it else 0L,
                 audioUrl = "https://aac.saavncdn.com/queue_${it}_320.mp4") }
+            val expected = tracks.drop(startIndex)
             player.skipSilenceEnabled = true // Exercise retained silence/EOS across all three sources too.
-            player.setMediaItems(tracks.map { it.toMediaItem() }); player.prepare(); player.play()
+            player.setMediaItems(tracks.map { it.toMediaItem() }, startIndex, 0L); player.prepare(); player.play()
             withTimeout(12_000) {
                 while (player.playbackState != androidx.media3.common.Player.STATE_ENDED) {
                     shadowOf(Looper.getMainLooper()).idleFor(java.time.Duration.ofMillis(20))
-                    failure?.let { throw AssertionError("Actual Media3 source preparation failed", it) }
+                    failure?.let { throw AssertionError("Actual Media3 source preparation failed; policy=${monitor.sourcePolicySnapshot().key}", it) }
                     delay(5)
                 }
             }
-            assertEquals(tracks.map { it.id }, transitions.map { it.first })
-            assertEquals(2, transitions.count { it.second == androidx.media3.common.Player.MEDIA_ITEM_TRANSITION_REASON_AUTO })
+            assertEquals(expected.map { it.id }, transitions.map { it.first })
+            assertEquals(expected.size - 1, transitions.count { it.second == androidx.media3.common.Player.MEDIA_ITEM_TRANSITION_REASON_AUTO })
             assertTrue(states.contains(androidx.media3.common.Player.STATE_READY))
             assertEquals(2, player.currentMediaItemIndex)
             assertTrue(player.playWhenReady)
-            assertEquals(tracks.map { it.audioUrl }.toSet(), opened.toSet())
+            assertEquals(expected.map { it.audioUrl }.toSet(), opened.toSet())
             assertTrue(prepared.values.all { it.get() == 1 })
-            assertEquals(3, prepared.size)
+            assertEquals(expected.size, prepared.size)
             assertTrue("AudioTrack received decoded PCM", audioWrites.get() > 0)
             assertTrue("Media3 observed its audio output clock advancing", advancing.isNotEmpty())
-            assertEquals("Each source produced PCM under its own renderer stream offset", 3, pcmStreams.size)
-            assertEquals(3, firstAudio.size)
+            assertEquals("Each source produced PCM under its own renderer stream offset", expected.size, pcmStreams.size)
+            assertEquals(expected.size, firstAudio.size)
             println("Media3 queue evidence: transitions=$transitions, states=$states, firstPcmByStream=$firstAudio, " +
                 "advancingCallbacks=${advancing.size}, audioWrites=${audioWrites.get()}")
             assertEquals(0, requests.get())

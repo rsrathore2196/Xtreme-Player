@@ -286,6 +286,68 @@ class SpatialAndSilencePlaybackTest {
         sink.release()
     }
 
+    @Test fun spatialAndSilenceProcessingReachAudioTrackTogetherAtBothOutputPrecisions() {
+        for (precision in OutputPrecision.entries) for (spatial in listOf(false, true)) for (skip in listOf(false, true)) {
+            PsychoacousticAudioProcessor.settings.set(AudioEffectsState())
+            PsychoacousticAudioProcessor.spatialEnabled = spatial
+            val output = java.io.ByteArrayOutputStream()
+            val tracks = mutableListOf<android.media.AudioTrack>()
+            val listener = org.robolectric.shadows.ShadowAudioTrack.OnAudioDataWrittenListener { _, data, _ -> output.write(data) }
+            fun delegate(silence: Boolean) = androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(app)
+                .setEnableFloatOutput(!silence)
+                .setAudioProcessorChain(androidx.media3.exoplayer.audio.DefaultAudioSink.DefaultAudioProcessorChain(
+                    emptyArray<AudioProcessor>(), BitPerfectAudioSink.silenceProcessor(), androidx.media3.common.audio.SonicAudioProcessor()))
+                .setAudioTrackProvider { config, attributes, session ->
+                    androidx.media3.exoplayer.audio.DefaultAudioSink.AudioTrackProvider.DEFAULT
+                        .getAudioTrack(config, attributes, session).also(tracks::add)
+                }.build()
+            val sink = BitPerfectAudioSink(app, delegate(false), { precision }, { true }) { silence, _ -> delegate(silence) }
+            org.robolectric.shadows.ShadowAudioTrack.addAudioDataListener(listener)
+            try {
+                sink.setListener(Proxy.newProxyInstance(AudioSink.Listener::class.java.classLoader,
+                    arrayOf(AudioSink.Listener::class.java)) { _, _, _ -> null } as AudioSink.Listener)
+                sink.setSkipSilenceEnabled(skip)
+                sink.configure(pcm(), 0, null)
+                sink.setVolume(.4f) // Crossfade gains must remain available on either output path.
+                sink.play()
+                val toneFrames = 2048
+                val silentFrames = 144000
+                val frames = toneFrames * 2 + silentFrames
+                val input = ByteBuffer.allocateDirect(frames * 8).order(ByteOrder.LITTLE_ENDIAN).apply {
+                    repeat(toneFrames) { putFloat(.1f); putFloat(0f) }
+                    repeat(silentFrames) { putLong(0) }
+                    repeat(toneFrames) { putFloat(.1f); putFloat(0f) }
+                    flip()
+                }
+                var attempts = 0
+                while (input.hasRemaining()) {
+                    assertTrue("PCM processing must make progress", attempts++ < 1000)
+                    sink.handleBuffer(input, 0, 1)
+                }
+                repeat(10) {
+                    sink.playToEndOfStream()
+                    org.robolectric.Shadows.shadowOf(android.os.Looper.getMainLooper())
+                        .idleFor(java.time.Duration.ofMillis(400))
+                }
+                val encoding = if (precision == OutputPrecision.FLOAT_32 && !skip) C.ENCODING_PCM_FLOAT else C.ENCODING_PCM_16BIT
+                assertEquals("precision=$precision spatial=$spatial skip=$skip", encoding, tracks.single().audioFormat)
+                val bytesPerFrame = if (encoding == C.ENCODING_PCM_FLOAT) 8 else 4
+                val emitted = output.size() / bytesPerFrame
+                if (skip) assertTrue("Long gaps must actually be removed", emitted < frames - 48000)
+                else assertEquals(frames, emitted)
+                val samples = ByteBuffer.wrap(output.toByteArray()).order(ByteOrder.LITTLE_ENDIAN)
+                samples.position(samples.limit() - bytesPerFrame)
+                fun sample() = if (encoding == C.ENCODING_PCM_FLOAT) samples.float else samples.short / 32768f
+                assertEquals(if (spatial) .1435f else .1f, sample(), .003f)
+                assertEquals(if (spatial) -.0451f else 0f, sample(), .003f)
+                assertTrue(sink.isEnded)
+            } finally {
+                sink.release()
+                org.robolectric.shadows.ShadowAudioTrack.removeAudioDataListener(listener)
+            }
+        }
+    }
+
     @Test fun actualMedia3SinkUsesSilenceProcessingAndRestoresDecoderFloatSupportWhenOff() {
         val sink = BitPerfectAudioSink(app, allowDirect = { false })
         assertEquals(AudioSink.SINK_FORMAT_SUPPORTED_DIRECTLY, sink.getFormatSupport(pcm()))

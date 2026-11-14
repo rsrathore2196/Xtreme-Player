@@ -60,7 +60,6 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.geometry.Offset
@@ -310,16 +309,14 @@ fun SyncedLyricsView(
     } else if (isDark) Color(0xFFFFFFFF).copy(alpha = 0.62f) else Color(0xFF000000).copy(alpha = 0.60f)
 
     val centeredPadding = remember(density) { LyricsViewportPadding(density) }
+    val stableHeight = LocalStableLyricsHeight.current
     Box(
         modifier = modifier
             .fillMaxSize()
-            .layout { measurable, constraints ->
-                centeredPadding.heightPx = if (constraints.hasBoundedHeight) constraints.maxHeight else constraints.minHeight
-                val child = measurable.measure(constraints)
-                layout(child.width, child.height) { child.placeRelative(0, 0) }
-            }
             .clip(RoundedCornerShape(24.dp))
             .testTag("synced_lyrics_view")
+            // Translate/clip cached list geometry instead of measuring it at every animation size.
+            .lyricsViewportWindow(centeredPadding, stableHeight)
     ) {
         if (lyrics == null) {
             Box(

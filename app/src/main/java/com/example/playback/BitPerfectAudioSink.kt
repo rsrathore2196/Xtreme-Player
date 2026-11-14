@@ -310,7 +310,7 @@ class BitPerfectAudioSink private constructor(
         }
         // Route loss changes only the sink. Drain the already-written native audio,
         // then continue at the next unconsumed PCM buffer without a queue/source reset.
-        if (native != null && (directUnavailable || PsychoacousticAudioProcessor.spatialEnabled ||
+        if (native != null && (!allowDirect() || directUnavailable || PsychoacousticAudioProcessor.spatialEnabled ||
             desiredEncoding() != native?.encoding) && nativeInput == null) {
             if (hasPendingData()) return false
             closeNative(); directUnavailable = false
