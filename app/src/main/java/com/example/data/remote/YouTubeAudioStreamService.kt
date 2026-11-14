@@ -165,7 +165,8 @@ object YouTubeAudioStreamService {
         fun sabrChunks(bootstrap: SabrBootstrap, startMs: Long): Flow<SabrChunk> =
             SabrAudioStream(sabrHttp, bootstrap, maxRequestsWithoutProgress = 3, initialPlayerTimeMs = startMs).chunks()
 
-        suspend fun searchSongs(query: String, continuation: String?, countryCode: String? = null, languageCode: String? = null): String {
+        suspend fun searchMusic(query: String, continuation: String?, params: String,
+            countryCode: String? = null, languageCode: String? = null): String {
             val session = if (countryCode != null || languageCode != null) {
                 engine(320_000).innerTube.createIsolatedSession(includeAccount = false).apply {
                     locale = com.metrolist.innertubex.models.YouTubeLocale(
@@ -177,13 +178,7 @@ object YouTubeAudioStreamService {
 
             try {
                 val target = session ?: engine(320_000).innerTube
-                val response = target.search(
-                    client = YouTubeClient.WEB_REMIX, query = query.takeIf { continuation == null },
-                    params = "EgWKAQIIAWoKEAkQBRAKEAMQBA==".takeIf { continuation == null },
-                    continuation = continuation, setLogin = false)
-                val body = response.bodyAsTextLimited(4 * 1024 * 1024)
-                if (response.status.value !in 200..299) throw IOException("YouTube Music search is unavailable")
-                return body
+                return requestDiscovery(target, "search", query, params, continuation)
             } finally {
                 session?.close()
             }
@@ -240,8 +235,9 @@ object YouTubeAudioStreamService {
     private fun runtime(): Runtime = runtime ?: synchronized(runtimeLock) { runtime ?: Runtime().also { runtime = it } }
 
     /** Import uses the same InnerTubeX session/client stack as audio extraction. */
-    internal suspend fun searchSongsResponse(query: String, continuation: String?, countryCode: String? = null, languageCode: String? = null): String =
-        withContext(Dispatchers.IO) { runtime().searchSongs(query, continuation, countryCode, languageCode) }
+    internal suspend fun searchMusicResponse(query: String, continuation: String?, params: String,
+        countryCode: String? = null, languageCode: String? = null): String =
+        withContext(Dispatchers.IO) { runtime().searchMusic(query, continuation, params, countryCode, languageCode) }
 
     internal suspend fun discoveryResponse(operation: String, value: String, countryCode: String,
         params: String? = null, continuation: String? = null, languageCode: String = "en",

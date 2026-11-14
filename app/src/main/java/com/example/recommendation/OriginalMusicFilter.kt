@@ -20,25 +20,38 @@ import java.util.Locale
  * Note: A track is NOT considered original merely because its title contains "Official".
  */
 object OriginalMusicFilter {
-    private val searchVersions = Regex("(?i)\\b(?:live|remix|re-mix|rmx|remaster(?:ed)?|acoustic|unplugged|radio edit|extended|instrumental|cover|karaoke|slowed|reverb|nightcore|sped up)\\b")
+    private val searchVersions = Regex("(?i)\\b(?:[0-9]{1,3}\\s*d(?:\\s+audio)?|live|re[ -]?mix|rmx|mix(?:ed)?|remaster(?:ed)?|acoustic|unplugged|radio[ -]edit|extended|instrumental|cover|karaoke|slowed|reverb(?:ed)?|nightcore|sp(?:ed|eed)[ -]?up|lo[ -]?fi|mash[ -]?up|bass[ -]boost(?:ed)?)\\b")
     private val unofficialUpload = Regex("(?i)\\b(?:unofficial|bootleg|fan[ -]made|ai[ -](?:cover|generated)|tribute|karaoke|mashup|slowed|reverb|nightcore|sped up|bass boosted)\\b")
     private val presentationUpload = Regex("(?i)\\b(?:lyric(?:s| video)?|8d audio|4k|fan video)\\b")
     private val searchUnofficialArtist = Regex("(?i)\\b(?:karaoke|tribute band|cover artist|remix channel|unknown artist|various artists)\\b")
     private val searchIsrc = Regex("(?i)[A-Z]{2}[A-Z0-9]{3}[0-9]{7}")
 
+    private fun searchVersionKinds(text: String): Set<String> = searchVersions.findAll(text).map {
+        val term = it.value.lowercase(Locale.ROOT).replace(Regex("[ -]"), "")
+        when (term) {
+            "remix", "rmx", "mix", "mixed" -> "remix"
+            "remastered" -> "remaster"
+            "reverbed" -> "reverb"
+            "speedup" -> "spedup"
+            "bassboosted" -> "bassboost"
+            else -> term.removeSuffix("audio")
+        }
+    }.toSet()
+
     /** Search-only preference: Home and playlist policies retain their existing behavior. */
     fun searchPreferenceScore(track: MusicTrack, query: String): Int {
-        val requested = searchVersions.findAll(query).map { it.value.lowercase(Locale.ROOT).replace("remastered", "remaster") }.toSet()
-        val actual = searchVersions.findAll(track.title).map { it.value.lowercase(Locale.ROOT).replace("remastered", "remaster") }.toSet()
+        val requested = searchVersionKinds(query)
+        val actual = searchVersionKinds(track.title)
         var score = when {
-            requested.isNotEmpty() && actual.containsAll(requested) -> 180
-            requested.isNotEmpty() -> -250
+            // Explicit version intent outweighs an exact title match for the original.
+            requested.isNotEmpty() && actual.containsAll(requested) -> 1_800
+            requested.isNotEmpty() -> -1_800
             actual.isNotEmpty() -> -180
             else -> 120
         }
         if (unofficialUpload.containsMatchIn(track.title) && requested.isEmpty()) score -= 700
         if (searchUnofficialArtist.containsMatchIn(track.artist)) score -= 250
-        if (presentationUpload.containsMatchIn(track.title)) score -= 80
+        if (presentationUpload.containsMatchIn(track.title) && requested.isEmpty()) score -= 80
         if (track.id.startsWith("online_")) score += 35
         if (searchIsrc.matches(track.isrc)) score += 25
         if (track.album.isNotBlank() && !track.album.equals("Unknown", true) &&

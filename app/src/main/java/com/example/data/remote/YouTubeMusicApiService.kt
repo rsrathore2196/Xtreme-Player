@@ -36,6 +36,10 @@ object YouTubeMusicApiService {
     }
     data class SongSearchPage(val tracks: List<MusicTrack>, val continuation: String?,
         val artistCredits: Map<String, List<String>> = emptyMap())
+    enum class SearchFilter(val params: String) {
+        SONGS("EgWKAQIIAWoKEAkQBRAKEAMQBA=="),
+        VIDEOS("EgWKAQIQAWoKEAkQChAFEAMQBA==")
+    }
     private val artistSearchClient by lazy { httpClient.newBuilder().callTimeout(15, TimeUnit.SECONDS).build() }
     private val artistSearchCache = android.util.LruCache<String, Pair<Long, SongSearchPage>>(48)
     private val artistSearchLocks = Array(8) { Mutex() }
@@ -85,17 +89,23 @@ object YouTubeMusicApiService {
 
     /** Incremental songs-only fallback for artist pages; never loads an entire discography. */
     suspend fun searchSongsPage(query: String, continuation: String? = null,
-        useInnerTubeX: Boolean = false, forceRefresh: Boolean = false, countryCode: String? = null, languageCode: String? = null): SongSearchPage = withContext(Dispatchers.IO) {
+        useInnerTubeX: Boolean = false, forceRefresh: Boolean = false, countryCode: String? = null, languageCode: String? = null): SongSearchPage =
+        searchMusicPage(query, continuation, SearchFilter.SONGS, useInnerTubeX, forceRefresh, countryCode, languageCode)
+
+    /** Videos includes user-uploaded mixes and edits absent from the licensed Songs catalog. */
+    suspend fun searchMusicPage(query: String, continuation: String? = null, filter: SearchFilter = SearchFilter.SONGS,
+        useInnerTubeX: Boolean = true, forceRefresh: Boolean = false, countryCode: String? = null, languageCode: String? = null): SongSearchPage = withContext(Dispatchers.IO) {
         if (query.isBlank()) return@withContext SongSearchPage(emptyList(), null)
         val validLang = languageCode?.let { LanguageCodeMapper.toBcp47(it) } ?: "en"
-        val key = "${query.trim().lowercase(java.util.Locale.ROOT)}|${continuation.orEmpty()}|$useInnerTubeX|${countryCode.orEmpty()}|$validLang"
+        val key = "${filter.name}|${query.trim().lowercase(java.util.Locale.ROOT)}|${continuation.orEmpty()}|$useInnerTubeX|${countryCode.orEmpty()}|$validLang"
         artistSearchLocks[(key.hashCode() and Int.MAX_VALUE) % artistSearchLocks.size].withLock {
             if (forceRefresh) artistSearchCache.remove(key)
             artistSearchCache.get(key)?.takeIf { System.currentTimeMillis() - it.first < 300_000L }
                 ?.let { return@withLock it.second }
             if (useInnerTubeX) {
                 val page = try {
-                    val body = YouTubeAudioStreamService.searchSongsResponse(query.trim(), continuation, countryCode = countryCode, languageCode = validLang)
+                    val body = YouTubeAudioStreamService.searchMusicResponse(query.trim(), continuation, filter.params,
+                        countryCode = countryCode, languageCode = validLang)
                     withContext(AppDispatchers.CpuBounded) { parseSongSearchPage(body) }
                 } catch (e: CancellationException) { throw e }
                 catch (_: Exception) { null }
@@ -109,7 +119,7 @@ object YouTubeMusicApiService {
             val payload = JSONObject().put("context", JSONObject().put("client", JSONObject()
                 .put("clientName", profile.clientName).put("clientVersion", profile.clientVersion)
                 .put("hl", validLang).put("gl", countryCode?.takeIf { it.matches(Regex("[A-Za-z]{2}")) }?.uppercase(java.util.Locale.ROOT) ?: "US")))
-            if (continuation == null) payload.put("query", query.trim()).put("params", "EgWKAQIIAWoKEAkQBRAKEAMQBA==")
+            if (continuation == null) payload.put("query", query.trim()).put("params", filter.params)
             // Search continuations are URL parameters, as in InnerTubeX's search API.
             val url = "https://music.youtube.com/youtubei/v1/search".toHttpUrl().newBuilder().apply {
                 if (continuation != null) {
@@ -131,7 +141,7 @@ object YouTubeMusicApiService {
         }
     }
 
-    private fun parseSongSearchPage(body: String): SongSearchPage {
+    internal fun parseSongSearchPage(body: String): SongSearchPage {
         val root = JSONObject(body)
         if (root.has("error") || listOf("contents", "continuationContents", "onResponseReceivedActions",
                 "onResponseReceivedCommands", "onResponseReceivedEndpoints").none(root::has))

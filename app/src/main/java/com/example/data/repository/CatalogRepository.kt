@@ -59,6 +59,7 @@ internal suspend fun loadSearchCategories(load: suspend (String) -> CatalogPage,
 
 /** Typed browsing through the app's existing catalog provider and stream URL decoder. */
 class CatalogRepository(context: Context? = null,
+    private val trackSearchLoader: (suspend (String, TrackSearchContinuation) -> AudioRoutingService.SearchPage)? = null,
     private val browseLoader: suspend (String, String?, String?, String, String) -> String =
         { id, params, continuation, country, language ->
             YouTubeAudioStreamService.discoveryResponse("browse", id, country, params, continuation, language)
@@ -290,9 +291,10 @@ class CatalogRepository(context: Context? = null,
         val cursor = previousPage?.trackSearchContinuation?.takeIf { it.query == query }
             ?: TrackSearchContinuation(query, standardPage = page)
         val fetch = cursor.pendingTracks.size < 10
-        val result = if (fetch) AudioRoutingService.searchPage(query, cursor.standardPage,
-            cursor.youtubeContinuation, cursor.youtubeHasMore) else null
-        if (result?.standardFailed == true && result.youtubeFailed && cursor.pendingTracks.isEmpty())
+        val result = if (fetch) trackSearchLoader?.invoke(query, cursor) ?: AudioRoutingService.searchPage(query, cursor.standardPage,
+            cursor.youtubeContinuation, cursor.youtubeHasMore,
+            youtubeVideoContinuation = cursor.youtubeVideoContinuation, fetchYouTubeVideos = cursor.youtubeVideoHasMore) else null
+        if (result?.standardFailed == true && result.youtubeFailed && result.youtubeVideoFailed && cursor.pendingTracks.isEmpty())
             throw IOException("Search unavailable")
         val ranked = AudioRoutingService.rankTracks(query, cursor.pendingTracks + result?.tracks.orEmpty())
         val previousTracks = previousPage?.tracks.orEmpty()
@@ -303,11 +305,14 @@ class CatalogRepository(context: Context? = null,
         val standardNext = if (!fetch || result?.standardFailed == true) cursor.standardPage else result?.standardNext
         val youtubeNext = if (!fetch || result?.youtubeFailed == true) cursor.youtubeContinuation else result?.youtubeNext
         val youtubeHasMore = if (!fetch || result?.youtubeFailed == true) cursor.youtubeHasMore else youtubeNext != null
-        val hasMore = pending.isNotEmpty() || standardNext != null || youtubeHasMore
+        val videoNext = if (!fetch || result?.youtubeVideoFailed == true) cursor.youtubeVideoContinuation else result?.youtubeVideoNext
+        val videoHasMore = if (!fetch || result?.youtubeVideoFailed == true) cursor.youtubeVideoHasMore else videoNext != null
+        val hasMore = pending.isNotEmpty() || standardNext != null || youtubeHasMore || videoHasMore
         return CatalogPage(tracks = tracks.take(10), nextPage = if (hasMore) page + 1 else null,
-            warning = if (result?.standardFailed == true || result?.youtubeFailed == true)
+            warning = if (result?.standardFailed == true || result?.youtubeFailed == true || result?.youtubeVideoFailed == true)
                 "Some catalog results couldn't load. Tap to retry." else previousPage?.warning?.takeIf { !fetch },
-            trackSearchContinuation = TrackSearchContinuation(query, standardNext, pending, youtubeNext, youtubeHasMore))
+            trackSearchContinuation = TrackSearchContinuation(query, standardNext, pending, youtubeNext, youtubeHasMore,
+                videoNext, videoHasMore))
     }
     private fun sameArtistName(requested: String, credited: String): Boolean {
         val first = CatalogNames.normalize(requested)

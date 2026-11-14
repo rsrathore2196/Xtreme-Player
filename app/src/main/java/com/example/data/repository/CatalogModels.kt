@@ -34,11 +34,12 @@ data class CatalogPlaylist(val id: String, val title: String, val image: String,
 data class CatalogBrowseContinuation(val browseId: String, val params: String?, val token: String,
     val countryCode: String = "US", val languageCode: String = "en",
     val seenTokens: Set<String> = emptySet(), val page: Int = 2)
-/** Independent song-provider cursors and results waiting for the next ten rows. */
+/** Independent Songs/Videos cursors and results waiting for the next ten rows. */
 data class TrackSearchContinuation(
     val query: String, val standardPage: Int? = null,
     val pendingTracks: List<MusicTrack> = emptyList(),
-    val youtubeContinuation: String? = null, val youtubeHasMore: Boolean = true
+    val youtubeContinuation: String? = null, val youtubeHasMore: Boolean = true,
+    val youtubeVideoContinuation: String? = null, val youtubeVideoHasMore: Boolean = true
 )
 /** Opaque YouTube Music cursor, kept independent of JioSaavn's numeric pages. */
 @androidx.compose.runtime.Immutable
