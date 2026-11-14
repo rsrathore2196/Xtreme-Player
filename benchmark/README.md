@@ -142,7 +142,7 @@ controls returning. The initial-idle journeys remain available as separate scena
 launch is not interchangeable with an interactive launch. `warmStagedStartupThenInteraction`
 observes 40 seconds before interacting. None of these waits is an application delay.
 
-Validate on the HMD Vibe 2 Pro / Android 16 and a reference phone using the same display mode,
+Validate on Android 16 and older device models and a reference phone using the same display mode,
 settings, history, artwork cache state and audio route. Compare cold/warm/retained launches,
 empty/populated history, fresh/evicted caches, offline/slow transport and paused/active playback.
 Inspect first-20-second frame overrun p50/p95/p99 and missed deadlines, Main/RenderThread CPU,
